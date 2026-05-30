@@ -1,0 +1,15 @@
+{
+  "name": "plotsystem",
+  "version": "0.1.0",
+  "private": true,
+  "description": "影视多智能体、多分枝剧情推演系统 — 根级脚本",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm:backend\" \"npm:frontend\"",
+    "backend": "python -m uvicorn backend.main:app --host 0.0.0.0 --port 5001 --reload",
+    "frontend": "cd frontend && npm run dev",
+    "init-db": "python -m backend.utils.init_db"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

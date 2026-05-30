@@ -1,0 +1,219 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useProjectStore } from '@/stores/project'
+import { useCharacterStore } from '@/stores/characters'
+import GraphViewer from '@/components/GraphViewer.vue'
+import CharacterCardView from '@/components/CharacterCard.vue'
+
+const router = useRouter()
+const store = useProjectStore()
+const charStore = useCharacterStore()
+
+const newName = ref('')
+const newDesc = ref('')
+const fileInput = ref<HTMLInputElement | null>(null)
+const building = ref(false)
+let pollTimer: number | undefined
+
+onMounted(() => store.loadProjects())
+
+async function create() {
+  if (!newName.value.trim()) return
+  const p = await store.createProject(newName.value, newDesc.value)
+  newName.value = ''
+  newDesc.value = ''
+  await open(p.project_id)
+}
+
+async function open(id: string) {
+  await store.selectProject(id)
+  await store.loadGraph(id)
+  await charStore.load(id)
+}
+
+async function onUpload(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.length || !store.current) return
+  for (const f of Array.from(input.files)) {
+    await store.uploadSeed(store.current.project_id, f)
+  }
+  await store.selectProject(store.current.project_id)
+}
+
+async function build() {
+  if (!store.current) return
+  building.value = true
+  await store.build(store.current.project_id)
+  pollTimer = window.setInterval(async () => {
+    const s = await store.refreshBuildStatus(store.current!.project_id)
+    if (s.progress >= 1 || s.stage.startsWith('失败')) {
+      building.value = false
+      window.clearInterval(pollTimer)
+      await open(store.current!.project_id)
+    }
+  }, 1500)
+}
+</script>
+
+<template>
+  <div class="workspace">
+    <h1>工作台</h1>
+
+    <div class="grid">
+      <!-- 左：项目列表 + 创建 -->
+      <section class="card">
+        <h3>项目</h3>
+        <div class="field" style="margin-top: 12px">
+          <input v-model="newName" placeholder="新项目名称" />
+        </div>
+        <div class="field">
+          <input v-model="newDesc" placeholder="简述（可选）" />
+        </div>
+        <button @click="create">＋ 创建项目</button>
+
+        <ul class="project-list">
+          <li
+            v-for="p in store.projects"
+            :key="p.project_id"
+            :class="{ active: store.current?.project_id === p.project_id }"
+            @click="open(p.project_id)"
+          >
+            <div>
+              <div class="p-name">{{ p.name }}</div>
+              <div class="dim">{{ p.status }}</div>
+            </div>
+            <button class="ghost danger" @click.stop="store.deleteProject(p.project_id)">✕</button>
+          </li>
+        </ul>
+      </section>
+
+      <!-- 右：当前项目操作 -->
+      <section class="card" v-if="store.current">
+        <div class="row" style="justify-content: space-between">
+          <h3>{{ store.current.name }}</h3>
+          <div class="row">
+            <button class="ghost" @click="router.push(`/director/${store.current.project_id}`)">进入导演视角 →</button>
+          </div>
+        </div>
+        <p class="dim">{{ store.current.description }}</p>
+
+        <div class="seed-box">
+          <div class="row" style="justify-content: space-between">
+            <span class="dim">种子文本（{{ store.current.seed_texts.length }}）</span>
+            <button class="ghost" @click="fileInput?.click()">上传种子文本</button>
+            <input ref="fileInput" type="file" multiple accept=".txt,.md" hidden @change="onUpload" />
+          </div>
+          <ul class="seed-list">
+            <li v-for="(s, i) in store.current.seed_texts" :key="i" class="dim">📄 {{ s.split(/[\\/]/).pop() }}</li>
+          </ul>
+        </div>
+
+        <div class="build-box">
+          <button :disabled="building || !store.current.seed_texts.length" @click="build">
+            {{ building ? '构建中...' : '🔨 运行 GraphRAG 构建' }}
+          </button>
+          <div v-if="building || store.buildStatus.progress > 0" class="progress">
+            <div class="progress-bar" :style="{ width: store.buildStatus.progress * 100 + '%' }"></div>
+            <span class="dim">{{ store.buildStatus.stage }}</span>
+          </div>
+        </div>
+      </section>
+      <section class="card placeholder dim" v-else>← 请选择或创建一个项目</section>
+    </div>
+
+    <!-- 图谱 + 角色 -->
+    <div class="grid bottom" v-if="store.current">
+      <section class="card graph-card">
+        <h3>知识图谱</h3>
+        <GraphViewer :data="store.graph" />
+      </section>
+      <section class="card">
+        <h3>角色（{{ charStore.characters.length }}）</h3>
+        <div class="char-grid">
+          <CharacterCardView
+            v-for="c in charStore.characters"
+            :key="c.character_id"
+            :character="c"
+          />
+          <div v-if="!charStore.characters.length" class="dim">构建后将自动生成角色。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.workspace h1 {
+  margin-bottom: 18px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 18px;
+}
+.grid.bottom {
+  grid-template-columns: 1.4fr 1fr;
+  margin-top: 18px;
+}
+.project-list {
+  list-style: none;
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.project-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.project-list li:hover,
+.project-list li.active {
+  background: var(--accent);
+  border-color: var(--border);
+}
+.p-name {
+  font-weight: 600;
+}
+.seed-box,
+.build-box {
+  margin-top: 18px;
+}
+.seed-list {
+  list-style: none;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.progress {
+  margin-top: 12px;
+}
+.progress-bar {
+  height: 6px;
+  background: var(--highlight);
+  border-radius: 3px;
+  transition: width 0.4s;
+}
+.graph-card {
+  height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+.char-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+</style>
