@@ -48,7 +48,12 @@ class WorldRulesExtractor:
         entries: list[LoreEntry] = []
         for text in texts:
             prompt = _LORE_PROMPT.format(text=text[:6000])
-            raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.3)
+            try:
+                raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.3)
+            except Exception as exc:  # noqa: BLE001
+                # 单段世界规则提取失败不应中断整个构建，跳过该段。
+                logger.warning("世界规则提取失败，已跳过一段：%s", exc)
+                continue
             for item in _extract_json_array(raw):
                 content = (item.get("content") or "").strip()
                 if not content:

@@ -115,10 +115,18 @@ class EntityExtractor:
         id_remap: dict[str, str] = {}
         total = len(texts)
 
+        failed = 0
         for idx, text in enumerate(texts):
             if progress_callback:
                 await progress_callback(idx, total)
-            ents, rels = await self.extract(text)
+            try:
+                ents, rels = await self.extract(text)
+            except Exception as exc:  # noqa: BLE001
+                # 单块抽取失败（如 LLM 超时）不应让整个构建崩溃，
+                # 跳过该块，保留已成功抽取的结果，继续处理后续块。
+                failed += 1
+                logger.warning("第 %d/%d 块实体抽取失败，已跳过：%s", idx + 1, total, exc)
+                continue
             for e in ents:
                 if e.name in all_entities:
                     id_remap[e.entity_id] = all_entities[e.name].entity_id
@@ -128,5 +136,13 @@ class EntityExtractor:
                 r.source_id = id_remap.get(r.source_id, r.source_id)
                 r.target_id = id_remap.get(r.target_id, r.target_id)
                 all_relations.append(r)
+
+        if failed:
+            logger.warning(
+                "实体抽取完成：%d/%d 块成功，%d 块因错误被跳过",
+                total - failed,
+                total,
+                failed,
+            )
 
         return list(all_entities.values()), all_relations

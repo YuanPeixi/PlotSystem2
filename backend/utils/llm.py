@@ -20,7 +20,7 @@ from backend.utils.logger import get_logger
 
 logger = get_logger("llm")
 
-_REQUEST_TIMEOUT = 120.0
+_REQUEST_TIMEOUT = 180.0
 
 
 def _client() -> AsyncOpenAI:

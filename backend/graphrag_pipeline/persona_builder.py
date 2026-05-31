@@ -87,5 +87,18 @@ class PersonaBuilder:
         for e in entities:
             if e.entity_type != "Character":
                 continue
-            cards.append(await self.build(project_id, e, context))
+            try:
+                cards.append(await self.build(project_id, e, context))
+            except Exception as exc:  # noqa: BLE001
+                # 单个角色卡生成失败（如 LLM 超时）不应中断整个构建，
+                # 用实体已知描述兜底生成最简角色卡。
+                logger.warning("角色「%s」角色卡生成失败，使用兜底：%s", e.name, exc)
+                cards.append(
+                    CharacterCard(
+                        character_id=e.entity_id,
+                        project_id=project_id,
+                        name=e.name,
+                        persona=e.description,
+                    )
+                )
         return cards
