@@ -69,41 +69,43 @@ class GraphManager:
 
     def _add_entity_sync(self, table: str, entity: Entity) -> None:
         # Kuzu 不支持 MERGE，使用「先查后建」方式实现 upsert
-        params = {"id": entity.entity_id, "name": entity.name, "desc": entity.description}
+        # 注意：参数名不可使用 `desc`，它是 Kuzu 的保留关键字（ORDER BY ... DESC），
+        # 会导致解析错误，这里统一使用 `description`。
+        params = {"id": entity.entity_id, "name": entity.name, "description": entity.description}
         if table == "Character":
             check = self._conn.execute("MATCH (n:Character {id: $id}) RETURN n.id", {"id": entity.entity_id})
             if check.has_next():
                 self._conn.execute(
-                    "MATCH (n:Character {id: $id}) SET n.name = $name, n.persona = $desc",
+                    "MATCH (n:Character {id: $id}) SET n.name = $name, n.persona = $description",
                     params,
                 )
             else:
                 self._conn.execute(
-                    "CREATE (n:Character {id: $id, name: $name, persona: $desc})",
+                    "CREATE (n:Character {id: $id, name: $name, persona: $description})",
                     params,
                 )
         elif table == "Event":
             check = self._conn.execute("MATCH (n:Event {id: $id}) RETURN n.id", {"id": entity.entity_id})
             if check.has_next():
                 self._conn.execute(
-                    "MATCH (n:Event {id: $id}) SET n.name = $name, n.description = $desc",
+                    "MATCH (n:Event {id: $id}) SET n.name = $name, n.description = $description",
                     params,
                 )
             else:
                 self._conn.execute(
-                    "CREATE (n:Event {id: $id, name: $name, description: $desc, timestamp_in_story: ''})",
+                    "CREATE (n:Event {id: $id, name: $name, description: $description, timestamp_in_story: ''})",
                     params,
                 )
         else:
             check = self._conn.execute(f"MATCH (n:{table} {{id: $id}}) RETURN n.id", {"id": entity.entity_id})
             if check.has_next():
                 self._conn.execute(
-                    f"MATCH (n:{table} {{id: $id}}) SET n.name = $name, n.description = $desc",
+                    f"MATCH (n:{table} {{id: $id}}) SET n.name = $name, n.description = $description",
                     params,
                 )
             else:
                 self._conn.execute(
-                    f"CREATE (n:{table} {{id: $id, name: $name, description: $desc}})",
+                    f"CREATE (n:{table} {{id: $id, name: $name, description: $description}})",
                     params,
                 )
 
