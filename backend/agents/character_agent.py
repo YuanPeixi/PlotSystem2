@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from backend.agents.base_agent import autogen_available, make_model_client
+from backend.config import settings
 from backend.memory import MemoryManager
 from backend.models import CharacterCard, DialogueTurn, LoreEntry
 from backend.utils.llm import chat_safe
@@ -66,6 +67,7 @@ class CharacterAgent:
         self.card = character_card
         self.memory = memory_manager
         self.temperature = temperature
+        self.model = settings.character_model
 
     @property
     def character_id(self) -> str:
@@ -149,6 +151,7 @@ class CharacterAgent:
                 {"role": "user", "content": user},
             ],
             temperature=self.temperature,
+            model=self.model,
         )
 
     # ---- AutoGen 集成 ----

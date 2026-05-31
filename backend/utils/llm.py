@@ -58,9 +58,14 @@ async def chat(
         raise
 
 
-async def chat_safe(messages: list[dict], *, temperature: float = 0.7) -> str:
+async def chat_safe(
+    messages: list[dict],
+    *,
+    temperature: float = 0.7,
+    model: str | None = None,
+) -> str:
     """带兜底的对话调用：失败时抛出 LLMError 而非原始异常。"""
     try:
-        return await chat(messages, temperature=temperature)
+        return await chat(messages, temperature=temperature, model=model)
     except Exception as exc:  # noqa: BLE001
         raise LLMError(f"LLM 调用最终失败：{exc}") from exc

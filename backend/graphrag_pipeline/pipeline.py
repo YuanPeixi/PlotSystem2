@@ -79,7 +79,14 @@ class GraphRAGPipeline:
             chunks.extend(_chunk_text(t, self.config.chunk_size, self.config.chunk_overlap))
 
         await _report("提取实体与关系", 0.2)
-        entities, relations = await self.extractor.extract_many(chunks)
+
+        async def _chunk_progress(i: int, n: int) -> None:
+            await _report(f"提取实体与关系 ({i + 1}/{n} 块)", 0.2 + 0.3 * i / max(n, 1))
+
+        entities, relations = await self.extractor.extract_many(
+            chunks,
+            progress_callback=_chunk_progress,
+        )
         self._entity_index = {e.entity_id: e for e in entities}
 
         await _report("写入知识图谱", 0.5)

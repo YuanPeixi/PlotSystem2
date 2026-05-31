@@ -24,6 +24,22 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = "sk-placeholder"
     LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     LLM_MODEL_NAME: str = "qwen-plus"
+    # 异构模型：未配置时回退到 LLM_MODEL_NAME
+    LLM_MODEL_DIRECTOR: str = ""   # 导演：长上下文、指令遵循强
+    LLM_MODEL_CHARACTER: str = ""  # 角色：扮演沉浸、创意性强
+    LLM_MODEL_SUMMARY: str = ""    # 总结：写作风格好
+
+    @property
+    def director_model(self) -> str:
+        return self.LLM_MODEL_DIRECTOR or self.LLM_MODEL_NAME
+
+    @property
+    def character_model(self) -> str:
+        return self.LLM_MODEL_CHARACTER or self.LLM_MODEL_NAME
+
+    @property
+    def summary_model(self) -> str:
+        return self.LLM_MODEL_SUMMARY or self.LLM_MODEL_NAME
 
     # --- 后端 ---
     BACKEND_HOST: str = "0.0.0.0"

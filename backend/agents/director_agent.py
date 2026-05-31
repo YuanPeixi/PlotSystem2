@@ -21,6 +21,7 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
 )
+from backend.config import settings
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -97,6 +98,7 @@ class DirectorAgent:
         self.graph = graph_manager
         self.snapshot_manager = snapshot_manager
         self.temperature = temperature
+        self.model = settings.director_model
 
     # ---- 场景规划 ----
     async def plan_scene(
@@ -110,7 +112,7 @@ class DirectorAgent:
             for c in available_characters
         )
         prompt = _PLAN_PROMPT.format(goal=narrative_goal, characters=char_desc)
-        raw = await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature)
+        raw = await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)
         data = _extract_json(raw)
 
         name_to_id = {c.name: c.character_id for c in available_characters}
@@ -137,7 +139,7 @@ class DirectorAgent:
     ) -> SceneEvaluation:
         transcript = self._format_transcript(dialogue_log)
         prompt = _EVAL_PROMPT.format(description=scene.description, transcript=transcript)
-        raw = await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature)
+        raw = await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)
         data = _extract_json(raw)
 
         def _score(key: str) -> float:

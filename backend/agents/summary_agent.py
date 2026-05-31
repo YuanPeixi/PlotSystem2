@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+from backend.config import settings
 from backend.models import DialogueTurn, OutputFormat, Scene
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
@@ -57,6 +58,7 @@ class SummaryAgent:
 
     def __init__(self, temperature: float = 0.7):
         self.temperature = temperature
+        self.model = settings.summary_model
 
     async def generate_synopsis(
         self,
@@ -75,7 +77,7 @@ class SummaryAgent:
         prompt = (
             f"请{style_hint}以下剧情场景的梗概（200字以内）：\n\n{transcript[:8000]}"
         )
-        return await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature)
+        return await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)
 
     async def generate_output(
         self,
@@ -104,4 +106,4 @@ class SummaryAgent:
         prompt = (
             f"{instruction}\n\n以下是原始场景日志：\n\n{transcript[:12000]}"
         )
-        return await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature)
+        return await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)

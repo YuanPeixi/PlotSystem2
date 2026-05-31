@@ -68,70 +68,143 @@ class GraphManager:
         await asyncio.to_thread(self._add_entity_sync, table, entity)
 
     def _add_entity_sync(self, table: str, entity: Entity) -> None:
+        # Kuzu 不支持 MERGE，使用「先查后建」方式实现 upsert
+        params = {"id": entity.entity_id, "name": entity.name, "desc": entity.description}
         if table == "Character":
-            cypher = (
-                "MERGE (n:Character {id: $id}) "
-                "SET n.name = $name, n.persona = $desc"
-            )
+            check = self._conn.execute("MATCH (n:Character {id: $id}) RETURN n.id", {"id": entity.entity_id})
+            if check.has_next():
+                self._conn.execute(
+                    "MATCH (n:Character {id: $id}) SET n.name = $name, n.persona = $desc",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    "CREATE (n:Character {id: $id, name: $name, persona: $desc})",
+                    params,
+                )
         elif table == "Event":
-            cypher = (
-                "MERGE (n:Event {id: $id}) "
-                "SET n.name = $name, n.description = $desc, n.timestamp_in_story = ''"
-            )
+            check = self._conn.execute("MATCH (n:Event {id: $id}) RETURN n.id", {"id": entity.entity_id})
+            if check.has_next():
+                self._conn.execute(
+                    "MATCH (n:Event {id: $id}) SET n.name = $name, n.description = $desc",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    "CREATE (n:Event {id: $id, name: $name, description: $desc, timestamp_in_story: ''})",
+                    params,
+                )
         else:
-            cypher = (
-                f"MERGE (n:{table} {{id: $id}}) "
-                "SET n.name = $name, n.description = $desc"
-            )
-        self._conn.execute(
-            cypher,
-            {"id": entity.entity_id, "name": entity.name, "desc": entity.description},
-        )
+            check = self._conn.execute(f"MATCH (n:{table} {{id: $id}}) RETURN n.id", {"id": entity.entity_id})
+            if check.has_next():
+                self._conn.execute(
+                    f"MATCH (n:{table} {{id: $id}}) SET n.name = $name, n.description = $desc",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    f"CREATE (n:{table} {{id: $id, name: $name, description: $desc}})",
+                    params,
+                )
 
     async def add_relation(self, relation: Relation, *, source_type: str, target_type: str) -> None:
         """插入一条关系（按类型选择关系表）。"""
-        await asyncio.to_thread(self._add_relation_sync, relation, source_type, target_type)
+        try:
+            await asyncio.to_thread(self._add_relation_sync, relation, source_type, target_type)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("跳过无法建立的关系 %s->%s: %s", relation.source_id, relation.target_id, exc)
 
     def _add_relation_sync(self, rel: Relation, source_type: str, target_type: str) -> None:
         st = ENTITY_TYPE_TO_TABLE.get(source_type, "Concept")
         tt = ENTITY_TYPE_TO_TABLE.get(target_type, "Concept")
         # 选择合适的关系表
+        # Kuzu 不支持 MERGE，对关系也用「先查后建」方式
         if st == "Character" and tt == "Character":
-            cypher = (
-                "MATCH (a:Character {id: $s}), (b:Character {id: $t}) "
-                "MERGE (a)-[r:KNOWS]->(b) "
-                "SET r.relation_type = $rt, r.strength = $strength"
-            )
             params = {"s": rel.source_id, "t": rel.target_id, "rt": rel.relation_type, "strength": rel.strength}
+            check = self._conn.execute(
+                "MATCH (a:Character {id: $s})-[r:KNOWS]->(b:Character {id: $t}) RETURN r",
+                {"s": rel.source_id, "t": rel.target_id},
+            )
+            if check.has_next():
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s})-[r:KNOWS]->(b:Character {id: $t}) "
+                    "SET r.relation_type = $rt, r.strength = $strength",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s}), (b:Character {id: $t}) "
+                    "CREATE (a)-[:KNOWS {relation_type: $rt, strength: $strength}]->(b)",
+                    params,
+                )
         elif st == "Character" and tt == "Location":
-            cypher = (
-                "MATCH (a:Character {id: $s}), (b:Location {id: $t}) "
-                "MERGE (a)-[r:LOCATED_AT]->(b) SET r.time_context = $ctx"
-            )
             params = {"s": rel.source_id, "t": rel.target_id, "ctx": rel.description}
+            check = self._conn.execute(
+                "MATCH (a:Character {id: $s})-[r:LOCATED_AT]->(b:Location {id: $t}) RETURN r",
+                {"s": rel.source_id, "t": rel.target_id},
+            )
+            if check.has_next():
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s})-[r:LOCATED_AT]->(b:Location {id: $t}) SET r.time_context = $ctx",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s}), (b:Location {id: $t}) "
+                    "CREATE (a)-[:LOCATED_AT {time_context: $ctx}]->(b)",
+                    params,
+                )
         elif st == "Character" and tt == "Event":
-            cypher = (
-                "MATCH (a:Character {id: $s}), (b:Event {id: $t}) "
-                "MERGE (a)-[r:PARTICIPATED_IN]->(b) SET r.role = $role"
-            )
             params = {"s": rel.source_id, "t": rel.target_id, "role": rel.relation_type}
+            check = self._conn.execute(
+                "MATCH (a:Character {id: $s})-[r:PARTICIPATED_IN]->(b:Event {id: $t}) RETURN r",
+                {"s": rel.source_id, "t": rel.target_id},
+            )
+            if check.has_next():
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s})-[r:PARTICIPATED_IN]->(b:Event {id: $t}) SET r.role = $role",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s}), (b:Event {id: $t}) "
+                    "CREATE (a)-[:PARTICIPATED_IN {role: $role}]->(b)",
+                    params,
+                )
         elif st == "Character" and tt == "Concept":
-            cypher = (
-                "MATCH (a:Character {id: $s}), (b:Concept {id: $t}) "
-                "MERGE (a)-[r:MENTIONED_IN]->(b) SET r.context = $ctx"
-            )
             params = {"s": rel.source_id, "t": rel.target_id, "ctx": rel.description}
-        else:
-            cypher = (
-                "MATCH (a:Concept {id: $s}), (b:Concept {id: $t}) "
-                "MERGE (a)-[r:RELATED_TO]->(b) SET r.relation = $rt"
+            check = self._conn.execute(
+                "MATCH (a:Character {id: $s})-[r:MENTIONED_IN]->(b:Concept {id: $t}) RETURN r",
+                {"s": rel.source_id, "t": rel.target_id},
             )
+            if check.has_next():
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s})-[r:MENTIONED_IN]->(b:Concept {id: $t}) SET r.context = $ctx",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    "MATCH (a:Character {id: $s}), (b:Concept {id: $t}) "
+                    "CREATE (a)-[:MENTIONED_IN {context: $ctx}]->(b)",
+                    params,
+                )
+        else:
             params = {"s": rel.source_id, "t": rel.target_id, "rt": rel.relation_type}
-        try:
-            self._conn.execute(cypher, params)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("跳过无法建立的关系 %s->%s: %s", rel.source_id, rel.target_id, exc)
-
+            check = self._conn.execute(
+                "MATCH (a:Concept {id: $s})-[r:RELATED_TO]->(b:Concept {id: $t}) RETURN r",
+                {"s": rel.source_id, "t": rel.target_id},
+            )
+            if check.has_next():
+                self._conn.execute(
+                    "MATCH (a:Concept {id: $s})-[r:RELATED_TO]->(b:Concept {id: $t}) SET r.relation = $rt",
+                    params,
+                )
+            else:
+                self._conn.execute(
+                    "MATCH (a:Concept {id: $s}), (b:Concept {id: $t}) "
+                    "CREATE (a)-[:RELATED_TO {relation: $rt}]->(b)",
+                    params,
+                )
     # ---- 查询 ----
     async def query(self, cypher: str, params: dict | None = None) -> list[dict]:
         """执行任意 Cypher 查询，返回行字典列表。"""

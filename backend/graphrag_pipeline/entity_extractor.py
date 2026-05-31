@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 
 from backend.models import Entity, Relation, new_id
 from backend.utils.llm import chat_safe
@@ -104,14 +105,19 @@ class EntityExtractor:
         return entities, relations
 
     async def extract_many(
-        self, texts: list[str]
+        self,
+        texts: list[str],
+        progress_callback: Callable[[int, int], Awaitable[None]] | None = None,
     ) -> tuple[list[Entity], list[Relation]]:
         """合并多段文本的抽取结果，按实体名去重。"""
         all_entities: dict[str, Entity] = {}
         all_relations: list[Relation] = []
         id_remap: dict[str, str] = {}
+        total = len(texts)
 
-        for text in texts:
+        for idx, text in enumerate(texts):
+            if progress_callback:
+                await progress_callback(idx, total)
             ents, rels = await self.extract(text)
             for e in ents:
                 if e.name in all_entities:
