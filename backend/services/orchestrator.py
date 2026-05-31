@@ -10,6 +10,7 @@ from backend.graphrag_pipeline import GraphRAGPipeline
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
 from backend.models import (
+    CharacterCard,
     DecisionType,
     DialogueTurn,
     DirectorDecision,
@@ -51,11 +52,25 @@ async def run_graphrag(project_id: str) -> None:
     await repository.save_project(project)
 
     async def _progress(stage: str, pct: float) -> None:
-        _build_status[project_id] = {"stage": stage, "progress": pct}
+        # 保留已有的角色计数等附加字段，仅更新阶段与进度
+        prev = _build_status.get(project_id, {})
+        _build_status[project_id] = {**prev, "stage": stage, "progress": pct}
+
+    async def _on_character(card: CharacterCard, done: int, total: int) -> None:
+        # 角色卡生成后立即持久化，前端轮询即可逐个预览
+        await repository.save_character(card)
+        prev = _build_status.get(project_id, {})
+        _build_status[project_id] = {
+            **prev,
+            "character_done": done,
+            "character_total": total,
+        }
 
     pipeline = GraphRAGPipeline(project_id)
     try:
-        result = await pipeline.run(project.seed_texts, progress=_progress)
+        result = await pipeline.run(
+            project.seed_texts, progress=_progress, on_character=_on_character
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("GraphRAG 处理失败")
         _build_status[project_id] = {"stage": f"失败: {exc}", "progress": 0.0}

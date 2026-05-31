@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 
+from backend.config import settings
 from backend.knowledge_graph import GraphManager
 from backend.models import (
     CharacterCard,
@@ -21,7 +22,6 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
 )
-from backend.config import settings
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 

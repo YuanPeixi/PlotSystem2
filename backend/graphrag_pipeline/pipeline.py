@@ -16,6 +16,7 @@ from backend.utils.logger import get_logger
 logger = get_logger("graphrag.pipeline")
 
 ProgressCallback = Callable[[str, float], Awaitable[None]] | None
+OnCharacterCallback = Callable[[CharacterCard, int, int], Awaitable[None]] | None
 
 
 @dataclass
@@ -64,8 +65,13 @@ class GraphRAGPipeline:
         self,
         seed_text_paths: list[str],
         progress: ProgressCallback = None,
+        on_character: OnCharacterCallback = None,
     ) -> PipelineResult:
-        """主管线入口。"""
+        """主管线入口。
+
+        on_character: 每生成完一个角色卡时回调，参数 (card, done, total)，
+        供上层（orchestrator）实时持久化与前端预览。
+        """
 
         async def _report(stage: str, pct: float) -> None:
             logger.info("[GraphRAG] %s (%.0f%%)", stage, pct * 100)
@@ -92,10 +98,20 @@ class GraphRAGPipeline:
         await _report("写入知识图谱", 0.5)
         await self.build_graph(entities, relations)
 
-        await _report("生成角色卡", 0.7)
+        # 角色卡阶段：先预报目标角色数量，再逐个生成并实时推进进度
+        char_total = sum(1 for e in entities if e.entity_type == "Character")
+        await _report(f"生成角色卡 (0/{char_total})", 0.6)
         full_context = "\n\n".join(texts)[:8000]
+
+        async def _card_progress(card: CharacterCard, done: int, total: int) -> None:
+            # 角色阶段占用进度区间 0.6 → 0.85
+            pct = 0.6 + 0.25 * (done / max(total, 1))
+            await _report(f"生成角色卡 ({done}/{total}) - {card.name}", pct)
+            if on_character:
+                await on_character(card, done, total)
+
         cards = await self.persona_builder.build_many(
-            self.project_id, entities, full_context
+            self.project_id, entities, full_context, on_card=_card_progress
         )
 
         await _report("提取世界规则", 0.9)

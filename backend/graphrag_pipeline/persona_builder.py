@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 
 from backend.models import CharacterCard, Entity
 from backend.utils.llm import chat_safe
@@ -82,23 +83,30 @@ class PersonaBuilder:
         project_id: str,
         entities: list[Entity],
         context: str = "",
+        on_card: Callable[[CharacterCard, int, int], Awaitable[None]] | None = None,
     ) -> list[CharacterCard]:
+        """逐个生成角色卡。
+
+        on_card: 每生成完一个角色卡时回调，参数为 (card, done, total)。
+        用于实时上报进度并让上层逐个持久化（便于前端实时预览）。
+        """
+        characters = [e for e in entities if e.entity_type == "Character"]
+        total = len(characters)
         cards: list[CharacterCard] = []
-        for e in entities:
-            if e.entity_type != "Character":
-                continue
+        for idx, e in enumerate(characters):
             try:
-                cards.append(await self.build(project_id, e, context))
+                card = await self.build(project_id, e, context)
             except Exception as exc:  # noqa: BLE001
                 # 单个角色卡生成失败（如 LLM 超时）不应中断整个构建，
                 # 用实体已知描述兜底生成最简角色卡。
                 logger.warning("角色「%s」角色卡生成失败，使用兜底：%s", e.name, exc)
-                cards.append(
-                    CharacterCard(
-                        character_id=e.entity_id,
-                        project_id=project_id,
-                        name=e.name,
-                        persona=e.description,
-                    )
+                card = CharacterCard(
+                    character_id=e.entity_id,
+                    project_id=project_id,
+                    name=e.name,
+                    persona=e.description,
                 )
+            cards.append(card)
+            if on_card:
+                await on_card(card, idx + 1, total)
         return cards

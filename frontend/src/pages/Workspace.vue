@@ -45,8 +45,14 @@ async function build() {
   if (!store.current) return
   building.value = true
   await store.build(store.current.project_id)
+  let lastCharDone = 0
   pollTimer = window.setInterval(async () => {
     const s = await store.refreshBuildStatus(store.current!.project_id)
+    // 角色卡逐个生成时实时刷新角色列表，便于预览
+    if (s.character_done && s.character_done > lastCharDone) {
+      lastCharDone = s.character_done
+      await charStore.load(store.current!.project_id)
+    }
     if (s.progress >= 1 || s.stage.startsWith('失败')) {
       building.value = false
       window.clearInterval(pollTimer)
@@ -116,6 +122,12 @@ async function build() {
           <div v-if="building || store.buildStatus.progress > 0" class="progress">
             <div class="progress-bar" :style="{ width: store.buildStatus.progress * 100 + '%' }"></div>
             <span class="dim">{{ store.buildStatus.stage }}</span>
+            <span
+              v-if="store.buildStatus.character_total"
+              class="dim char-progress"
+            >
+              角色卡：{{ store.buildStatus.character_done ?? 0 }} / {{ store.buildStatus.character_total }}
+            </span>
           </div>
         </div>
       </section>
@@ -129,14 +141,25 @@ async function build() {
         <GraphViewer :data="store.graph" />
       </section>
       <section class="card">
-        <h3>角色（{{ charStore.characters.length }}）</h3>
+        <h3>
+          角色（{{ charStore.characters.length }}<template
+            v-if="building && store.buildStatus.character_total"
+            > / {{ store.buildStatus.character_total }}</template
+          >）
+        </h3>
         <div class="char-grid">
           <CharacterCardView
             v-for="c in charStore.characters"
             :key="c.character_id"
             :character="c"
           />
-          <div v-if="!charStore.characters.length" class="dim">构建后将自动生成角色。</div>
+          <div
+            v-if="building && store.buildStatus.character_total && charStore.characters.length < store.buildStatus.character_total"
+            class="dim generating"
+          >
+            ⏳ 正在生成角色卡…
+          </div>
+          <div v-else-if="!charStore.characters.length" class="dim">构建后将自动生成角色。</div>
         </div>
       </section>
     </div>
@@ -197,6 +220,17 @@ async function build() {
   background: var(--highlight);
   border-radius: 3px;
   transition: width 0.4s;
+}
+.char-progress {
+  margin-left: 10px;
+}
+.generating {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
 }
 .graph-card {
   height: 480px;

@@ -139,5 +139,7 @@ export interface BuildStatus {
   entity_count?: number
   relation_count?: number
   character_count?: number
+  character_done?: number
+  character_total?: number
   lore_count?: number
 }
