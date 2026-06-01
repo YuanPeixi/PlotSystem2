@@ -56,6 +56,10 @@ export const api = {
     unwrap<SceneConfig>(http.post(`/projects/${id}/scenes/plan`, { branch_id, narrative_goal })),
   createScene: (id: string, payload: Record<string, unknown>) =>
     unwrap<Scene>(http.post(`/projects/${id}/scenes`, payload)),
+  listScenes: (id: string, branchId?: string) =>
+    unwrap<Scene[]>(
+      http.get(`/projects/${id}/scenes`, { params: branchId ? { branch_id: branchId } : {} }),
+    ),
   getScene: (id: string, sid: string) =>
     unwrap<Scene>(http.get(`/projects/${id}/scenes/${sid}`)),
   getSceneById: (sid: string) => unwrap<Scene>(http.get(`/scenes/${sid}`)),

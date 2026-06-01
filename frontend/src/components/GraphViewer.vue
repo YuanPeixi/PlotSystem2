@@ -37,22 +37,49 @@ function render() {
     return
   }
 
+  // 节点数自适应：节点越多，斥力越大、连线越长、画布越大
+  const n = g6data.nodes.length || 1
+  const nodeStrength = -120 - Math.min(n * 8, 600)
+  const linkDistance = 160 + Math.min(n * 4, 240)
+
   graph = new Graph({
     container: container.value,
     autoFit: 'view',
+    autoResize: true,
+    padding: 30,
     data: g6data,
     node: {
       style: {
         size: 36,
-        labelFill: '#e6e6f0',
+        labelFill: '#f0f0fa',
         labelFontSize: 12,
         labelPlacement: 'bottom',
+        labelBackground: true,
+        labelBackgroundFill: 'rgba(15,15,45,0.7)',
+        labelBackgroundRadius: 4,
+        labelPadding: [2, 6],
       },
     },
     edge: {
-      style: { stroke: '#3a3f5e', labelFill: '#9aa0bf', labelFontSize: 10, endArrow: true },
+      style: {
+        stroke: '#3a3f5e',
+        labelFill: '#a4abd0',
+        labelFontSize: 10,
+        endArrow: true,
+      },
     },
-    layout: { type: 'force', preventOverlap: true, nodeStrength: -60, linkDistance: 120 },
+    layout: {
+      type: 'force',
+      preventOverlap: true,
+      nodeSize: 60,
+      nodeSpacing: 30,
+      nodeStrength,
+      linkDistance,
+      edgeStrength: 0.6,
+      collideStrength: 0.95,
+      alpha: 0.9,
+      alphaDecay: 0.02,
+    },
     behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
   })
   graph.render()

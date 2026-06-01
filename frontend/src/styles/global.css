@@ -1,11 +1,14 @@
 :root {
-  --bg: #1a1a2e;
-  --card: #16213e;
-  --accent: #0f3460;
-  --highlight: #e94560;
-  --text: #e6e6f0;
-  --text-dim: #9aa0bf;
-  --border: #2a2e4a;
+  /* 背景：保留原有色相，饱和度显著提升 */
+  --bg: #0f0f2d;          /* 更深更饱和的深蓝紫 */
+  --card: #182663;        /* 卡片背景：饱和度更高的蓝 */
+  --accent: #1d4ed8;      /* 强调色：明亮饱和蓝 */
+  --highlight: #ff2e63;   /* 高亮 / 危险：高饱和粉红 */
+  --warn: #f59e0b;        /* 回滚按钮使用的暖橙警示色 */
+  --warn-strong: #d97706; /* 回滚按钮 hover/active */
+  --text: #f0f0fa;
+  --text-dim: #a4abd0;
+  --border: #2f3a7a;
 }
 
 * {
@@ -63,6 +66,21 @@ button:disabled {
 
 button.danger {
   background: var(--highlight);
+  border-color: var(--highlight);
+}
+
+/* 回滚按钮：使用警示橙，明显区别于"危险红"和默认蓝 */
+button.warn {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #1a1206;
+  font-weight: 600;
+}
+
+button.warn:hover {
+  background: var(--warn-strong);
+  border-color: var(--warn-strong);
+  filter: none;
 }
 
 button.ghost {

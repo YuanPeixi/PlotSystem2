@@ -82,7 +82,7 @@ function confirmRollback() {
     <div class="actions">
       <button @click="decide('continue')">▶ 继续</button>
       <button @click="decide('next_scene')">⏭ 下一场</button>
-      <button class="danger" @click="decide('rollback')">↩ 回滚</button>
+      <button class="warn" @click="decide('rollback')">↩ 回滚</button>
     </div>
 
     <div v-if="showNextScene" class="rollback-box">
@@ -98,7 +98,7 @@ function confirmRollback() {
       <label>新初始条件（JSON 或文本）</label>
       <textarea v-model="rollbackConditions" placeholder='{"tension": "高", "note": "让对话更激烈"}'></textarea>
       <div class="row" style="margin-top: 8px">
-        <button class="danger" @click="confirmRollback">确认回滚</button>
+        <button class="warn" @click="confirmRollback">确认回滚</button>
         <button class="ghost" @click="showRollback = false">取消</button>
       </div>
     </div>
