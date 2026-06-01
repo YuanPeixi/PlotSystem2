@@ -62,7 +62,21 @@ export const useSceneStore = defineStore('scenes', () => {
   }
 
   async function submitDecision(sceneId: string, payload: Record<string, unknown>) {
-    return api.submitDecision(sceneId, payload)
+    const decision = await api.submitDecision(sceneId, payload)
+    // continue / next_scene 决策返回 next_scene_id 时，自动建立对应场景的流
+    const nextId = (decision as Record<string, unknown>)?.next_scene_id as string | undefined
+    if (nextId) {
+      await joinScene(nextId)
+    }
+    return decision
+  }
+
+  /** 加入一个已存在的场景（获取场景元信息 + 启动模拟流） */
+  async function joinScene(sceneId: string) {
+    currentScene.value = await api.getSceneById(sceneId)
+    turns.value = []
+    evaluation.value = null
+    await startSimulation(sceneId)
   }
 
   return {
@@ -74,6 +88,7 @@ export const useSceneStore = defineStore('scenes', () => {
     plan,
     createScene,
     startSimulation,
+    joinScene,
     pause,
     stopStream,
     submitDecision,

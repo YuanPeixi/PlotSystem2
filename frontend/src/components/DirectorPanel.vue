@@ -9,6 +9,8 @@ const emit = defineEmits<{
 
 const rollbackConditions = ref('')
 const showRollback = ref(false)
+const nextSceneGoal = ref('')
+const showNextScene = ref(false)
 
 const scores = computed(() => {
   const e = props.evaluation
@@ -23,10 +25,26 @@ const scores = computed(() => {
 
 function decide(type: string) {
   if (type === 'rollback') {
+    showRollback.value = false
+    showNextScene.value = false
     showRollback.value = true
     return
   }
+  if (type === 'next_scene') {
+    showRollback.value = false
+    showNextScene.value = true
+    return
+  }
   emit('decision', { decision_type: type, extra_turns: type === 'continue' ? 6 : null })
+}
+
+function confirmNextScene() {
+  emit('decision', {
+    decision_type: 'next_scene',
+    next_scene_description: nextSceneGoal.value.trim() || null,
+  })
+  showNextScene.value = false
+  nextSceneGoal.value = ''
 }
 
 function confirmRollback() {
@@ -65,6 +83,15 @@ function confirmRollback() {
       <button @click="decide('continue')">▶ 继续</button>
       <button @click="decide('next_scene')">⏭ 下一场</button>
       <button class="danger" @click="decide('rollback')">↩ 回滚</button>
+    </div>
+
+    <div v-if="showNextScene" class="rollback-box">
+      <label>下一场叙事目标（可不填，导演自动接续）</label>
+      <textarea v-model="nextSceneGoal" placeholder="例：两人在業余中和解，或新冲突将起"></textarea>
+      <div class="row" style="margin-top: 8px">
+        <button @click="confirmNextScene">确认下一场</button>
+        <button class="ghost" @click="showNextScene = false">取消</button>
+      </div>
     </div>
 
     <div v-if="showRollback" class="rollback-box">

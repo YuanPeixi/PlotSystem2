@@ -269,6 +269,7 @@ class DirectorDecision:
     decision_type: str = DecisionType.NEXT_SCENE.value
     extra_turns: int | None = None
     next_scene_config: SceneConfig | None = None
+    next_scene_id: str | None = None          # apply_decision 后填入：新场景或继续场景的 ID
     rollback_to_snapshot_id: str | None = None
     new_initial_conditions: dict | None = None
     rollback_notes: str | None = None
