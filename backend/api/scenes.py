@@ -53,6 +53,13 @@ async def get_scene(project_id: str, scene_id: str) -> ApiResponse:
     return ApiResponse.ok(to_dict(scene))
 
 
+@scene_router.get("/{scene_id}")
+async def get_scene_by_id(scene_id: str) -> ApiResponse:
+    """通过 scene_id 直接获取场景详情（不需要 project_id）。"""
+    scene = await repository.get_scene(scene_id)
+    return ApiResponse.ok(to_dict(scene))
+
+
 @scene_router.post("/{scene_id}/start")
 async def start_scene(scene_id: str, background: BackgroundTasks) -> ApiResponse:
     """开始模拟（后台运行，进度经 SSE 推送）。"""

@@ -58,6 +58,7 @@ export const api = {
     unwrap<Scene>(http.post(`/projects/${id}/scenes`, payload)),
   getScene: (id: string, sid: string) =>
     unwrap<Scene>(http.get(`/projects/${id}/scenes/${sid}`)),
+  getSceneById: (sid: string) => unwrap<Scene>(http.get(`/scenes/${sid}`)),
   startScene: (sid: string) => unwrap<{ status: string }>(http.post(`/scenes/${sid}/start`)),
   pauseScene: (sid: string) => unwrap<{ paused: boolean }>(http.post(`/scenes/${sid}/pause`)),
   sceneLog: (sid: string) => unwrap(http.get(`/scenes/${sid}/log`)),

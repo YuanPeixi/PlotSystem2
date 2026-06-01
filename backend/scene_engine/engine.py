@@ -53,26 +53,32 @@ class SceneEngine:
         self.agents = character_agents
         self.snapshot_manager = snapshot_manager
         self._interrupt = False
+        self._history_transcript: list[str] = []  # continue 时注入的历史
 
     def interrupt(self) -> None:
         """外部请求中断（如导演/暂停）。"""
         self._interrupt = True
+
+    def inject_history(self, history_log: list[DialogueTurn]) -> None:
+        """将历史对话轮次注入引擎，供 continue 续跑时使用。"""
+        self._history_transcript = [self._turn_line(t) for t in history_log]
 
     async def run(self, on_turn: TurnCallback = None) -> SceneResult:
         """场景执行主流程。"""
         if not self.agents:
             raise ValueError("场景至少需要一个角色")
 
-        # 1. 模拟前快照
-        before_states = self._collect_states()
-        snap_before = await self.snapshot_manager.create_snapshot(
-            scene_id=self.scene.scene_id,
-            branch_id=self.scene.branch_id,
-            character_states=before_states,
-            scene_context=self._scene_context(),
-            label=f"before:{self.config.name}",
-        )
-        self.scene.snapshot_id_before = snap_before.snapshot_id
+        # 1. 模拟前快照（continue 时保留原有 snapshot_id_before，不重复打快照）
+        if not self.scene.snapshot_id_before:
+            before_states = self._collect_states()
+            snap_before = await self.snapshot_manager.create_snapshot(
+                scene_id=self.scene.scene_id,
+                branch_id=self.scene.branch_id,
+                character_states=before_states,
+                scene_context=self._scene_context(),
+                label=f"before:{self.config.name}",
+            )
+            self.scene.snapshot_id_before = snap_before.snapshot_id
         self.scene.status = SceneStatus.RUNNING.value
 
         # 2. 连接各角色记忆
@@ -80,12 +86,15 @@ class SceneEngine:
             await agent.memory.connect()
 
         # 3. 对话循环
-        turns: list[DialogueTurn] = []
-        transcript: list[str] = []
-        if self.config.opening_narration:
+        # continue 续跑时先把历史 transcript 放入上下文
+        turns: list[DialogueTurn] = list(self.scene.dialogue_log)  # 保留已有轮次
+        transcript: list[str] = list(self._history_transcript)
+        if not transcript and self.config.opening_narration:
             transcript.append(f"【旁白】{self.config.opening_narration}")
 
-        turn_number = 0
+        # turn_number 从历史轮次末尾续接（continue 时不从 0 开始）
+        turn_number = len(turns)
+        new_turns: list[DialogueTurn] = []  # 本次新增轮次（用于记忆固化）
         terminated_reason = ""
         while True:
             stop, reason = check_termination(
@@ -100,6 +109,7 @@ class SceneEngine:
             turn_number += 1
             turn = self._parse_turn(raw, agent, turn_number)
             turns.append(turn)
+            new_turns.append(turn)
             transcript.append(self._turn_line(turn))
 
             # 实时写入该角色记忆
@@ -118,9 +128,9 @@ class SceneEngine:
             label=f"after:{self.config.name}",
         )
 
-        # 5. 固化记忆
+        # 5. 固化记忆（只固化本次新增轮次，历史轮次在上次结束时已固化）
         for agent in self.agents:
-            await agent.update_state_after_scene(turns)
+            await agent.update_state_after_scene(new_turns)
 
         self.scene.dialogue_log = turns
         self.scene.turns_completed = turn_number
@@ -130,7 +140,7 @@ class SceneEngine:
         return SceneResult(
             scene_id=self.scene.scene_id,
             dialogue_log=turns,
-            snapshot_id_before=snap_before.snapshot_id,
+            snapshot_id_before=self.scene.snapshot_id_before,
             snapshot_id_after=snap_after.snapshot_id,
             turns_completed=turn_number,
             terminated_reason=terminated_reason,

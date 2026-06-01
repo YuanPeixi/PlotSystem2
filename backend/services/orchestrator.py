@@ -128,8 +128,11 @@ async def plan_scene(
     project_id: str, branch_id: str, narrative_goal: str
 ) -> SceneConfig:
     cards = await repository.list_characters(project_id)
+    history = await repository.list_scenes(project_id, branch_id)
+    # 只传已完成的场景作为历史上下文
+    completed = [s for s in history if s.status == SceneStatus.COMPLETED.value]
     director = DirectorAgent(project_id, GraphManager(project_id), SnapshotManager(project_id))
-    return await director.plan_scene(branch_id, narrative_goal, cards)
+    return await director.plan_scene(branch_id, narrative_goal, cards, history_scenes=completed)
 
 
 async def create_scene_from_config(
@@ -157,7 +160,11 @@ async def create_scene_from_config(
 
 
 async def run_scene(scene_id: str) -> None:
-    """后台任务：运行场景并通过事件总线推送进度。"""
+    """后台任务：运行场景并通过事件总线推送进度。
+
+    若场景 dialogue_log 非空（continue 决策续跑），
+    会将历史轮次重新注入引擎的起始 transcript，保证角色上下文连贯。
+    """
     scene = await repository.get_scene(scene_id)
     agents = await build_character_agents(scene.project_id, scene.participating_characters)
 
@@ -172,6 +179,9 @@ async def run_scene(scene_id: str) -> None:
     )
     sm = SnapshotManager(scene.project_id)
     engine = SceneEngine(scene, config, agents, sm)
+    # continue 续跑：注入历史 transcript，让角色知道之前说了什么
+    if scene.dialogue_log:
+        engine.inject_history(scene.dialogue_log)
     _running_engines[scene_id] = engine
 
     await events.publish(scene_id, "status", {"status": "running"})
@@ -181,6 +191,8 @@ async def run_scene(scene_id: str) -> None:
 
     try:
         result = await engine.run(on_turn=_on_turn)
+        # 持久化角色状态变更（情绪/目标/位置）
+        await _persist_character_states(agents)
         await repository.save_scene(scene)
         await events.publish(scene_id, "snapshot", {"snapshot_id": result.snapshot_id_after})
 
@@ -199,6 +211,21 @@ async def run_scene(scene_id: str) -> None:
         await events.publish(scene_id, "error", {"message": str(exc)})
     finally:
         _running_engines.pop(scene_id, None)
+
+
+async def _persist_character_states(agents: list[CharacterAgent]) -> None:
+    """将场景结束后角色的状态（情绪/目标/位置）持久化回角色卡 JSON。"""
+    for agent in agents:
+        try:
+            card = await repository.get_character(agent.card.project_id, agent.character_id)
+            # 同步运行时状态到持久化卡片
+            card.current_emotion = agent.card.current_emotion
+            card.current_goal = agent.card.current_goal
+            card.current_location = agent.card.current_location
+            card.relationships = agent.card.relationships
+            await repository.save_character(card)
+        except Exception:  # noqa: BLE001
+            logger.warning("持久化角色状态失败：%s", agent.character_id)
 
 
 def pause_scene(scene_id: str) -> bool:
@@ -227,10 +254,35 @@ async def apply_decision(
     decision = await director.make_decision(evaluation, human_override)
 
     if decision.decision_type == DecisionType.ROLLBACK.value:
+        # 回滚：恢复到模拟前快照
         target = decision.rollback_to_snapshot_id or scene.snapshot_id_before
         if target:
             sm = SnapshotManager(scene.project_id)
             await sm.restore_snapshot(target)
+
+    elif decision.decision_type == DecisionType.CONTINUE.value:
+        # 继续：在原场景基础上增加轮次并重新模拟
+        extra = decision.extra_turns or 6
+        scene.max_turns = scene.turns_completed + extra
+        scene.status = SceneStatus.PENDING.value
+        await repository.save_scene(scene)
+        # 异步触发，调用方通过事件总线追踪进度
+        import asyncio
+        asyncio.create_task(run_scene(scene_id))
+        decision.next_scene_id = scene_id
+
+    elif decision.decision_type == DecisionType.NEXT_SCENE.value:
+        # 下一场：让导演根据历史自动规划新场景并创建
+        next_desc = getattr(human_override, "next_scene_description", None) if human_override else None
+        goal = next_desc or f"延续上一场（{scene.name}）的剧情走向"
+        config = await plan_scene(scene.project_id, scene.branch_id, goal)
+        new_scene = await create_scene_from_config(scene.project_id, scene.branch_id, config)
+        # 记录父子关系
+        new_scene.parent_scene_id = scene.scene_id
+        await repository.save_scene(new_scene)
+        decision.next_scene_id = new_scene.scene_id
+        logger.info("下一场场景已创建：%s（%s）", new_scene.scene_id, new_scene.name)
+
     return decision
 
 
