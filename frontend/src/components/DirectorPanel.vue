@@ -137,7 +137,7 @@ function confirmRollback() {
 }
 .fill.danger,
 .danger {
-  color: var(--highlight);
+  color: #ffffff;
 }
 .fill.danger {
   background: var(--highlight);

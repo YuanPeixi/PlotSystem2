@@ -3,6 +3,17 @@ import { ref } from 'vue'
 import { api } from '@/api/client'
 import type { BuildStatus, GraphData, Project } from '@/types'
 
+const LAST_PROJECT_KEY = 'plotsystem.lastProjectId'
+
+export function getLastProjectId(): string | null {
+  return localStorage.getItem(LAST_PROJECT_KEY)
+}
+
+function setLastProjectId(id: string | null) {
+  if (id) localStorage.setItem(LAST_PROJECT_KEY, id)
+  else localStorage.removeItem(LAST_PROJECT_KEY)
+}
+
 export const useProjectStore = defineStore('project', () => {
   const projects = ref<Project[]>([])
   const current = ref<Project | null>(null)
@@ -21,10 +32,15 @@ export const useProjectStore = defineStore('project', () => {
 
   async function selectProject(id: string) {
     current.value = await api.getProject(id)
+    setLastProjectId(id)
   }
 
   async function deleteProject(id: string) {
     await api.deleteProject(id)
+    if (current.value?.project_id === id) {
+      current.value = null
+      setLastProjectId(null)
+    }
     await loadProjects()
   }
 
