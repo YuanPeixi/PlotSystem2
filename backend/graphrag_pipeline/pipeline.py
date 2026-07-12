@@ -38,6 +38,21 @@ class PipelineResult:
     relation_count: int = 0
 
 
+# 依次尝试的编码：utf-8 系列优先，其次覆盖国内常见的 GBK/GB18030/Big5，
+# 避免种子文本非 UTF-8 编码时用 errors="ignore" 静默产生乱码（进而污染角色名/世界观）。
+_ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "gb18030", "big5")
+
+
+def _decode_text(raw: bytes, source: str = "") -> str:
+    for enc in _ENCODING_CANDIDATES:
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    logger.warning("无法可靠识别种子文本编码，使用 utf-8 replace 兜底: %s", source)
+    return raw.decode("utf-8", errors="replace")
+
+
 def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
     if len(text) <= size:
         return [text]
@@ -131,7 +146,7 @@ class GraphRAGPipeline:
         for p in paths:
             path = Path(p)
             if path.exists():
-                texts.append(path.read_text(encoding="utf-8", errors="ignore"))
+                texts.append(_decode_text(path.read_bytes(), source=str(path)))
             else:
                 logger.warning("种子文本不存在: %s", p)
         return texts

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useProjectStore } from '@/stores/project'
+import { useProjectStore, getLastProjectId } from '@/stores/project'
 import { useCharacterStore } from '@/stores/characters'
 import GraphViewer from '@/components/GraphViewer.vue'
 import GraphViewer2 from '@/components/GraphViewer2.vue'
@@ -17,8 +17,20 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const building = ref(false)
 const graphViewerVersion = ref<'legacy' | 'focused'>('legacy')
 let pollTimer: number | undefined
+let lastCharDone = 0
 
-onMounted(() => store.loadProjects())
+onMounted(async () => {
+  await store.loadProjects()
+  // 刷新页面后自动恢复上次打开的项目，避免看起来像"进度丢失"
+  const lastId = getLastProjectId()
+  if (lastId && store.projects.some((p) => p.project_id === lastId)) {
+    await open(lastId)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (pollTimer) window.clearInterval(pollTimer)
+})
 
 async function create() {
   if (!newName.value.trim()) return
@@ -29,9 +41,40 @@ async function create() {
 }
 
 async function open(id: string) {
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+    pollTimer = undefined
+  }
   await store.selectProject(id)
   await store.loadGraph(id)
   await charStore.load(id)
+  // 恢复该项目的构建进度；若仍在进行中（未完成也未失败），自动继续轮询
+  const s = await store.refreshBuildStatus(id)
+  lastCharDone = s.character_done ?? 0
+  const inProgress = s.progress > 0 && s.progress < 1 && !s.stage?.startsWith('失败')
+  if (inProgress) {
+    building.value = true
+    startPolling()
+  } else {
+    building.value = false
+  }
+}
+
+function startPolling() {
+  if (!store.current) return
+  pollTimer = window.setInterval(async () => {
+    const s = await store.refreshBuildStatus(store.current!.project_id)
+    // 角色卡逐个生成时实时刷新角色列表，便于预览
+    if (s.character_done && s.character_done > lastCharDone) {
+      lastCharDone = s.character_done
+      await charStore.load(store.current!.project_id)
+    }
+    if (s.progress >= 1 || s.stage.startsWith('失败')) {
+      building.value = false
+      window.clearInterval(pollTimer)
+      await open(store.current!.project_id)
+    }
+  }, 1500)
 }
 
 async function onUpload(e: Event) {
@@ -46,21 +89,9 @@ async function onUpload(e: Event) {
 async function build() {
   if (!store.current) return
   building.value = true
+  lastCharDone = 0
   await store.build(store.current.project_id)
-  let lastCharDone = 0
-  pollTimer = window.setInterval(async () => {
-    const s = await store.refreshBuildStatus(store.current!.project_id)
-    // 角色卡逐个生成时实时刷新角色列表，便于预览
-    if (s.character_done && s.character_done > lastCharDone) {
-      lastCharDone = s.character_done
-      await charStore.load(store.current!.project_id)
-    }
-    if (s.progress >= 1 || s.stage.startsWith('失败')) {
-      building.value = false
-      window.clearInterval(pollTimer)
-      await open(store.current!.project_id)
-    }
-  }, 1500)
+  startPolling()
 }
 </script>
 

@@ -15,6 +15,7 @@ from backend.api import branches, characters, director, graph, output, projects,
 from backend.api.schemas import ApiResponse
 from backend.config import settings
 from backend.exceptions import PlotSystemError
+from backend.services import orchestrator
 from backend.utils.db import init_db
 from backend.utils.logger import get_logger
 
@@ -27,6 +28,8 @@ API_PREFIX = "/api/v1"
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     await init_db()
+    # 清理上次异常退出遗留的"进行中"构建状态，避免前端误判为仍在构建而卡死轮询
+    await orchestrator.reconcile_stale_builds()
     logger.info("PlotSystem 后端启动，数据目录：%s", settings.data_path)
     yield
     logger.info("PlotSystem 后端关闭")
