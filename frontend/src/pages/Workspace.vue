@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useCharacterStore } from '@/stores/characters'
 import GraphViewer from '@/components/GraphViewer.vue'
+import GraphViewer2 from '@/components/GraphViewer2.vue'
 import CharacterCardView from '@/components/CharacterCard.vue'
 
 const router = useRouter()
@@ -14,6 +15,7 @@ const newName = ref('')
 const newDesc = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const building = ref(false)
+const graphViewerVersion = ref<'legacy' | 'focused'>('legacy')
 let pollTimer: number | undefined
 
 onMounted(() => store.loadProjects())
@@ -137,8 +139,24 @@ async function build() {
     <!-- 图谱 + 角色 -->
     <div class="grid bottom" v-if="store.current">
       <section class="card graph-card">
-        <h3>知识图谱</h3>
-        <GraphViewer :data="store.graph" />
+        <div class="graph-heading">
+          <h3>知识图谱</h3>
+          <div class="graph-switch" role="group" aria-label="图谱查看器版本">
+            <button
+              type="button"
+              :class="{ active: graphViewerVersion === 'legacy' }"
+              @click="graphViewerVersion = 'legacy'"
+            >旧版</button>
+<button
+  type="button"
+  :class="{ active: graphViewerVersion === 'focused' }"
+  :aria-pressed="graphViewerVersion === 'focused'"
+  @click="graphViewerVersion = 'focused'"
+>Graph Viewer 2</button>
+          </div>
+        </div>
+        <GraphViewer v-if="graphViewerVersion === 'legacy'" :data="store.graph" />
+        <GraphViewer2 v-else :data="store.graph" />
       </section>
       <section class="card">
         <h3>
@@ -236,6 +254,32 @@ async function build() {
   height: 480px;
   display: flex;
   flex-direction: column;
+}
+.graph-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.graph-switch {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.graph-switch button {
+  border: 0;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.graph-switch button.active {
+  background: var(--accent);
+  color: var(--text);
 }
 .char-grid {
   display: grid;
