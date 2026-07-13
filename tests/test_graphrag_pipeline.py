@@ -23,18 +23,8 @@ def test_extract_json_robust():
 
 
 @pytest.mark.asyncio
-async def test_entity_extraction_parses_entities_and_relations():
-    mock_output = """
-    {
-      "entities": [
-        {"name": "萧无名", "type": "Character", "description": "剑客"},
-        {"name": "客栈", "type": "Location", "description": "雨夜客栈"}
-      ],
-      "relations": [
-        {"source": "萧无名", "target": "客栈", "type": "LOCATED_AT", "description": "在客栈", "strength": 0.8}
-      ]
-    }
-    """
+async def test_entity_extraction_parses_entities_and_relations(fixture_text):
+    mock_output = fixture_text("graphrag", "entity_extraction_response.json")
     extractor = EntityExtractor()
     with patch(
         "backend.graphrag_pipeline.entity_extractor.chat_safe",
@@ -53,20 +43,10 @@ async def test_entity_extraction_parses_entities_and_relations():
 
 
 @pytest.mark.asyncio
-async def test_persona_builder_parses_card():
+async def test_persona_builder_parses_card(fixture_text):
     from backend.models import Entity
 
-    mock_output = """
-    {
-      "persona": "冷峻剑客，背负血仇",
-      "appearance": "黑衣断剑",
-      "speech_style": "简短",
-      "current_emotion": "警惕",
-      "current_goal": "复仇",
-      "known_facts": ["追查仇人"],
-      "unknown_facts": ["仇人就在身边"]
-    }
-    """
+    mock_output = fixture_text("graphrag", "persona_card_response.json")
     builder = PersonaBuilder()
     entity = Entity(entity_id="e1", name="萧无名", entity_type="Character", description="剑客")
     with patch(

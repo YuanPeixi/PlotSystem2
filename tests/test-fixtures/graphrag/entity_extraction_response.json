@@ -1,0 +1,9 @@
+{
+  "entities": [
+    {"name": "萧无名", "type": "Character", "description": "剑客"},
+    {"name": "客栈", "type": "Location", "description": "雨夜客栈"}
+  ],
+  "relations": [
+    {"source": "萧无名", "target": "客栈", "type": "LOCATED_AT", "description": "在客栈", "strength": 0.8}
+  ]
+}
