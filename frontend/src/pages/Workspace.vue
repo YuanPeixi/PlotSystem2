@@ -147,11 +147,12 @@ async function build() {
               :class="{ active: graphViewerVersion === 'legacy' }"
               @click="graphViewerVersion = 'legacy'"
             >旧版</button>
-            <button
-              type="button"
-              :class="{ active: graphViewerVersion === 'focused' }"
-              @click="graphViewerVersion = 'focused'"
-            >Graph Viewer 2</button>
+<button
+  type="button"
+  :class="{ active: graphViewerVersion === 'focused' }"
+  :aria-pressed="graphViewerVersion === 'focused'"
+  @click="graphViewerVersion = 'focused'"
+>Graph Viewer 2</button>
           </div>
         </div>
         <GraphViewer v-if="graphViewerVersion === 'legacy'" :data="store.graph" />
