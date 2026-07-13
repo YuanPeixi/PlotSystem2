@@ -5,6 +5,7 @@ __pycache__/
 .eggs/
 build/
 dist/
+*.tsbuildinfo
 .venv/
 venv/
 .pytest_cache/
@@ -15,11 +16,14 @@ venv/
 
 # Data (runtime)
 data/
+mvp_seed_*.txt
 
 # Node
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
 # IDE / OS
 .vscode/
