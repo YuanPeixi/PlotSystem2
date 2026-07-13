@@ -1,0 +1,9 @@
+{
+  "persona": "冷峻剑客，背负血仇",
+  "appearance": "黑衣断剑",
+  "speech_style": "简短",
+  "current_emotion": "警惕",
+  "current_goal": "复仇",
+  "known_facts": ["追查仇人"],
+  "unknown_facts": ["仇人就在身边"]
+}
