@@ -264,7 +264,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="graph-viewer2">
     <div class="toolbar">
-      <input v-model="searchQuery" class="search" type="search" placeholder="搜索节点名称" />
+<input v-model="searchQuery" class="search" type="search" placeholder="搜索节点名称" aria-label="搜索节点名称" />
       <select v-model="selectedType" aria-label="节点类型">
         <option value="all">全部节点类型</option>
         <option v-for="type in typeOptions" :key="type" :value="type">{{ typeLabel(type) }}</option>
