@@ -195,7 +195,18 @@ async function render() {
       iterations: 800,
       animation: false,
     },
-    behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element-force'],
+    behaviors: [
+      'drag-canvas',
+      'zoom-canvas',
+      {
+        type: 'drag-element',
+        animation: false,
+        cursor: {
+          grab: 'grab',
+          grabbing: 'grabbing',
+        },
+      },
+    ],
   })
 
   graph.on('node:click', (event: any) => {
