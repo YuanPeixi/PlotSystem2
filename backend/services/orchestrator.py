@@ -385,7 +385,11 @@ async def apply_decision(
                 initial_conditions=new_conditions,
                 max_turns=scene.max_turns,
                 status=SceneStatus.PENDING.value,
-                snapshot_id_before=target,
+                # 注意：此处不能填 target。SceneEngine.run() 只有在
+                # scene.snapshot_id_before 为空时才会创建模拟前快照，
+                # 若直接写入 target 会导致重演场景跳过快照创建，
+                # 无法反映 new_initial_conditions 恢复后的最新状态。
+                snapshot_id_before="",
             )
             await repository.save_scene(new_scene)
             decision.next_scene_id = new_scene.scene_id

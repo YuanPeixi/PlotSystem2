@@ -98,6 +98,10 @@ async def test_rollback_updates_character_and_creates_new_scene():
     assert new_scene.initial_conditions == {"weather": "storm", "tension": "high"}
     assert new_scene.participating_characters == [character_id]
     assert new_scene.status == "pending"
+    # 新场景不应携带 snapshot_id_before，否则 SceneEngine.run() 会跳过
+    # 自己的模拟前快照创建，导致重演场景无法反映 new_initial_conditions
+    # 恢复后的最新状态（工单 01 回归项）。
+    assert new_scene.snapshot_id_before == ""
 
     # 3. 角色卡应被写回快照中的状态（而不是回滚前的最新状态）
     card = await repository.get_character(project_id, character_id)
