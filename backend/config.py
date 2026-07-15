@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # --- GraphRAG ---
     GRAPHRAG_LLM_MODEL: str = "qwen-plus"
     GRAPHRAG_EMBEDDING_MODEL: str = "text-embedding-v3"
+    # 长期记忆 Embedding 的服务商，留空则复用 LLM_API_KEY / LLM_BASE_URL
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""
 
     # --- 场景引擎 ---
     DEFAULT_MAX_TURNS: int = 20
