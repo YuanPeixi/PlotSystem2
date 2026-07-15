@@ -11,7 +11,7 @@
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
 | [01](./01-rollback-fix.md) | 修复导演回滚（rollback）决策断点 | P0 | 无 | ✅ 已修复（分支 `fix/rollback-build-status`） |
-| [02](./02-embedding-remote.md) | 长期记忆接入远程 Embedding（替代本地降级） | P0 | 无 | 待处理 |
+| [02](./02-embedding-remote.md) | 长期记忆接入远程 Embedding（替代本地降级） | P0 | 无 | 🔍 审核中（PR #4） |
 | [03](./03-branch-switch-frontend.md) | 修复前端分支切换无联动问题 | P1 | 无 | 待处理 |
 | [04](./04-director-context.md) | 补全导演评估上下文 + 实现 query_character_state | P1 | 无 | 待处理 |
 | [05](./05-character-inspector.md) | 新增角色 Inspect（导演视角详情）前端入口 | P1 | 无（建议在 04 之后做，可复用 query_character_state）；"环境变量/角色详情可编辑"部分与 13 联动 | 待处理 |
@@ -19,7 +19,7 @@
 | [07](./07-world-state.md) | 新增动态世界变量（WorldState）模型与流程 | P2 | 建议了解 01（快照需纳入 WorldState） | 待处理 |
 | [08](./08-fork-branch-conditions.md) | fork_branch / new_initial_conditions 生效 | P2 | 依赖 01（复用其"由决策创建新场景"的模式） | 待处理 |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（分层加权 / 中文分词降级） | P3 | 建议在 02 完成后做 | 待处理 |
-| [10](./10-scene-start-idempotency.md) | 修复重复点击"开始模拟"导致场景并发分叉运行 | P1 | 无 | 处理中 |
+| [10](./10-scene-start-idempotency.md) | 修复重复点击"开始模拟"导致场景并发分叉运行 | P1 | 无 | ✅ 已修复（PR #3） |
 | [11](./11-selector-and-world-interaction.md) | 完善 Selector 发言模式 + 动作/环境交互处理 | P2 | 建议先做 07，可联动 06 | 待处理 |
 | [12](./12-auto-pilot-director.md) | 新增 Auto Pilot（自动执行导演决策） | P2 | 建议先做 13（决策接口幂等） | 待处理 |
 | [13](./13-decision-idempotency-and-scope.md) | 场景决策接口缺少幂等保护 + "下一场"可编辑范围过窄 | P1 | 建议了解 01、10 | 待处理 |
