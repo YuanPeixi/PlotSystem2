@@ -20,6 +20,7 @@
 | [08](./08-fork-branch-conditions.md) | fork_branch / new_initial_conditions 生效 | P2 | 依赖 01（复用其"由决策创建新场景"的模式） | 待处理 |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（分层加权 / 中文分词降级） | P3 | 建议在 02 完成后做 | 待处理 |
 | [10](./10-scene-start-idempotency.md) | 修复重复点击"开始模拟"导致场景并发分叉运行 | P1 | 无 | 处理中 |
+| [11](./11-selector-and-world-interaction.md) | 完善 Selector 发言模式 + 动作/环境交互处理 | P2 | 建议先做 07，可联动 06 | 待处理 |
 
 ## 项目背景速览（给不熟悉本项目的 session）
 

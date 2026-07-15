@@ -155,6 +155,10 @@ class CharacterAgent:
         )
 
     # ---- AutoGen 集成 ----
+    # ⚠️ 未接入实际场景流程：SceneEngine（backend/scene_engine/engine.py）目前调用的是
+    # respond()（直连 chat_safe），不会调用本方法。这里保留是为未来可能的
+    # AutoGen GroupChat + 工具调用式环境交互预留（见 docs/fix-tickets/11-selector-and-world-interaction.md）。
+    # 后来者接入前请重新验证这条路径，不要假设它已经过端到端测试。
     def get_autogen_agent(self, scene_context: dict):
         """返回配置好的 AutoGen AssistantAgent 实例（若可用）。"""
         if not autogen_available():
@@ -163,7 +167,7 @@ class CharacterAgent:
 
         return AssistantAgent(
             name=self._safe_agent_name(),
-            model_client=make_model_client(self.temperature),
+            model_client=make_model_client(self.temperature, model=self.model),
             system_message=self.build_system_prompt(scene_context),
         )
 
