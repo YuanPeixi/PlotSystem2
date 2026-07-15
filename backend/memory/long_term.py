@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 
 from backend.config import settings
+from backend.memory.embeddings import RemoteEmbeddingFunction
 from backend.models import MemoryChunk, new_id
 from backend.utils.logger import get_logger
 
@@ -54,7 +55,10 @@ class LongTermMemory:
                 path=str(self.db_dir),
                 settings=ChromaSettings(anonymized_telemetry=False, allow_reset=True),
             )
-            self._collection = self._client.get_or_create_collection(self.collection_name)
+            self._collection = self._client.get_or_create_collection(
+                self.collection_name,
+                embedding_function=RemoteEmbeddingFunction(),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("ChromaDB 初始化失败，使用降级模式：%s", exc)
             self._client = None
@@ -69,7 +73,9 @@ class LongTermMemory:
 
     def _add_sync(self, text: str, meta: dict) -> None:
         try:
-            self._collection.add(documents=[text], metadatas=[meta], ids=[new_id()])
+            # chromadb 校验 metadata 不允许空 dict，兜底填充一个占位字段
+            safe_meta = meta or {"source": "unknown"}
+            self._collection.add(documents=[text], metadatas=[safe_meta], ids=[new_id()])
         except Exception as exc:  # noqa: BLE001
             logger.warning("写入 ChromaDB 失败，转入降级：%s", exc)
             self._collection = None
