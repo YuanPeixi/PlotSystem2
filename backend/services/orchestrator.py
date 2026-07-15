@@ -38,6 +38,16 @@ logger = get_logger("orchestrator")
 # 运行中的场景引擎注册表（支持暂停/中断）
 _running_engines: dict[str, SceneEngine] = {}
 
+# 正在运行的场景 id 集合，用于防止重复点击"开始模拟"导致同一场景被并发启动多次
+# （两个 SceneEngine 并发跑会产生交错/重复的对话轮次，并互相覆盖角色状态持久化结果）。
+# 注意：检查与写入必须在同一段没有 await 的同步代码里完成，依赖单线程事件循环保证原子性。
+_active_scenes: set[str] = set()
+
+
+def is_scene_active(scene_id: str) -> bool:
+    """查询场景是否已在运行中（供 API 层做前置检查，给出更及时的响应）。"""
+    return scene_id in _active_scenes
+
 
 # ---------------------------------------------------------------------------
 # GraphRAG 构建
@@ -242,6 +252,12 @@ async def run_scene(scene_id: str) -> None:
     若场景 dialogue_log 非空（continue 决策续跑），
     会将历史轮次重新注入引擎的起始 transcript，保证角色上下文连贯。
     """
+    # 并发/重复启动守卫：检查与写入之间没有 await，避免同一场景被两个后台任务同时跑
+    if scene_id in _active_scenes:
+        logger.warning("场景 %s 已在运行中，忽略重复启动请求", scene_id)
+        return
+    _active_scenes.add(scene_id)
+
     scene = await repository.get_scene(scene_id)
     agents = await build_character_agents(scene.project_id, scene.participating_characters)
 
@@ -288,6 +304,7 @@ async def run_scene(scene_id: str) -> None:
         await events.publish(scene_id, "error", {"message": str(exc)})
     finally:
         _running_engines.pop(scene_id, None)
+        _active_scenes.discard(scene_id)
 
 
 async def _persist_character_states(agents: list[CharacterAgent]) -> None:
