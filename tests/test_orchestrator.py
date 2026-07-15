@@ -7,6 +7,8 @@ new_initial_conditions 一致。
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from backend.models import (
@@ -16,6 +18,8 @@ from backend.models import (
     Project,
     RelationshipState,
     Scene,
+    SceneEvaluation,
+    SceneResult,
 )
 from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
@@ -122,3 +126,70 @@ async def test_rollback_without_snapshot_target_is_noop_but_safe():
     decision = await orchestrator.apply_decision(scene.scene_id, override)
 
     assert decision.next_scene_id is None
+
+
+@pytest.mark.asyncio
+async def test_run_scene_rejects_concurrent_duplicate_start(monkeypatch):
+    """工单 10：同一场景被并发/重复触发 start 时，只应真正执行一次模拟。"""
+    project_id = "proj-concurrent-test"
+    character_id = "char-concurrent-test"
+    await repository.save_project(Project(project_id=project_id, name="并发测试项目"))
+    await repository.save_character(
+        CharacterCard(character_id=character_id, project_id=project_id, name="测试角色")
+    )
+    scene = Scene(
+        scene_id="scene-concurrent-test",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="并发测试场景",
+        participating_characters=[character_id],
+        max_turns=2,
+    )
+    await repository.save_scene(scene)
+
+    call_count = {"agents": 0, "engine_run": 0}
+
+    async def fake_build_agents(pid, cids):
+        call_count["agents"] += 1
+        # 制造并发窗口：让第二次调用有机会在第一次完成前发起
+        await asyncio.sleep(0.05)
+        return []
+
+    class FakeEngine:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def inject_history(self, *args, **kwargs):
+            pass
+
+        async def run(self, on_turn=None):
+            call_count["engine_run"] += 1
+            await asyncio.sleep(0.05)
+            return SceneResult(
+                scene_id=scene.scene_id,
+                dialogue_log=[],
+                snapshot_id_before="",
+                snapshot_id_after="snap-fake",
+                turns_completed=0,
+                terminated_reason="max_turns",
+            )
+
+    class FakeDirector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def evaluate_scene(self, *args, **kwargs):
+            return SceneEvaluation(scene_id=scene.scene_id)
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
+    monkeypatch.setattr(orchestrator, "SceneEngine", FakeEngine)
+    monkeypatch.setattr(orchestrator, "DirectorAgent", FakeDirector)
+
+    await asyncio.gather(
+        orchestrator.run_scene(scene.scene_id),
+        orchestrator.run_scene(scene.scene_id),
+    )
+
+    assert call_count["agents"] == 1
+    assert call_count["engine_run"] == 1
+    assert orchestrator.is_scene_active(scene.scene_id) is False

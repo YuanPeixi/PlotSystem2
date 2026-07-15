@@ -3,6 +3,7 @@
 **优先级**：P0
 **预估改动范围**：中（1 个核心文件为主，2 个辅助文件）
 **依赖**：无
+**状态**：✅ 已修复（分支 `fix/rollback-build-status`，commit `3fd0d1f`，见 `backend/services/orchestrator.py` 的 `apply_decision`/`_apply_character_states` 及 `tests/test_orchestrator.py`）
 
 ---
 

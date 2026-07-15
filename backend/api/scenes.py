@@ -64,6 +64,11 @@ async def get_scene_by_id(scene_id: str) -> ApiResponse:
 async def start_scene(scene_id: str, background: BackgroundTasks) -> ApiResponse:
     """开始模拟（后台运行，进度经 SSE 推送）。"""
     await repository.get_scene(scene_id)  # 校验存在
+    # 前置检查：若场景已在运行，直接告知前端，避免误以为又启动了一次新模拟。
+    # 真正的并发安全保证在 orchestrator.run_scene 内部的原子检查，这里只是让重复点击
+    # 在常见场景下能拿到更及时的响应。
+    if orchestrator.is_scene_active(scene_id):
+        return ApiResponse.ok({"status": "already_running"})
     background.add_task(orchestrator.run_scene, scene_id)
     return ApiResponse.ok({"status": "started"})
 
