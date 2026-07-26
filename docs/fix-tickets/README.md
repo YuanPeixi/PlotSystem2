@@ -22,7 +22,7 @@
 | [10](./10-scene-start-idempotency.md) | 修复重复点击"开始模拟"导致场景并发分叉运行 | P1 | 无 | ✅ 已修复（PR #3） |
 | [11](./11-selector-and-world-interaction.md) | 完善 Selector 发言模式 + 动作/环境交互处理 | P2 | 建议先做 07，可联动 06 | 待处理 |
 | [12](./12-auto-pilot-director.md) | 新增 Auto Pilot（自动执行导演决策） | P2 | 建议先做 13（决策接口幂等） | 待处理 |
-| [13](./13-decision-idempotency-and-scope.md) | 场景决策接口缺少幂等保护 + "下一场"可编辑范围过窄 | P1 | 建议了解 01、10 | 待处理 |
+| [13](./13-decision-idempotency-and-scope.md) | 场景决策接口缺少幂等保护 + "下一场"可编辑范围过窄 | P1 | 建议了解 01、10 | 🔍 审核中（分支 `fix/decision-idempotency-and-scope`） |
 | [14](./14-continuity-memory-context.md) | 场景续跑/回滚后运行时记忆丢失 + 角色上下文窗口固定截断 | P1 | 建议了解 02、09 | 待处理 |
 
 ## 项目背景速览（给不熟悉本项目的 session）
