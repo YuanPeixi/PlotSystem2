@@ -9,6 +9,7 @@ export const useSceneStore = defineStore('scenes', () => {
   const evaluation = ref<SceneEvaluation | null>(null)
   const running = ref(false)
   const statusMsg = ref('')
+  const decisionPending = ref(false)
   let es: EventSource | null = null
 
   async function plan(projectId: string, branchId: string, goal: string): Promise<SceneConfig> {
@@ -62,13 +63,21 @@ export const useSceneStore = defineStore('scenes', () => {
   }
 
   async function submitDecision(sceneId: string, payload: Record<string, unknown>) {
-    const decision = await api.submitDecision(sceneId, payload)
-    // continue / next_scene 决策返回 next_scene_id 时，自动建立对应场景的流
-    const nextId = (decision as Record<string, unknown>)?.next_scene_id as string | undefined
-    if (nextId) {
-      await joinScene(nextId)
+    // UI 层辅助防护：请求处理期间禁用决策按钮，避免快速连点重复提交
+    // （真正的并发安全保证在后端 apply_decision 的 _deciding_scenes 守卫，见工单13）。
+    if (decisionPending.value) return
+    decisionPending.value = true
+    try {
+      const decision = await api.submitDecision(sceneId, payload)
+      // continue / next_scene 决策返回 next_scene_id 时，自动建立对应场景的流
+      const nextId = (decision as Record<string, unknown>)?.next_scene_id as string | undefined
+      if (nextId) {
+        await joinScene(nextId)
+      }
+      return decision
+    } finally {
+      decisionPending.value = false
     }
-    return decision
   }
 
   /** 加入一个已存在的场景（获取场景元信息 + 启动模拟流） */
@@ -85,6 +94,7 @@ export const useSceneStore = defineStore('scenes', () => {
     evaluation,
     running,
     statusMsg,
+    decisionPending,
     plan,
     createScene,
     startSimulation,

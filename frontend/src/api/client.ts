@@ -16,11 +16,22 @@ const API_BASE = '/api/v1'
 const http = axios.create({ baseURL: API_BASE, timeout: 600000 })
 
 async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T> {
-  const resp = await promise
-  if (!resp.data.success) {
-    throw new Error(resp.data.error || '请求失败')
+  try {
+    const resp = await promise
+    if (!resp.data.success) {
+      throw new Error(resp.data.error || '请求失败')
+    }
+    return resp.data.data
+  } catch (err) {
+    // 后端业务异常（如 409 决策冲突、404 未找到）会带上 ApiResponse.fail 格式的
+    // 错误信息，但因状态码非 2xx，axios 会直接 reject，需要在这里转换为普通 Error
+    // 并透传服务端的中文错误描述，供调用方 catch 后展示给用户。
+    if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object') {
+      const data = err.response.data as ApiResponse<unknown>
+      if (data.error) throw new Error(data.error)
+    }
+    throw err
   }
-  return resp.data.data
 }
 
 export const api = {

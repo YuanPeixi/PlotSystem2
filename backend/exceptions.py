@@ -31,6 +31,12 @@ class SceneEngineError(PlotSystemError):
     pass
 
 
+class ConflictError(PlotSystemError):
+    """请求与当前系统状态冲突（如同一场景的决策正在处理中，重复提交）。"""
+
+    pass
+
+
 class GraphRAGError(PlotSystemError):
     pass
 

@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { SceneEvaluation } from '@/types'
+import type { CharacterCard, SceneEvaluation } from '@/types'
 
-const props = defineProps<{ evaluation: SceneEvaluation | null; sceneId: string }>()
+const props = defineProps<{
+  evaluation: SceneEvaluation | null
+  sceneId: string
+  characters?: CharacterCard[]
+  pending?: boolean
+}>()
 const emit = defineEmits<{
   (e: 'decision', payload: Record<string, unknown>): void
 }>()
@@ -11,6 +16,10 @@ const rollbackConditions = ref('')
 const showRollback = ref(false)
 const nextSceneGoal = ref('')
 const showNextScene = ref(false)
+// “下一场”人工可编辑覆盖项（均留空/不选时保持 AI 自动规划的结果，工单13）
+const nextChars = ref<string[]>([])
+const nextLocation = ref('')
+const nextConditions = ref('')
 
 const scores = computed(() => {
   const e = props.evaluation
@@ -24,6 +33,7 @@ const scores = computed(() => {
 })
 
 function decide(type: string) {
+  if (props.pending) return
   if (type === 'rollback') {
     showRollback.value = false
     showNextScene.value = false
@@ -39,12 +49,26 @@ function decide(type: string) {
 }
 
 function confirmNextScene() {
+  let conditions: Record<string, unknown> | null = null
+  if (nextConditions.value.trim()) {
+    try {
+      conditions = JSON.parse(nextConditions.value)
+    } catch {
+      conditions = { note: nextConditions.value }
+    }
+  }
   emit('decision', {
     decision_type: 'next_scene',
     next_scene_description: nextSceneGoal.value.trim() || null,
+    next_participating_characters: nextChars.value.length ? nextChars.value : null,
+    next_location: nextLocation.value.trim() || null,
+    next_initial_conditions: conditions,
   })
   showNextScene.value = false
   nextSceneGoal.value = ''
+  nextChars.value = []
+  nextLocation.value = ''
+  nextConditions.value = ''
 }
 
 function confirmRollback() {
@@ -80,16 +104,30 @@ function confirmRollback() {
     </template>
 
     <div class="actions">
-      <button @click="decide('continue')">▶ 继续</button>
-      <button @click="decide('next_scene')">⏭ 下一场</button>
-      <button class="danger" @click="decide('rollback')">↩ 回滚</button>
+      <button :disabled="pending" @click="decide('continue')">▶ 继续</button>
+      <button :disabled="pending" @click="decide('next_scene')">⏭ 下一场</button>
+      <button class="danger" :disabled="pending" @click="decide('rollback')">↩ 回滚</button>
+    </div>
+    <div v-if="pending" class="dim" style="margin-top: 8px; font-size: 12px">
+      决策正在处理中，请勿重复提交...
     </div>
 
     <div v-if="showNextScene" class="rollback-box">
       <label>下一场叙事目标（可不填，导演自动接续）</label>
       <textarea v-model="nextSceneGoal" placeholder="例：两人在業余中和解，或新冲突将起"></textarea>
+      <label style="margin-top: 8px">参与角色（不选则由导演自动决定）</label>
+      <div class="char-pills">
+        <label v-for="c in characters || []" :key="c.character_id" class="check-pill">
+          <input type="checkbox" :value="c.character_id" v-model="nextChars" />
+          {{ c.name }}
+        </label>
+      </div>
+      <label style="margin-top: 8px">地点（留空则由导演自动决定）</label>
+      <input v-model="nextLocation" placeholder="例：雨夜的酒馆" />
+      <label style="margin-top: 8px">初始条件/环境变量（JSON，留空则由导演自动决定）</label>
+      <textarea v-model="nextConditions" placeholder='{"weather": "storm"}'></textarea>
       <div class="row" style="margin-top: 8px">
-        <button @click="confirmNextScene">确认下一场</button>
+        <button :disabled="pending" @click="confirmNextScene">确认下一场</button>
         <button class="ghost" @click="showNextScene = false">取消</button>
       </div>
     </div>
@@ -98,7 +136,7 @@ function confirmRollback() {
       <label>新初始条件（JSON 或文本）</label>
       <textarea v-model="rollbackConditions" placeholder='{"tension": "高", "note": "让对话更激烈"}'></textarea>
       <div class="row" style="margin-top: 8px">
-        <button class="danger" @click="confirmRollback">确认回滚</button>
+        <button class="danger" :disabled="pending" @click="confirmRollback">确认回滚</button>
         <button class="ghost" @click="showRollback = false">取消</button>
       </div>
     </div>
@@ -153,5 +191,24 @@ function confirmRollback() {
 }
 .rollback-box {
   margin-top: 14px;
+}
+.rollback-box label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.char-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.check-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 2px 8px;
 }
 </style>

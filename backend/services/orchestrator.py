@@ -10,6 +10,7 @@ from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
 from backend.config import settings
+from backend.exceptions import ConflictError
 from backend.graphrag_pipeline import GraphRAGPipeline
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
@@ -43,10 +44,21 @@ _running_engines: dict[str, SceneEngine] = {}
 # 注意：检查与写入必须在同一段没有 await 的同步代码里完成，依赖单线程事件循环保证原子性。
 _active_scenes: set[str] = set()
 
+# 正在处理决策（next_scene / rollback）的场景 id 集合，防止同一场景的决策请求
+# 被并发/重复提交，从而创建出多个"同父"的新场景（隐性分叉）。与 _active_scenes
+# 语义不同（后者是"场景模拟正在运行"），此处是"该场景的决策正在被处理"。
+# 同样依赖检查与写入之间没有 await，保证原子性。
+_deciding_scenes: set[str] = set()
+
 
 def is_scene_active(scene_id: str) -> bool:
     """查询场景是否已在运行中（供 API 层做前置检查，给出更及时的响应）。"""
     return scene_id in _active_scenes
+
+
+def is_scene_deciding(scene_id: str) -> bool:
+    """查询场景的决策是否正在处理中（供 API 层做前置检查）。"""
+    return scene_id in _deciding_scenes
 
 
 # ---------------------------------------------------------------------------
@@ -354,78 +366,93 @@ def pause_scene(scene_id: str) -> bool:
 async def apply_decision(
     scene_id: str, human_override: DirectorDecision | None
 ) -> DirectorDecision:
-    scene = await repository.get_scene(scene_id)
-    evaluation = await repository.get_evaluation(scene_id)
-    if evaluation is None:
-        evaluation = SceneEvaluation(scene_id=scene_id)
-    director = DirectorAgent(
-        scene.project_id, GraphManager(scene.project_id), SnapshotManager(scene.project_id)
-    )
-    decision = await director.make_decision(evaluation, human_override)
+    # 并发/重复提交守卫：检查与写入之间没有 await，避免同一场景的决策被并发处理
+    # 两次，从而创建出两个"同父"的新场景（隐性分叉），详见工单13。
+    if scene_id in _deciding_scenes:
+        logger.warning("场景 %s 的决策正在处理中，忽略重复提交", scene_id)
+        raise ConflictError(f"场景 {scene_id} 的决策正在处理中，请勿重复提交")
+    _deciding_scenes.add(scene_id)
+    try:
+        scene = await repository.get_scene(scene_id)
+        evaluation = await repository.get_evaluation(scene_id)
+        if evaluation is None:
+            evaluation = SceneEvaluation(scene_id=scene_id)
+        director = DirectorAgent(
+            scene.project_id, GraphManager(scene.project_id), SnapshotManager(scene.project_id)
+        )
+        decision = await director.make_decision(evaluation, human_override)
 
-    if decision.decision_type == DecisionType.ROLLBACK.value:
-        # 回滚：恢复到模拟前快照，并创建一个新场景重演
-        target = decision.rollback_to_snapshot_id or scene.snapshot_id_before
-        if target:
-            sm = SnapshotManager(scene.project_id)
-            restored_states = await sm.restore_snapshot(target)
-            # 将恢复的角色状态写回角色卡，保证 API/前端读到的与图谱/记忆一致
-            await _apply_character_states(scene.project_id, restored_states)
+        if decision.decision_type == DecisionType.ROLLBACK.value:
+            # 回滚：恢复到模拟前快照，并创建一个新场景重演
+            target = decision.rollback_to_snapshot_id or scene.snapshot_id_before
+            if target:
+                sm = SnapshotManager(scene.project_id)
+                restored_states = await sm.restore_snapshot(target)
+                # 将恢复的角色状态写回角色卡，保证 API/前端读到的与图谱/记忆一致
+                await _apply_character_states(scene.project_id, restored_states)
 
-            new_conditions = decision.new_initial_conditions or scene.initial_conditions
-            new_scene = Scene(
-                scene_id=new_id(),
-                project_id=scene.project_id,
-                branch_id=scene.branch_id,
-                parent_scene_id=scene.scene_id,
-                name=f"{scene.name}（回滚重演）",
-                description=scene.description,
-                participating_characters=list(scene.participating_characters),
-                location=scene.location,
-                initial_conditions=new_conditions,
-                max_turns=scene.max_turns,
-                status=SceneStatus.PENDING.value,
-                # 注意：此处不能填 target。SceneEngine.run() 只有在
-                # scene.snapshot_id_before 为空时才会创建模拟前快照，
-                # 若直接写入 target 会导致重演场景跳过快照创建，
-                # 无法反映 new_initial_conditions 恢复后的最新状态。
-                snapshot_id_before="",
-            )
+                new_conditions = decision.new_initial_conditions or scene.initial_conditions
+                new_scene = Scene(
+                    scene_id=new_id(),
+                    project_id=scene.project_id,
+                    branch_id=scene.branch_id,
+                    parent_scene_id=scene.scene_id,
+                    name=f"{scene.name}（回滚重演）",
+                    description=scene.description,
+                    participating_characters=list(scene.participating_characters),
+                    location=scene.location,
+                    initial_conditions=new_conditions,
+                    max_turns=scene.max_turns,
+                    status=SceneStatus.PENDING.value,
+                    # 注意：此处不能填 target。SceneEngine.run() 只有在
+                    # scene.snapshot_id_before 为空时才会创建模拟前快照，
+                    # 若直接写入 target 会导致重演场景跳过快照创建，
+                    # 无法反映 new_initial_conditions 恢复后的最新状态。
+                    snapshot_id_before="",
+                )
+                await repository.save_scene(new_scene)
+                decision.next_scene_id = new_scene.scene_id
+                logger.info(
+                    "回滚场景已创建：%s（%s），恢复自快照 %s",
+                    new_scene.scene_id,
+                    new_scene.name,
+                    target,
+                )
+            else:
+                logger.warning("回滚决策缺少可用快照 ID，场景 %s 未执行回滚", scene_id)
+
+        elif decision.decision_type == DecisionType.CONTINUE.value:
+            # 继续：在原场景基础上增加轮次并重新模拟
+            extra = decision.extra_turns or 6
+            scene.max_turns = scene.turns_completed + extra
+            scene.status = SceneStatus.PENDING.value
+            await repository.save_scene(scene)
+            # 异步触发，调用方通过事件总线追踪进度
+            import asyncio
+            asyncio.create_task(run_scene(scene_id))
+            decision.next_scene_id = scene_id
+
+        elif decision.decision_type == DecisionType.NEXT_SCENE.value:
+            # 下一场：让导演根据历史自动规划新场景，人工可在提交前覆盖
+            # 参与角色/地点/初始条件（均为 None 时保持 AI 自动规划的结果，工单13）。
+            goal = decision.next_scene_description or f"延续上一场（{scene.name}）的剧情走向"
+            config = await plan_scene(scene.project_id, scene.branch_id, goal)
+            if decision.next_participating_characters:
+                config.participating_characters = decision.next_participating_characters
+            if decision.next_location:
+                config.location = decision.next_location
+            if decision.next_initial_conditions:
+                config.initial_conditions = decision.next_initial_conditions
+            new_scene = await create_scene_from_config(scene.project_id, scene.branch_id, config)
+            # 记录父子关系
+            new_scene.parent_scene_id = scene.scene_id
             await repository.save_scene(new_scene)
             decision.next_scene_id = new_scene.scene_id
-            logger.info(
-                "回滚场景已创建：%s（%s），恢复自快照 %s",
-                new_scene.scene_id,
-                new_scene.name,
-                target,
-            )
-        else:
-            logger.warning("回滚决策缺少可用快照 ID，场景 %s 未执行回滚", scene_id)
+            logger.info("下一场场景已创建：%s（%s）", new_scene.scene_id, new_scene.name)
 
-    elif decision.decision_type == DecisionType.CONTINUE.value:
-        # 继续：在原场景基础上增加轮次并重新模拟
-        extra = decision.extra_turns or 6
-        scene.max_turns = scene.turns_completed + extra
-        scene.status = SceneStatus.PENDING.value
-        await repository.save_scene(scene)
-        # 异步触发，调用方通过事件总线追踪进度
-        import asyncio
-        asyncio.create_task(run_scene(scene_id))
-        decision.next_scene_id = scene_id
-
-    elif decision.decision_type == DecisionType.NEXT_SCENE.value:
-        # 下一场：让导演根据历史自动规划新场景并创建
-        next_desc = getattr(human_override, "next_scene_description", None) if human_override else None
-        goal = next_desc or f"延续上一场（{scene.name}）的剧情走向"
-        config = await plan_scene(scene.project_id, scene.branch_id, goal)
-        new_scene = await create_scene_from_config(scene.project_id, scene.branch_id, config)
-        # 记录父子关系
-        new_scene.parent_scene_id = scene.scene_id
-        await repository.save_scene(new_scene)
-        decision.next_scene_id = new_scene.scene_id
-        logger.info("下一场场景已创建：%s（%s）", new_scene.scene_id, new_scene.name)
-
-    return decision
+        return decision
+    finally:
+        _deciding_scenes.discard(scene_id)
 
 
 # ---------------------------------------------------------------------------

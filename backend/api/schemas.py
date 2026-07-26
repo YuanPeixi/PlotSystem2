@@ -72,6 +72,10 @@ class DecisionRequest(BaseModel):
     rollback_snapshot_id: str | None = None
     new_initial_conditions: dict | None = None
     rollback_notes: str | None = None
+    # --- next_scene 分支的人工可编辑覆盖字段，均为 None/空时保持现有“AI 自动决定”行为 ---
+    next_participating_characters: list[str] | None = None
+    next_location: str | None = None
+    next_initial_conditions: dict | None = None
 
 
 class ForkBranchRequest(BaseModel):

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from backend.api import branches, characters, director, graph, output, projects, scenes
 from backend.api.schemas import ApiResponse
 from backend.config import settings
-from backend.exceptions import PlotSystemError
+from backend.exceptions import ConflictError, PlotSystemError
 from backend.services import orchestrator
 from backend.utils.db import init_db
 from backend.utils.logger import get_logger
@@ -49,6 +49,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(ConflictError)
+async def handle_conflict_error(_: Request, exc: ConflictError) -> JSONResponse:
+    return JSONResponse(status_code=409, content=ApiResponse.fail(str(exc)).model_dump())
 
 
 @app.exception_handler(PlotSystemError)
