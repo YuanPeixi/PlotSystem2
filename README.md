@@ -55,6 +55,13 @@ PlotSystem 面向小说、影视剧本和世界观创作者：先导入一组种
 uv sync
 npm install --prefix frontend
 ```
+此外
+```bash
+# 或使用pip (推荐uv)
+pip install -e ".[dev]"
+# 此外可能需要安装concurrently
+npm install concurrently
+```
 
 如需可选的 Microsoft GraphRAG 依赖：
 
@@ -130,6 +137,3 @@ docs/          设计说明、fixture 与修复记录
 
 完整的工程约定和实现说明见 [`CLAUDE.md`](./CLAUDE.md)。
 
-## 许可
-
-MIT
