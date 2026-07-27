@@ -13,6 +13,7 @@ venv/
 
 # Environment
 .env
+.env.bak
 
 # Data (runtime)
 data/
