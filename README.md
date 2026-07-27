@@ -109,6 +109,44 @@ npm run frontend
 python -m scripts.run_demo
 ```
 
+## GitHub Codespaces
+
+仓库已包含 [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json)。它会创建 Python 3.11 + Node.js 20 的开发环境，安装 Python/前端依赖，并将前端 `3000` 与 API `5001` 配置为仅自己可访问的转发端口。
+
+### 1. 创建 Codespace
+
+1. 将仓库推送到 GitHub。
+2. 在仓库页面选择 **Code** > **Codespaces** > **Create codespace on main**。
+3. 等待首次容器构建完成。`postCreateCommand` 会运行 `uv sync --extra dev` 和前端依赖安装。
+
+### 2. 配置 LLM 密钥
+
+在 GitHub 仓库中进入 **Settings** > **Secrets and variables** > **Codespaces**，新建以下 secret：
+
+```text
+LLM_API_KEY=你的 OpenAI 兼容服务密钥
+```
+
+新建或重建 Codespace 后，容器会在项目根目录尚无 `.env` 时，从 `.env.example` 创建它并写入该密钥。模型、服务地址及 Embedding 配置仍应按需编辑 `.env`；它已被 Git 忽略，不会提交到仓库。
+
+### 3. 启动并访问
+
+在 Codespaces 终端执行：
+
+```bash
+npm run init-db
+npm run dev
+```
+
+打开 Codespaces 的 **Ports** 面板，访问标记为 `PlotSystem Frontend` 的 `3000` 端口预览链接。前端会将 `/api` 请求代理至 `5001` 端口的 FastAPI 服务。首次人工检查时，也可运行：
+
+```bash
+uv run python -m pytest -q
+cd frontend && npm run build
+```
+
+端口默认设为 `private`，仅当前 GitHub 账号可访问。旅行结束后，在 GitHub 的 Codespaces 列表中停止或删除该实例，避免继续消耗配额。
+
 ## 页面入口
 
 | 页面 | 用途 |
