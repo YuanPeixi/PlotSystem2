@@ -54,14 +54,16 @@ async function startScene() {
   await directorStore.loadSnapshots(props.projectId)
 }
 
-async function onDecision(payload: Record<string, unknown>) {
+async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean) => void) {
   if (!sceneStore.currentScene) return
   try {
     await sceneStore.submitDecision(sceneStore.currentScene.scene_id, payload)
     await directorStore.loadBranches(props.projectId)
     await directorStore.loadSnapshots(props.projectId)
+    done?.(true)
   } catch (err) {
-    // 例如后端返回 409（决策正在处理中）时，提示用户而不是静默失败
+    // 失败时通知面板保留表单，再提示用户（例如 409：决策已生效/正在处理）
+    done?.(false)
     alert(err instanceof Error ? err.message : '决策提交失败')
   }
 }

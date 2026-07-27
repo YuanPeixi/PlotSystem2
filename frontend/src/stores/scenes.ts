@@ -64,7 +64,8 @@ export const useSceneStore = defineStore('scenes', () => {
 
   async function submitDecision(sceneId: string, payload: Record<string, unknown>) {
     // UI 层辅助防护：请求处理期间禁用决策按钮，避免快速连点重复提交
-    // （真正的并发安全保证在后端 apply_decision 的 _deciding_scenes 守卫，见工单13）。
+    // （真正的幂等保证在后端：decisions 表持久化重放 + scenes.status 的 CAS
+    // 条件更新，见工单13；重试命中重放时后端返回与首次相同的 next_scene_id）。
     if (decisionPending.value) return
     decisionPending.value = true
     try {

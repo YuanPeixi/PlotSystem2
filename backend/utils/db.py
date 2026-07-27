@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS evaluations (
     data_json   TEXT NOT NULL
 );
 
+-- 已生效的导演决策（工单13 幂等保护）：
+-- scene_id 为主键 = 数据库级约束"一个场景一次生命周期只允许一个决策"。
+-- 顺序重试/网络重放命中此表时直接返回持久化结果，不再创建新场景。
+-- continue 决策不落此表（它开启场景的新一轮生命周期，重跑完成后允许再次决策）。
+CREATE TABLE IF NOT EXISTS decisions (
+    scene_id      TEXT PRIMARY KEY,
+    decision_type TEXT NOT NULL,
+    next_scene_id TEXT,
+    created_at    TEXT NOT NULL,
+    data_json     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS outputs (
     output_id   TEXT PRIMARY KEY,
     project_id  TEXT NOT NULL,

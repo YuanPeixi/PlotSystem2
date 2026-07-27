@@ -4,8 +4,11 @@
 decision.next_scene_id，新场景的 initial_conditions 与传入的
 new_initial_conditions 一致。
 
-另外验证工单 13：
-- apply_decision 对同一场景的并发/重复决策提交有幂等保护（_deciding_scenes 守卫）；
+另外验证工单13（升级后的数据库级幂等保护）：
+- 并发重复提交被 scenes.status 的 CAS 条件更新拦截，只产生一个新场景；
+- 顺序重试命中 decisions 表重放，返回与首次完全相同的 next_scene_id；
+- 非 completed 状态的场景不可提交决策；已决策场景提交不同类型报冲突；
+- continue 不持久化决策，重跑完成后开启新一轮可决策周期；
 - next_scene 决策支持人工覆盖参与角色/地点/初始条件，未提供时保持 AI 自动规划行为。
 """
 
@@ -58,6 +61,7 @@ async def _setup_project_scene_and_snapshot():
         location="原始地点",
         initial_conditions={"weather": "sunny"},
         max_turns=10,
+        status="completed",  # 只有 completed 场景可被决策（CAS 守卫）
     )
     await repository.save_scene(scene)
 
@@ -128,6 +132,7 @@ async def test_rollback_without_snapshot_target_is_noop_but_safe():
         branch_id="branch-main",
         name="无快照场景",
         snapshot_id_before="",
+        status="completed",
     )
     await repository.save_project(Project(project_id=project_id, name="noop"))
     await repository.save_scene(scene)
@@ -136,6 +141,8 @@ async def test_rollback_without_snapshot_target_is_noop_but_safe():
     decision = await orchestrator.apply_decision(scene.scene_id, override)
 
     assert decision.next_scene_id is None
+    # 未执行任何变更：不应持久化决策，用户补充快照 ID 后可重试
+    assert await repository.get_decision(scene.scene_id) is None
 
 
 @pytest.mark.asyncio
@@ -251,6 +258,7 @@ async def test_apply_decision_rejects_concurrent_duplicate_submission(monkeypatc
         branch_id="branch-main",
         name="决策并发测试场景",
         participating_characters=[character_id],
+        status="completed",
     )
     await repository.save_scene(scene)
 
@@ -275,7 +283,10 @@ async def test_apply_decision_rejects_concurrent_duplicate_submission(monkeypatc
     all_scenes = await repository.list_scenes(project_id, "branch-main")
     children = [s for s in all_scenes if s.parent_scene_id == scene.scene_id]
     assert len(children) == 1
-    assert orchestrator.is_scene_deciding(scene.scene_id) is False
+    # 决策已持久化，且指向唯一的新场景
+    persisted = await repository.get_decision(scene.scene_id)
+    assert persisted is not None
+    assert persisted.next_scene_id == children[0].scene_id
 
 
 @pytest.mark.asyncio
@@ -296,6 +307,7 @@ async def test_next_scene_decision_applies_user_overrides(monkeypatch):
         branch_id="branch-main",
         name="上一场",
         participating_characters=[char_ai],
+        status="completed",
     )
     await repository.save_scene(scene)
 
@@ -336,6 +348,7 @@ async def test_next_scene_decision_without_overrides_uses_ai_plan(monkeypatch):
         branch_id="branch-main",
         name="上一场",
         participating_characters=[char_ai],
+        status="completed",
     )
     await repository.save_scene(scene)
 
@@ -348,3 +361,140 @@ async def test_next_scene_decision_without_overrides_uses_ai_plan(monkeypatch):
     assert new_scene.participating_characters == [char_ai]
     assert new_scene.location == "AI地点"
     assert new_scene.initial_conditions == {"from": "ai"}
+
+
+async def _setup_completed_scene(project_id: str, scene_id: str, character_id: str) -> Scene:
+    """创建一个 completed 状态的场景及其项目/角色，用于决策幂等测试。"""
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+    await repository.save_character(
+        CharacterCard(character_id=character_id, project_id=project_id, name="测试角色")
+    )
+    scene = Scene(
+        scene_id=scene_id,
+        project_id=project_id,
+        branch_id="branch-main",
+        name="已完成场景",
+        participating_characters=[character_id],
+        max_turns=10,
+        turns_completed=10,
+        status="completed",
+    )
+    await repository.save_scene(scene)
+    return scene
+
+
+@pytest.mark.asyncio
+async def test_apply_decision_sequential_retry_replays_same_result(monkeypatch):
+    """工单13 核心回归：第一次决策完成后的顺序重试（网络重放/慢速二次点击）
+    应幂等重放同一个 next_scene_id，不再创建新场景、不再调用 LLM。"""
+    scene = await _setup_completed_scene(
+        "proj-decision-retry", "scene-decision-retry", "char-decision-retry"
+    )
+
+    plan_calls = {"n": 0}
+
+    class CountingDirector(_FakeDirectorForDecision):
+        async def plan_scene(self, branch_id, narrative_goal, cards, history_scenes=None):
+            plan_calls["n"] += 1
+            return await super().plan_scene(branch_id, narrative_goal, cards, history_scenes)
+
+    monkeypatch.setattr(orchestrator, "DirectorAgent", CountingDirector)
+
+    override = DirectorDecision(decision_type="next_scene")
+    first = await orchestrator.apply_decision(scene.scene_id, override)
+    second = await orchestrator.apply_decision(scene.scene_id, override)
+    # AI 自动决策（human_override=None）的重试同样命中重放
+    third = await orchestrator.apply_decision(scene.scene_id, None)
+
+    assert first.next_scene_id
+    assert second.next_scene_id == first.next_scene_id
+    assert third.next_scene_id == first.next_scene_id
+    # 重放不重复规划（LLM 只调用一次）
+    assert plan_calls["n"] == 1
+    # 场景总数不变：只有一个子场景
+    all_scenes = await repository.list_scenes(scene.project_id, "branch-main")
+    children = [s for s in all_scenes if s.parent_scene_id == scene.scene_id]
+    assert len(children) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_decision_conflicting_type_after_decided(monkeypatch):
+    """场景已有生效决策后，提交不同类型的决策应报冲突而不是静默重放。"""
+    scene = await _setup_completed_scene(
+        "proj-decision-conflict-type", "scene-decision-conflict-type", "char-conflict-type"
+    )
+    monkeypatch.setattr(orchestrator, "DirectorAgent", _FakeDirectorForDecision)
+
+    await orchestrator.apply_decision(scene.scene_id, DirectorDecision(decision_type="next_scene"))
+
+    with pytest.raises(ConflictError):
+        await orchestrator.apply_decision(scene.scene_id, DirectorDecision(decision_type="rollback"))
+
+
+@pytest.mark.asyncio
+async def test_apply_decision_rejected_when_scene_not_completed(monkeypatch):
+    """CAS 守卫：非 completed 状态的场景（pending/running）不可提交决策。"""
+    project_id = "proj-decision-not-completed"
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+    scene = Scene(
+        scene_id="scene-decision-not-completed",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="未完成场景",
+        status="pending",
+    )
+    await repository.save_scene(scene)
+    monkeypatch.setattr(orchestrator, "DirectorAgent", _FakeDirectorForDecision)
+
+    with pytest.raises(ConflictError):
+        await orchestrator.apply_decision(
+            scene.scene_id, DirectorDecision(decision_type="next_scene")
+        )
+
+
+@pytest.mark.asyncio
+async def test_continue_decision_opens_new_decision_cycle(monkeypatch):
+    """continue 不持久化决策：场景重置为 pending 重跑；重跑期间的重试被拒绝；
+    重跑完成（重新 completed）后允许提交新决策。"""
+    scene = await _setup_completed_scene(
+        "proj-decision-continue", "scene-decision-continue", "char-decision-continue"
+    )
+    monkeypatch.setattr(orchestrator, "DirectorAgent", _FakeDirectorForDecision)
+
+    rerun_calls = {"n": 0}
+
+    async def fake_run_scene(scene_id: str) -> None:
+        rerun_calls["n"] += 1
+
+    monkeypatch.setattr(orchestrator, "run_scene", fake_run_scene)
+
+    decision = await orchestrator.apply_decision(
+        scene.scene_id, DirectorDecision(decision_type="continue", extra_turns=4)
+    )
+    await asyncio.sleep(0)  # 让 create_task 的续跑任务被调度
+
+    assert decision.next_scene_id == scene.scene_id
+    assert rerun_calls["n"] == 1
+    # continue 不写入 decisions 表
+    assert await repository.get_decision(scene.scene_id) is None
+    # 场景已重置为 pending，轮次上限增加
+    updated = await repository.get_scene(scene.scene_id)
+    assert updated.status == "pending"
+    assert updated.max_turns == scene.turns_completed + 4
+
+    # 重跑期间（pending）重试 continue：被 CAS 守卫拒绝，max_turns 不会二次膨胀
+    with pytest.raises(ConflictError):
+        await orchestrator.apply_decision(
+            scene.scene_id, DirectorDecision(decision_type="continue", extra_turns=4)
+        )
+    assert (await repository.get_scene(scene.scene_id)).max_turns == scene.turns_completed + 4
+
+    # 模拟重跑完成：场景重新 completed，新一轮决策（next_scene）应被接受
+    updated.status = "completed"
+    updated.turns_completed = updated.max_turns
+    await repository.save_scene(updated)
+    next_decision = await orchestrator.apply_decision(
+        scene.scene_id, DirectorDecision(decision_type="next_scene")
+    )
+    assert next_decision.next_scene_id
+    assert next_decision.next_scene_id != scene.scene_id

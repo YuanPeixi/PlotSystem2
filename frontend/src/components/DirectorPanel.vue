@@ -9,7 +9,9 @@ const props = defineProps<{
   pending?: boolean
 }>()
 const emit = defineEmits<{
-  (e: 'decision', payload: Record<string, unknown>): void
+  // done 回调由父组件在请求结束后调用：ok=true 时面板才关闭/清空表单，
+  // 失败（409/网络错误/500）时保留用户已填写的内容供修正重试。
+  (e: 'decision', payload: Record<string, unknown>, done?: (ok: boolean) => void): void
 }>()
 
 const rollbackConditions = ref('')
@@ -57,18 +59,24 @@ function confirmNextScene() {
       conditions = { note: nextConditions.value }
     }
   }
-  emit('decision', {
-    decision_type: 'next_scene',
-    next_scene_description: nextSceneGoal.value.trim() || null,
-    next_participating_characters: nextChars.value.length ? nextChars.value : null,
-    next_location: nextLocation.value.trim() || null,
-    next_initial_conditions: conditions,
-  })
-  showNextScene.value = false
-  nextSceneGoal.value = ''
-  nextChars.value = []
-  nextLocation.value = ''
-  nextConditions.value = ''
+  emit(
+    'decision',
+    {
+      decision_type: 'next_scene',
+      next_scene_description: nextSceneGoal.value.trim() || null,
+      next_participating_characters: nextChars.value.length ? nextChars.value : null,
+      next_location: nextLocation.value.trim() || null,
+      next_initial_conditions: conditions,
+    },
+    (ok) => {
+      if (!ok) return // 提交失败：保留表单内容，用户可修正后重试
+      showNextScene.value = false
+      nextSceneGoal.value = ''
+      nextChars.value = []
+      nextLocation.value = ''
+      nextConditions.value = ''
+    },
+  )
 }
 
 function confirmRollback() {
@@ -78,8 +86,11 @@ function confirmRollback() {
   } catch {
     conditions = { note: rollbackConditions.value }
   }
-  emit('decision', { decision_type: 'rollback', new_initial_conditions: conditions })
-  showRollback.value = false
+  emit('decision', { decision_type: 'rollback', new_initial_conditions: conditions }, (ok) => {
+    if (!ok) return // 提交失败：保留表单内容
+    showRollback.value = false
+    rollbackConditions.value = ''
+  })
 }
 </script>
 

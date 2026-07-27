@@ -974,6 +974,7 @@ GET    /api/v1/scenes/{scene_id}/log                  # 完整对话日志
 
 ```
 GET    /api/v1/scenes/{scene_id}/evaluation           # 获取场景评估
+GET    /api/v1/scenes/{scene_id}/decision              # 查询已生效的决策（幂等重放/超时恢复）
 POST   /api/v1/scenes/{scene_id}/decision             # 提交导演决策
   Body: {
     "decision_type": "continue" | "next_scene" | "rollback",
@@ -1283,5 +1284,12 @@ Week 2:
      - 前端 Vue3+Vite+Pinia+G6 全套页面与组件
      - 端到端 CLI 演示 scripts/run_demo.py
      - 测试 14 项全过，ruff 通过（UP042 忽略）
+-->
+<!-- 2026-07-27: 决策幂等保护升级为数据库级（工单13）by Copilot
+     - SQLite 新增 decisions 表（scene_id 主键）：顺序重试/网络重放幂等重放同一结果
+     - scenes.status 列 CAS 条件更新（completed→deciding）替代内存集合，跨进程有效；
+       仅列级瞬态值，不入 data_json，对 API 响应不可见
+     - 新增 GET /api/v1/scenes/{scene_id}/decision；continue 决策不持久化（新一轮周期）
+     - 前端 DirectorPanel 表单改为提交成功后才关闭/清空，失败保留用户输入
 -->
 

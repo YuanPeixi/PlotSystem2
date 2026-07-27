@@ -1,6 +1,13 @@
 # 工单13：场景决策接口缺少幂等保护 + "下一场"可编辑范围过窄
 
 **优先级**：P1
+**状态**：✅ 已修复（两阶段：① `_deciding_scenes` 内存守卫 + 覆盖字段扩展；
+② 升级为数据库级幂等：`decisions` 表（scene_id 主键）持久化决策结果实现顺序重试重放，
+`scenes.status` 的 CAS 条件更新（completed → deciding）拦截并发且跨进程有效，
+内存集合已移除；continue 不持久化（开启新一轮可决策周期）；新增
+`GET /scenes/{id}/decision` 供前端超时后恢复；前端表单改为提交成功后才关闭/清空。
+见 `backend/services/orchestrator.py` `apply_decision`、`backend/services/repository.py`
+及 `tests/test_orchestrator.py`）
 **预估改动范围**：中（1 个核心文件 + schema 扩展 + 简单前端表单）
 **依赖**：建议先了解工单01（回滚分支"创建新场景"的写法）和工单10（`_active_scenes`
 的幂等保护模式，本工单是同一类问题在另一个入口的体现）

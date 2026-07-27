@@ -18,6 +18,7 @@ from backend.exceptions import (
 from backend.models import (
     CharacterCard,
     DialogueTurn,
+    DirectorDecision,
     LoreEntry,
     Project,
     RelationshipState,
@@ -105,6 +106,12 @@ async def delete_project(project_id: str) -> None:
     import shutil
 
     async with db.connect() as conn:
+        # decisions/evaluations 以 scene_id 为键，需先按项目场景清理
+        await conn.execute(
+            "DELETE FROM decisions WHERE scene_id IN "
+            "(SELECT scene_id FROM scenes WHERE project_id = ?)",
+            (project_id,),
+        )
         for table in ("scenes", "branches", "snapshots", "projects"):
             await conn.execute(f"DELETE FROM {table} WHERE project_id = ?", (project_id,))
         await conn.execute("DELETE FROM outputs WHERE project_id = ?", (project_id,))
@@ -278,6 +285,88 @@ async def get_evaluation(scene_id: str) -> SceneEvaluation | None:
         recommended_decision=data.get("recommended_decision", "next_scene"),
         rollback_suggestion=data.get("rollback_suggestion"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Decision（工单13：决策幂等保护）
+# ---------------------------------------------------------------------------
+
+
+async def save_decision(scene_id: str, decision: DirectorDecision) -> None:
+    """持久化已生效的决策结果。scene_id 为主键，重放请求据此返回相同结果。"""
+    async with db.connect() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO decisions "
+            "(scene_id, decision_type, next_scene_id, created_at, data_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                scene_id,
+                decision.decision_type,
+                decision.next_scene_id,
+                now().isoformat(),
+                to_json(decision),
+            ),
+        )
+        await conn.commit()
+
+
+async def get_decision(scene_id: str) -> DirectorDecision | None:
+    """读取场景已生效的决策，不存在时返回 None。"""
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "SELECT data_json FROM decisions WHERE scene_id = ?", (scene_id,)
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    data = json.loads(row[0])
+    # next_scene_config 不还原：重放场景下调用方只需要结果字段（next_scene_id 等）
+    return DirectorDecision(
+        decision_type=data.get("decision_type", "next_scene"),
+        extra_turns=data.get("extra_turns"),
+        next_scene_id=data.get("next_scene_id"),
+        rollback_to_snapshot_id=data.get("rollback_to_snapshot_id"),
+        new_initial_conditions=data.get("new_initial_conditions"),
+        next_scene_description=data.get("next_scene_description"),
+        next_participating_characters=data.get("next_participating_characters"),
+        next_location=data.get("next_location"),
+        next_initial_conditions=data.get("next_initial_conditions"),
+        rollback_notes=data.get("rollback_notes"),
+    )
+
+
+async def try_mark_scene_deciding(scene_id: str) -> bool:
+    """CAS 守卫：仅当场景处于 completed 状态时，将状态列置为 'deciding'。
+
+    借助 SQLite 写锁保证跨进程/多 worker 下的原子性：并发的第二个请求
+    会因状态列已变为 'deciding' 而更新 0 行，返回 False。
+
+    注意 'deciding' 只写在 scenes 表的 status 列上（不写入 data_json），
+    get_scene/list_scenes 从 data_json 反序列化，因此该瞬态值对 API
+    响应不可见，也无需加入 SceneStatus 枚举。
+    """
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "UPDATE scenes SET status = 'deciding' "
+            "WHERE scene_id = ? AND status = 'completed'",
+            (scene_id,),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def clear_scene_deciding(scene_id: str) -> None:
+    """释放 CAS 守卫：仅当状态列仍为 'deciding' 时恢复为 'completed'。
+
+    条件更新使 continue 分支（save_scene 已将状态改为 pending）不被误覆盖。
+    """
+    async with db.connect() as conn:
+        await conn.execute(
+            "UPDATE scenes SET status = 'completed' "
+            "WHERE scene_id = ? AND status = 'deciding'",
+            (scene_id,),
+        )
+        await conn.commit()
 
 
 # ---------------------------------------------------------------------------

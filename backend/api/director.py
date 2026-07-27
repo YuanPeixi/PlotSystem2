@@ -20,6 +20,15 @@ async def get_evaluation(scene_id: str) -> ApiResponse:
     return ApiResponse.ok(to_dict(evaluation))
 
 
+@router.get("/{scene_id}/decision")
+async def get_decision(scene_id: str) -> ApiResponse:
+    """查询场景已生效的决策（前端在提交超时/409 后可据此恢复状态）。"""
+    decision = await repository.get_decision(scene_id)
+    if decision is None:
+        return ApiResponse.ok(None)
+    return ApiResponse.ok(to_dict(decision))
+
+
 @router.post("/{scene_id}/decision")
 async def submit_decision(scene_id: str, req: DecisionRequest) -> ApiResponse:
     """提交导演决策（可覆盖 AI 建议）。"""
@@ -34,7 +43,8 @@ async def submit_decision(scene_id: str, req: DecisionRequest) -> ApiResponse:
         next_location=req.next_location,
         next_initial_conditions=req.next_initial_conditions,
     )
-    # 重复提交保护：同一场景的决策正在处理时，orchestrator 会抛出 ConflictError，
-    # 由 main.py 的全局异常处理器转为 409 响应，无需在此处额外捕获。
+    # 幂等保护（工单13）：同一场景的决策已生效时，orchestrator 会直接重放持久化
+    # 结果（200，同一个 next_scene_id）；并发提交/不同类型的二次决策会抛出
+    # ConflictError，由 main.py 的全局异常处理器转为 409 响应，无需在此处额外捕获。
     decision = await orchestrator.apply_decision(scene_id, override)
     return ApiResponse.ok(to_dict(decision))

@@ -44,21 +44,15 @@ _running_engines: dict[str, SceneEngine] = {}
 # 注意：检查与写入必须在同一段没有 await 的同步代码里完成，依赖单线程事件循环保证原子性。
 _active_scenes: set[str] = set()
 
-# 正在处理决策（next_scene / rollback）的场景 id 集合，防止同一场景的决策请求
-# 被并发/重复提交，从而创建出多个"同父"的新场景（隐性分叉）。与 _active_scenes
-# 语义不同（后者是"场景模拟正在运行"），此处是"该场景的决策正在被处理"。
-# 同样依赖检查与写入之间没有 await，保证原子性。
-_deciding_scenes: set[str] = set()
+# 决策幂等保护（工单13）不再使用进程内集合，而是基于数据库：
+# 1. decisions 表（scene_id 主键）持久化已生效决策 —— 顺序重试/网络重放直接重放结果；
+# 2. scenes.status 列的 CAS 条件更新 —— 拦截并发请求，且跨进程/多 worker 有效。
+# 详见 apply_decision。
 
 
 def is_scene_active(scene_id: str) -> bool:
     """查询场景是否已在运行中（供 API 层做前置检查，给出更及时的响应）。"""
     return scene_id in _active_scenes
-
-
-def is_scene_deciding(scene_id: str) -> bool:
-    """查询场景的决策是否正在处理中（供 API 层做前置检查）。"""
-    return scene_id in _deciding_scenes
 
 
 # ---------------------------------------------------------------------------
@@ -366,12 +360,54 @@ def pause_scene(scene_id: str) -> bool:
 async def apply_decision(
     scene_id: str, human_override: DirectorDecision | None
 ) -> DirectorDecision:
-    # 并发/重复提交守卫：检查与写入之间没有 await，避免同一场景的决策被并发处理
-    # 两次，从而创建出两个"同父"的新场景（隐性分叉），详见工单13。
-    if scene_id in _deciding_scenes:
-        logger.warning("场景 %s 的决策正在处理中，忽略重复提交", scene_id)
-        raise ConflictError(f"场景 {scene_id} 的决策正在处理中，请勿重复提交")
-    _deciding_scenes.add(scene_id)
+    """处理导演决策，具备数据库级幂等保护（工单13）：
+
+    1. 幂等重放：场景已有生效决策（decisions 表，scene_id 主键）时直接返回
+       持久化结果，顺序重试/网络重放拿到与首次完全相同的 next_scene_id，
+       不再重复调用 LLM、不再创建新场景；提交了不同 decision_type 则报冲突。
+    2. CAS 状态守卫：通过 scenes.status 列的条件更新（completed → deciding）
+       拦截并发请求，SQLite 写锁保证跨进程/多 worker 下的原子性；同时也
+       意味着只有 completed 状态的场景才能被决策。
+    3. continue 决策不持久化：它把场景重置回 pending 开启新一轮生命周期，
+       重跑完成后允许再次决策。已知边界：continue 请求在场景重跑完成后才
+       到达的极晚重试无法与一次新的 continue 区分，会再次续跑（确定性行为、
+       不产生分叉，可接受）。
+    """
+    # --- 幂等重放 ---
+    existing = await repository.get_decision(scene_id)
+    if existing is not None:
+        if (
+            human_override is not None
+            and human_override.decision_type != existing.decision_type
+        ):
+            raise ConflictError(
+                f"场景 {scene_id} 已有生效的决策（{existing.decision_type}），"
+                f"不能再提交 {human_override.decision_type}"
+            )
+        logger.info(
+            "场景 %s 已有生效决策，幂等重放（%s → %s）",
+            scene_id,
+            existing.decision_type,
+            existing.next_scene_id,
+        )
+        return existing
+
+    # --- CAS 守卫 ---
+    if not await repository.try_mark_scene_deciding(scene_id):
+        # 可能是并发的另一个请求刚刚处理完毕并已持久化决策：重查一次实现重放
+        existing = await repository.get_decision(scene_id)
+        if existing is not None and (
+            human_override is None
+            or human_override.decision_type == existing.decision_type
+        ):
+            return existing
+        # 场景不存在时抛 SceneNotFoundError（404），否则报冲突（409）
+        current = await repository.get_scene(scene_id)
+        raise ConflictError(
+            f"场景 {scene_id} 当前状态为 {current.status}，不可提交决策"
+            "（决策正在处理中，或场景模拟尚未完成）"
+        )
+
     try:
         scene = await repository.get_scene(scene_id)
         evaluation = await repository.get_evaluation(scene_id)
@@ -412,6 +448,8 @@ async def apply_decision(
                 )
                 await repository.save_scene(new_scene)
                 decision.next_scene_id = new_scene.scene_id
+                # 持久化决策结果，后续重试将幂等重放同一个 next_scene_id
+                await repository.save_decision(scene_id, decision)
                 logger.info(
                     "回滚场景已创建：%s（%s），恢复自快照 %s",
                     new_scene.scene_id,
@@ -419,10 +457,14 @@ async def apply_decision(
                     target,
                 )
             else:
+                # 未执行任何变更：不持久化决策，用户可补充快照 ID 后重试
                 logger.warning("回滚决策缺少可用快照 ID，场景 %s 未执行回滚", scene_id)
 
         elif decision.decision_type == DecisionType.CONTINUE.value:
-            # 继续：在原场景基础上增加轮次并重新模拟
+            # 继续：在原场景基础上增加轮次并重新模拟。
+            # save_scene 会将状态列改为 pending（覆盖 CAS 的 'deciding'），
+            # 重跑完成后场景重新变为 completed，开启新一轮可决策周期，
+            # 因此 continue 决策不写入 decisions 表。
             extra = decision.extra_turns or 6
             scene.max_turns = scene.turns_completed + extra
             scene.status = SceneStatus.PENDING.value
@@ -448,11 +490,15 @@ async def apply_decision(
             new_scene.parent_scene_id = scene.scene_id
             await repository.save_scene(new_scene)
             decision.next_scene_id = new_scene.scene_id
+            # 持久化决策结果，后续重试将幂等重放同一个 next_scene_id
+            await repository.save_decision(scene_id, decision)
             logger.info("下一场场景已创建：%s（%s）", new_scene.scene_id, new_scene.name)
 
         return decision
     finally:
-        _deciding_scenes.discard(scene_id)
+        # 释放 CAS 守卫：仅当状态列仍为 'deciding' 时恢复 completed
+        # （continue 分支已改为 pending 不会被覆盖；处理失败时恢复后允许重试）。
+        await repository.clear_scene_deciding(scene_id)
 
 
 # ---------------------------------------------------------------------------
