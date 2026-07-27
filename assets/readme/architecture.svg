@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">PlotSystem story state pipeline</title>
+  <desc id="desc">Seed text becomes a world model, agents advance scenes, branches preserve decisions, and selected branches become readable outputs.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#182443"/>
+      <stop offset="1" stop-color="#11182e"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#ef5b73"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="360" rx="24" fill="#111328"/>
+  <path d="M48 70H1152M48 300H1152" stroke="#2a3151" stroke-width="1"/>
+  <text x="52" y="48" fill="#8f9abb" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" letter-spacing="2">PLOTSYSTEM / STORY STATE PIPELINE</text>
+  <text x="52" y="334" fill="#6f7898" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">one world model / many remembered viewpoints / reversible decisions</text>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <g transform="translate(52 112)">
+      <rect width="190" height="138" rx="14" fill="url(#panel)" stroke="#354267"/>
+      <text x="20" y="34" fill="#ef5b73" font-family="ui-monospace, monospace" font-size="14">01 / INPUT</text>
+      <text x="20" y="72" fill="#f4f5fb" font-size="23" font-weight="700">Seed text</text>
+      <text x="20" y="102" fill="#9da7c7" font-size="16">novel · script · lore</text>
+    </g>
+    <path d="M252 182H308" stroke="#ef5b73" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <g transform="translate(318 112)">
+      <rect width="210" height="138" rx="14" fill="url(#panel)" stroke="#354267"/>
+      <text x="20" y="34" fill="#ef5b73" font-family="ui-monospace, monospace" font-size="14">02 / BUILD</text>
+      <text x="20" y="72" fill="#f4f5fb" font-size="23" font-weight="700">GraphRAG</text>
+      <text x="20" y="102" fill="#9da7c7" font-size="16">entities · rules · memory</text>
+    </g>
+    <path d="M538 182H594" stroke="#ef5b73" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <g transform="translate(604 112)">
+      <rect width="210" height="138" rx="14" fill="url(#panel)" stroke="#354267"/>
+      <text x="20" y="34" fill="#ef5b73" font-family="ui-monospace, monospace" font-size="14">03 / SIMULATE</text>
+      <text x="20" y="72" fill="#f4f5fb" font-size="23" font-weight="700">Agent scene</text>
+      <text x="20" y="102" fill="#9da7c7" font-size="16">director · characters</text>
+    </g>
+    <path d="M824 182H880" stroke="#ef5b73" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <g transform="translate(890 112)">
+      <rect width="258" height="138" rx="14" fill="url(#panel)" stroke="#354267"/>
+      <text x="20" y="34" fill="#ef5b73" font-family="ui-monospace, monospace" font-size="14">04 / DECIDE</text>
+      <text x="20" y="72" fill="#f4f5fb" font-size="23" font-weight="700">Branch + export</text>
+      <text x="20" y="102" fill="#9da7c7" font-size="16">rollback · novel · screenplay</text>
+    </g>
+  </g>
+</svg>
