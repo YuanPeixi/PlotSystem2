@@ -281,6 +281,7 @@ class Scene:
     status: str              # "pending" | "running" | "paused" | "completed"
     snapshot_id_before: str  # 模拟前快照 ID
     snapshot_id_after: str | None
+    restore_snapshot_id: str # 回滚重演场景的来源快照 ID（用于回填运行时记忆）
     turns_completed: int
     dialogue_log: list[DialogueTurn]  # 完整对话记录
 ```
@@ -1119,6 +1120,11 @@ DEFAULT_SPEAKER_MODE=round_robin   # round_robin | selector
 SHORT_TERM_BUFFER_SIZE=20          # 短期记忆最大轮次
 MEMORY_TOP_K=5                     # RAG 检索返回条数
 
+# 角色对话上下文窗口
+MEMORY_QUERY_WINDOW=6              # 拼接检索 query 时采样的最近对话行数
+RECENT_TRANSCRIPT_WINDOW=0         # "目前对话"最大行数，0=不限行数仅受 token 预算约束
+TRANSCRIPT_TOKEN_BUDGET=24000      # "目前对话"token 预算（估算）
+
 # 日志级别
 LOG_LEVEL=INFO
 ```
@@ -1291,5 +1297,16 @@ Week 2:
        仅列级瞬态值，不入 data_json，对 API 响应不可见
      - 新增 GET /api/v1/scenes/{scene_id}/decision；continue 决策不持久化（新一轮周期）
      - 前端 DirectorPanel 表单改为提交成功后才关闭/清空，失败保留用户输入
+-->
+<!-- 2026-07-28: 运行时记忆续跑 + 角色上下文窗口（工单14）by Copilot
+     - Prompt 结构约定：system 只放整场不变的内容（人设/世界观/已知事实/关系/场景设定/
+       格式规范），每轮变化的内容（目前对话、检索记忆、发言指令）放 user 消息，
+       且"目前对话"只在末尾追加不做逐行滑窗 → prompt 前缀稳定，可命中 prefix cache
+     - 上下文窗口去硬编码：新增 MEMORY_QUERY_WINDOW / RECENT_TRANSCRIPT_WINDOW /
+       TRANSCRIPT_TOKEN_BUDGET；默认按 token 预算而非固定 12 行截断，超预算时成块丢弃
+     - Scene 新增 restore_snapshot_id 字段；orchestrator 新增 _load_inherited_states，
+       build_character_agents 支持传入 CharacterState 回填短期缓冲/事件摘要
+     - 修复 MemoryManager.snapshot() 先 consolidate 再 dump 导致短期缓冲恒为空
+     - 前端场景 store：续跑时用已持久化 dialogue_log 铺底，并在场景完成后对账补齐
 -->
 
