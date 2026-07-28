@@ -23,8 +23,12 @@ export const useSceneStore = defineStore('scenes', () => {
     return currentScene.value
   }
 
-  function startSimulation(sceneId: string) {
-    turns.value = []
+  function startSimulation(sceneId: string, opts: { keepLog?: boolean } = {}) {
+    // keepLog：续跑（continue）在同一场景上追加轮次，后端 SSE 只推送新增部分，
+    // 此时必须保留已铺底的历史日志，否则界面上之前的对话会整段消失。
+    if (!opts.keepLog) {
+      turns.value = []
+    }
     evaluation.value = null
     running.value = true
     statusMsg.value = '准备中...'
@@ -40,6 +44,9 @@ export const useSceneStore = defineStore('scenes', () => {
       if (d.status === 'completed') {
         running.value = false
         es?.close()
+        // 以后端持久化的完整日志为准做一次对账：SSE 订阅建立之前
+        // （如决策触发续跑后才连上流）产生的轮次不会被推送，这里补齐。
+        void reconcileLog(sceneId)
       }
     })
     es.addEventListener('evaluation', (e) => {
@@ -51,6 +58,20 @@ export const useSceneStore = defineStore('scenes', () => {
     })
 
     return api.startScene(sceneId)
+  }
+
+  /** 用后端持久化的 dialogue_log 覆盖本地日志，修补 SSE 期间可能遗漏的轮次。 */
+  async function reconcileLog(sceneId: string) {
+    try {
+      const scene = await api.getSceneById(sceneId)
+      if (currentScene.value?.scene_id !== sceneId) return
+      currentScene.value = scene
+      if ((scene.dialogue_log?.length ?? 0) >= turns.value.length) {
+        turns.value = scene.dialogue_log ?? []
+      }
+    } catch {
+      // 对账失败不影响已展示的内容，保持现状即可
+    }
   }
 
   async function pause(sceneId: string) {
@@ -83,10 +104,13 @@ export const useSceneStore = defineStore('scenes', () => {
 
   /** 加入一个已存在的场景（获取场景元信息 + 启动模拟流） */
   async function joinScene(sceneId: string) {
-    currentScene.value = await api.getSceneById(sceneId)
-    turns.value = []
+    const scene = await api.getSceneById(sceneId)
+    currentScene.value = scene
+    // 先用已持久化的对话日志铺底：continue 续跑时后端只推送新增轮次，
+    // 若这里清空，用户会看到"点了继续，之前的对话全没了"。
+    turns.value = scene.dialogue_log ?? []
     evaluation.value = null
-    await startSimulation(sceneId)
+    await startSimulation(sceneId, { keepLog: true })
   }
 
   return {
