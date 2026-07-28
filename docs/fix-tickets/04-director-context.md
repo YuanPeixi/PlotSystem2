@@ -2,7 +2,8 @@
 
 **优先级**：P1
 **预估改动范围**：小-中（1 个核心文件）
-**依赖**：无（工单05 建议在本工单之后做，可复用这里实现的 `query_character_state`）
+**依赖**：建议在工单**14** 之后做（工单Է5 提供了从快照回填运行时记忆的机制，可升级下文 §3.2 的折中方案）；
+工单**05** 建议在本工单之后做，可复用这里实现的 `query_character_state`
 
 ---
 
@@ -108,6 +109,16 @@ char_desc = "\n".join(
    `CharacterCard` 里已持久化的 `current_emotion/current_goal/current_location/relationships` 正确填入
    返回的 `CharacterState`，这是可以立即拿到的准确数据；记忆部分若拿不到运行时内存态，可以先留空
    或标注 TODO，不强制在本工单内解决"跨进程共享运行时记忆"这个更复杂的问题）。
+
+   > **更新（工单 14 完成后）**：上述"记忆部分留空"的折中方案已可以升级。工单 14 在
+   > `backend/services/orchestrator.py` 实现了 `_load_inherited_states(scene, sm)`（按
+   > `snapshot_id_after` → `restore_snapshot_id` → `snapshot_id_before` → 父场景快照的优先级
+   > 从快照读出 `CharacterState`），并给 `MemoryManager` 增加了 `prime(short_term_buffer,
+   > episodic_summary)` 回填接口。本工单的 `query_character_state` 应直接复用这套机制：
+   > 从该角色最近一个快照里取 `short_term_buffer` / `episodic_summary` 填入返回值，
+   > 而不是新建一个恒为空的 `MemoryManager`。同样的修正也适用于
+   > `backend/api/characters.py` 的 `GET /characters/{char_id}/memory` 接口（它目前恒返回空，
+   > 是工单 05 记忆面板的前置依赖）。
 3. 返回值示例：
    ```python
    async def query_character_state(self, character_id: str) -> CharacterState:

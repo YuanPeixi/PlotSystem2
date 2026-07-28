@@ -46,6 +46,15 @@ CLAUDE.md 设计中，导演（Director）应该是唯一能看到角色 `unknow
   `{ short_term: string[], episodic_summary: string }`（`backend/api/characters.py` 第 44-52 行）。
   前端 `api/client.ts` 中**没有**对应封装方法。
 
+  > ⚠️ **前置依赖（必读）**：该接口每次都 `MemoryManager(char_id, project_id)` 新建一个实例，
+  > 而短期缓冲/事件摘要是**内存态**，因此它目前**恒返回空数据**。直接按现状做记忆面板，
+  > 会得到一个永远空白的 UI。工单 14 已提供从快照读取 `CharacterState`（`short_term_buffer` /
+  > `episodic_summary`）的机制（`orchestrator._load_inherited_states` + `MemoryManager.prime`），
+  > 该接口应改为读取该角色最近一个快照——这部分建议随工单 04 的 `query_character_state`
+  > 一并修复（见工单04 §3.2 的更新说明），或在本工单内一并处理。
+  > 另外注意：工单 15 会改变记忆写入范围（从"只记自己的台词"改为"在场即记忆"），
+  > 面板展示的内容会随之变丰富，UI 需预留滚动/截断处理。
+
 ## 3. 目标（Definition of Done）
 
 1. **API 客户端**：在 `frontend/src/api/client.ts` 的 `api` 对象中新增：
