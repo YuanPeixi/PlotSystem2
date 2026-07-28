@@ -201,15 +201,64 @@ async def run_graphrag(project_id: str) -> None:
 
 
 async def build_character_agents(
-    project_id: str, character_ids: list[str]
+    project_id: str,
+    character_ids: list[str],
+    character_states: dict[str, CharacterState] | None = None,
 ) -> list[CharacterAgent]:
+    """构建参演角色的智能体。
+
+    character_states 给出时（续跑/回滚/下一场），用其中的短期缓冲与事件摘要
+    回填新建的 MemoryManager —— 这两层记忆是纯内存态，不回填就会每次从零开始
+    （工单14）。
+    """
     agents: list[CharacterAgent] = []
     for cid in character_ids:
         card = await repository.get_character(project_id, cid)
         mem = MemoryManager(cid, project_id)
         await mem.connect()
+        state = (character_states or {}).get(cid)
+        if state is not None:
+            mem.prime(state.short_term_buffer, state.episodic_summary)
         agents.append(CharacterAgent(card, mem))
     return agents
+
+
+async def _load_inherited_states(
+    scene: Scene, sm: SnapshotManager
+) -> dict[str, CharacterState]:
+    """取出本场景应继承的运行时记忆状态（工单14）。
+
+    按优先级依次尝试：
+    1. `snapshot_id_after`：本场景已跑过一次（continue 续跑）→ 承接上次结束态；
+    2. `restore_snapshot_id`：回滚重演场景 → 承接回滚目标快照；
+    3. `snapshot_id_before`：本场景已打过前置快照但未跑完（异常恢复）；
+    4. 父场景的 `snapshot_id_after`：next_scene → 承接上一场的结束态。
+    全部取不到时返回空字典（全新场景，记忆从长期库检索即可）。
+    """
+    candidates = [
+        scene.snapshot_id_after,
+        scene.restore_snapshot_id,
+        scene.snapshot_id_before,
+    ]
+    if scene.parent_scene_id:
+        try:
+            parent = await repository.get_scene(scene.parent_scene_id)
+            candidates.append(parent.snapshot_id_after)
+        except Exception:  # noqa: BLE001
+            logger.debug("父场景 %s 不可用，跳过记忆继承", scene.parent_scene_id)
+
+    for snapshot_id in candidates:
+        if not snapshot_id:
+            continue
+        try:
+            snap = await sm.get_snapshot(snapshot_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("读取快照 %s 失败，跳过记忆继承", snapshot_id, exc_info=True)
+            continue
+        if snap and snap.character_states:
+            logger.info("场景 %s 从快照 %s 继承运行时记忆", scene.scene_id, snapshot_id)
+            return dict(snap.character_states)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +314,12 @@ async def run_scene(scene_id: str) -> None:
     _active_scenes.add(scene_id)
 
     scene = await repository.get_scene(scene_id)
-    agents = await build_character_agents(scene.project_id, scene.participating_characters)
+    sm = SnapshotManager(scene.project_id)
+    # 续跑/回滚/下一场：把上一次快照里的短期缓冲与事件摘要回填给新建的记忆管理器
+    inherited = await _load_inherited_states(scene, sm)
+    agents = await build_character_agents(
+        scene.project_id, scene.participating_characters, inherited
+    )
 
     config = SceneConfig(
         name=scene.name,
@@ -276,7 +330,6 @@ async def run_scene(scene_id: str) -> None:
         max_turns=scene.max_turns,
         opening_narration=scene.initial_conditions.get("opening_narration", ""),
     )
-    sm = SnapshotManager(scene.project_id)
     engine = SceneEngine(scene, config, agents, sm)
     # continue 续跑：注入历史 transcript，让角色知道之前说了什么
     if scene.dialogue_log:
@@ -445,6 +498,9 @@ async def apply_decision(
                     # 若直接写入 target 会导致重演场景跳过快照创建，
                     # 无法反映 new_initial_conditions 恢复后的最新状态。
                     snapshot_id_before="",
+                    # 但仍需记住回滚来源，供 run_scene 回填角色的运行时记忆
+                    # （短期缓冲/事件摘要，工单14）。
+                    restore_snapshot_id=target,
                 )
                 await repository.save_scene(new_scene)
                 decision.next_scene_id = new_scene.scene_id

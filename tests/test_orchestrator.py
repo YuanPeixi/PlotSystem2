@@ -112,6 +112,8 @@ async def test_rollback_updates_character_and_creates_new_scene():
     # 自己的模拟前快照创建，导致重演场景无法反映 new_initial_conditions
     # 恢复后的最新状态（工单 01 回归项）。
     assert new_scene.snapshot_id_before == ""
+    # 但应记住回滚来源快照，供 run_scene 回填运行时记忆（工協14）
+    assert new_scene.restore_snapshot_id == snap.snapshot_id
 
     # 3. 角色卡应被写回快照中的状态（而不是回滚前的最新状态）
     card = await repository.get_character(project_id, character_id)
@@ -166,7 +168,7 @@ async def test_run_scene_rejects_concurrent_duplicate_start(monkeypatch):
 
     call_count = {"agents": 0, "engine_run": 0}
 
-    async def fake_build_agents(pid, cids):
+    async def fake_build_agents(pid, cids, states=None):
         call_count["agents"] += 1
         # 制造并发窗口：让第二次调用有机会在第一次完成前发起
         await asyncio.sleep(0.05)
@@ -498,3 +500,128 @@ async def test_continue_decision_opens_new_decision_cycle(monkeypatch):
     )
     assert next_decision.next_scene_id
     assert next_decision.next_scene_id != scene.scene_id
+
+
+# ---------------------------------------------------------------------------
+# 工单14：续跑/回滚后的运行时记忆继承
+# ---------------------------------------------------------------------------
+
+
+def _memory_state(character_id: str) -> CharacterState:
+    return CharacterState(
+        character_id=character_id,
+        episodic_summary="[重要] 测试角色: 我发誓要复仇",
+        short_term_buffer=["测试角色: 前情一", "测试角色: 前情二"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_character_agents_primes_runtime_memory(monkeypatch):
+    """工单14：传入快照状态时，新建的 MemoryManager 应回填短期缓冲与事件摘要，
+    而不是每次都从空白开始（此前只有 ChromaDB 长期记忆是连续的）。"""
+    from backend.memory.memory_manager import MemoryManager
+
+    async def _skip_connect(self):  # 避免测试触碰 ChromaDB
+        return None
+
+    monkeypatch.setattr(MemoryManager, "connect", _skip_connect)
+
+    project_id = "proj-memory-inherit"
+    character_id = "char-memory-inherit"
+    await repository.save_project(Project(project_id=project_id, name="记忆继承测试项目"))
+    await repository.save_character(
+        CharacterCard(character_id=character_id, project_id=project_id, name="测试角色")
+    )
+
+    state = _memory_state(character_id)
+    agents = await orchestrator.build_character_agents(
+        project_id, [character_id], {character_id: state}
+    )
+    mem = agents[0].memory
+    assert mem.episodic.summary == state.episodic_summary
+    assert mem.short_term.dump() == state.short_term_buffer
+
+    # 不传状态时保持原行为（全新记忆）
+    fresh = await orchestrator.build_character_agents(project_id, [character_id])
+    assert fresh[0].memory.episodic.summary == ""
+    assert fresh[0].memory.short_term.dump() == []
+
+
+@pytest.mark.asyncio
+async def test_load_inherited_states_prefers_rollback_source_snapshot():
+    """回滚重演场景：snapshot_id_before 必须为空（工单01），
+    因此运行时记忆要靠 restore_snapshot_id 找回来源快照（工单14）。"""
+    project_id = "proj-memory-rollback-inherit"
+    character_id = "char-memory-rollback-inherit"
+    await repository.save_project(Project(project_id=project_id, name="回滚记忆继承项目"))
+
+    sm = SnapshotManager(project_id)
+    snap = await sm.create_snapshot(
+        "scene-origin", "branch-main", {character_id: _memory_state(character_id)}, label="before"
+    )
+
+    replay = Scene(
+        scene_id="scene-memory-rollback-replay",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="回滚重演",
+        participating_characters=[character_id],
+        snapshot_id_before="",
+        restore_snapshot_id=snap.snapshot_id,
+    )
+    await repository.save_scene(replay)
+
+    states = await orchestrator._load_inherited_states(replay, sm)
+    assert states[character_id].episodic_summary == "[重要] 测试角色: 我发誓要复仇"
+
+
+@pytest.mark.asyncio
+async def test_load_inherited_states_falls_back_to_parent_scene():
+    """next_scene：新场景本身没有任何快照，应承接父场景结束态的运行时记忆。"""
+    project_id = "proj-memory-parent-inherit"
+    character_id = "char-memory-parent-inherit"
+    await repository.save_project(Project(project_id=project_id, name="父场景记忆继承项目"))
+
+    sm = SnapshotManager(project_id)
+    snap = await sm.create_snapshot(
+        "scene-parent", "branch-main", {character_id: _memory_state(character_id)}, label="after"
+    )
+    parent = Scene(
+        scene_id="scene-parent",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="上一场",
+        snapshot_id_after=snap.snapshot_id,
+        status="completed",
+    )
+    await repository.save_scene(parent)
+
+    child = Scene(
+        scene_id="scene-child",
+        project_id=project_id,
+        branch_id="branch-main",
+        parent_scene_id=parent.scene_id,
+        name="下一场",
+        participating_characters=[character_id],
+    )
+    await repository.save_scene(child)
+
+    states = await orchestrator._load_inherited_states(child, sm)
+    assert states[character_id].short_term_buffer == ["测试角色: 前情一", "测试角色: 前情二"]
+
+
+@pytest.mark.asyncio
+async def test_memory_snapshot_keeps_short_term_buffer():
+    """工单14：snapshot() 曾因先 consolidate 再 dump 导致短期缓冲恒为空。"""
+    from backend.memory.memory_manager import MemoryManager
+
+    mem = MemoryManager("char-snapshot-order", "proj-snapshot-order")
+
+    async def _skip_connect():
+        return None
+
+    mem.connect = _skip_connect  # type: ignore[method-assign]
+    mem.short_term.load(["甲: 第一句", "甲: 第二句"])
+
+    snap = await mem.snapshot()
+    assert snap.short_term_buffer == ["甲: 第一句", "甲: 第二句"]

@@ -212,6 +212,10 @@ class Scene:
     status: str = SceneStatus.PENDING.value
     snapshot_id_before: str = ""
     snapshot_id_after: str | None = None
+    # 回滚重演场景的来源快照 ID（工協14）。与 snapshot_id_before 分开：
+    # 后者为空才能让 SceneEngine 为重演重新打快照，而这里需要记住
+    # "运行时记忆（短期缓冲/事件摘要）应从哪个快照回填"。
+    restore_snapshot_id: str = ""
     turns_completed: int = 0
     dialogue_log: list[DialogueTurn] = field(default_factory=list)
     created_at: datetime = field(default_factory=now)

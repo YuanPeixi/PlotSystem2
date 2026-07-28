@@ -202,6 +202,7 @@ def _deserialize_scene(data: dict) -> Scene:
         status=data.get("status", "pending"),
         snapshot_id_before=data.get("snapshot_id_before", ""),
         snapshot_id_after=data.get("snapshot_id_after"),
+        restore_snapshot_id=data.get("restore_snapshot_id", ""),
         turns_completed=data.get("turns_completed", 0),
         dialogue_log=log,
     )
