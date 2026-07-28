@@ -1,10 +1,11 @@
-"""CharacterAgent 测试：核心验证信息不对称原则。"""
+"""CharacterAgent 测试：核心验证信息不对称原则与上下文窗口策略。"""
 
 from __future__ import annotations
 
 import pytest
 
 from backend.agents.character_agent import CharacterAgent
+from backend.config import settings
 from backend.memory import MemoryManager
 from backend.models import CharacterCard, LoreEntry, RelationshipState
 
@@ -67,3 +68,67 @@ def test_safe_agent_name():
     assert name.replace("_", "").isalnum()
     assert name.isascii()
     assert name[0].isalpha()
+
+
+def _make_agent() -> CharacterAgent:
+    card = _make_card()
+    return CharacterAgent(card, MemoryManager(card.character_id, card.project_id))
+
+
+def test_system_prompt_omits_dynamic_memory_by_default():
+    """工单14：检索到的记忆每轮都变，默认不得进 system（否则 prefix cache 每轮失效）。"""
+    agent = _make_agent()
+    prompt = agent.build_system_prompt({"description": "雨夜"})
+    assert "相关记忆" not in prompt
+
+    # AutoGen 路径仍可显式注入
+    prompt_with_mem = agent.build_system_prompt({"description": "雨夜"}, ["三年前的火光"])
+    assert "三年前的火光" in prompt_with_mem
+
+
+def test_system_prompt_contains_static_scene_brief():
+    """场景信息整场不变，应放入 system 而非每轮重建的 user 消息。"""
+    agent = _make_agent()
+    prompt = agent.build_system_prompt(
+        {"name": "客栈对峙", "location": "悦来客栈", "description": "雨夜", "opening_narration": "雷声炸响"}
+    )
+    assert "客栈对峙" in prompt
+    assert "悦来客栈" in prompt
+    assert "雷声炸响" in prompt
+
+
+def test_recent_transcript_keeps_history_beyond_old_12_line_limit():
+    """工单14：预算充足时不再按固定 12 行截断，整场对话应完整可见。"""
+    agent = _make_agent()
+    transcript = [f"甲: 第{i}句台词" for i in range(30)]
+    text = agent._recent_transcript(transcript)
+    assert "第0句台词" in text
+    assert "第29句台词" in text
+    assert "已省略" not in text
+
+
+def test_recent_transcript_trims_in_blocks_and_keeps_start_stable(monkeypatch):
+    """超预算时成块丢弃最早内容，并在后续轮次沿用同一起点，保持 prompt 前缀稳定。"""
+    monkeypatch.setattr(settings, "TRANSCRIPT_TOKEN_BUDGET", 1000)
+    agent = _make_agent()
+    transcript = ["甲: " + "字" * 60 for _ in range(20)]
+
+    first = agent._recent_transcript(transcript)
+    start = agent._transcript_start
+    assert start > 0  # 已触发块式丢弃
+    assert "已省略" in first
+
+    # 新增一轮：仍在预算内，起点不应继续前移（否则前缀每轮都变）
+    second = agent._recent_transcript([*transcript, "乙: 新的一句"])
+    assert agent._transcript_start == start
+    assert second.startswith(first)  # 新内容只在末尾追加
+
+
+def test_recent_transcript_respects_line_window_override(monkeypatch):
+    """RECENT_TRANSCRIPT_WINDOW > 0 时退回按行数限制（可配置，不改代码即可调整）。"""
+    monkeypatch.setattr(settings, "RECENT_TRANSCRIPT_WINDOW", 3)
+    agent = _make_agent()
+    transcript = [f"甲: 第{i}句" for i in range(10)]
+    text = agent._recent_transcript(transcript)
+    assert "第9句" in text
+    assert "第6句" not in text
