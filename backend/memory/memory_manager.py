@@ -74,16 +74,32 @@ class MemoryManager:
         logger.debug("角色 %s 记忆固化 %d 条", self.character_id, len(items))
 
     # ---- 快照 ----
+    def prime(self, short_term_buffer: list[str] | None, episodic_summary: str = "") -> None:
+        """用快照中的运行时记忆回填本实例（工单14）。
+
+        短期缓冲与事件摘要是纯内存态，续跑/回滚时 MemoryManager 会被重新构造，
+        若不回填就会从零开始（只有 ChromaDB 长期记忆是连续的）。
+        """
+        if short_term_buffer:
+            self.short_term.load(list(short_term_buffer))
+        if episodic_summary:
+            self.episodic.load(episodic_summary)
+
     async def snapshot(self, dest_dir: Path | None = None) -> MemorySnapshot:
-        """序列化当前记忆状态。dest_dir 给出时导出 ChromaDB 副本。"""
+        """序列化当前记忆状态。dest_dir 给出时导出 ChromaDB 副本。
+
+        注意顺序：必须先取短期缓冲副本再 consolidate —— consolidate(force=True)
+        会清空 short_term，顺序颠倒会让 short_term_buffer 恒为空（工单14 修复）。
+        """
         await self.connect()
+        buffer = self.short_term.dump()
         await self.consolidate(force=True)
         export_path = ""
         if dest_dir is not None:
             export_path = self.long_term.export_to(Path(dest_dir))
         return MemorySnapshot(
             character_id=self.character_id,
-            short_term_buffer=self.short_term.dump(),
+            short_term_buffer=buffer,
             episodic_summary=self.episodic.dump(),
             chroma_export_path=export_path,
         )
