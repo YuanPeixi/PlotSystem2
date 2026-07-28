@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     SHORT_TERM_BUFFER_SIZE: int = 20
     MEMORY_TOP_K: int = 5
 
+    # --- 角色对话上下文窗口（工单14）---
+    # 拼接长期记忆检索 query 时采样最近多少行对话
+    MEMORY_QUERY_WINDOW: int = 6
+    # 传给角色 LLM 的"目前对话"最大行数；<=0 表示不限行数，仅受 token 预算约束
+    RECENT_TRANSCRIPT_WINDOW: int = 0
+    # "目前对话"的 token 预算（估算值）。现代模型上下文普遍 128K+，
+    # 默认给到 24K 足以完整容纳一整场对话，避免过早截断浪费模型能力。
+    TRANSCRIPT_TOKEN_BUDGET: int = 24000
+
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
 

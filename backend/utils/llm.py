@@ -69,3 +69,15 @@ async def chat_safe(
         return await chat(messages, temperature=temperature, model=model)
     except Exception as exc:  # noqa: BLE001
         raise LLMError(f"LLM 调用最终失败：{exc}") from exc
+
+
+def estimate_tokens(text: str) -> int:
+    """粗略估算文本 token 数（不引入 tiktoken 等新依赖）。
+
+    经验规则：CJK 字符约 1 token/字，其余字符（英文/数字/标点）约 4 字符/token。
+    仅用于上下文预算控制，允许一定误差，宁可高估不可低估。
+    """
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    return cjk + (len(text) - cjk) // 4 + 1
