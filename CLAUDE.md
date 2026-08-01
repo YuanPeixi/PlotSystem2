@@ -1,1312 +1,637 @@
-# CLAUDE.md — PlotSystem 影视多智能体剧情推演系统
+# CLAUDE.md — PlotSystem 根文档
 
-> 本文档是项目的**唯一权威规范**，供 AI 编程助手（Claude、Copilot 等）和人类开发者共同遵守。
-> 所有架构决策、模块接口、开发约定均以此文档为准。
-
----
-
-## 目录
-
-1. [项目概述](#1-项目概述)
-2. [技术栈总览](#2-技术栈总览)
-3. [项目目录结构](#3-项目目录结构)
-4. [核心概念与数据模型](#4-核心概念与数据模型)
-5. [模块详细规范](#5-模块详细规范)
-   - 5.1 [GraphRAG 处理管线](#51-graphrag-处理管线)
-   - 5.2 [角色智能体（CharacterAgent）](#52-角色智能体characteragent)
-   - 5.3 [导演智能体（DirectorAgent）](#53-导演智能体directoragent)
-   - 5.4 [场景引擎（SceneEngine）](#54-场景引擎sceneengine)
-   - 5.5 [记忆系统（MemorySystem）](#55-记忆系统memorysystem)
-   - 5.6 [快照与分支管理（SnapshotManager）](#56-快照与分支管理snapshotmanager)
-   - 5.7 [总结智能体（SummaryAgent）](#57-总结智能体summaryagent)
-   - 5.8 [后端 API（FastAPI）](#58-后端-apifastapi)
-   - 5.9 [前端（Vue 3 + Vite）](#59-前端vue-3--vite)
-6. [API 接口规范](#6-api-接口规范)
-7. [开发规范与约定](#7-开发规范与约定)
-8. [环境配置](#8-环境配置)
-9. [开发优先级路线图](#9-开发优先级路线图)
-10. [常见问题与禁止事项](#10-常见问题与禁止事项)
+> **本文件是 AI 编程助手进入本仓库的第一入口。**
+> 它不是设计愿景书，而是一份**与代码对齐的地图 + 契约清单**。
+> 当文档与代码冲突时，**以代码为准**，并顺手把本文档改对。
 
 ---
 
-## 1. 项目概述
+## 0. 阅读与使用约定
+
+### 0.1 三类标记
+
+全文所有描述必须落在以下三类之一，写新内容时也请沿用：
+
+| 标记 | 含义 | 你该怎么做 |
+|------|------|-----------|
+| **【实况】** | 代码里真实存在且在运行路径上 | 可直接依赖，修改前先读对应文件 |
+| **【契约】** | 不可破坏的架构红线 | 改动必须保持，破坏前先和人类确认 |
+| **【设想】** | 尚未实现的规划 | **不要假装它存在**；要做时先补接口再实现 |
+
+未标记的段落默认是【实况】。
+
+### 0.2 文档体系
+
+| 文件 | 面向 | 内容 |
+|------|------|------|
+| `CLAUDE.md`（本文件） | AI 助手 + 开发者 | 代码地图、数据契约、红线约束、已知缺陷、设想清单 |
+| `README.md` | 人类 | 项目介绍、截图、快速启动 |
+| `docs/fix-tickets/` | AI 助手 | 在途工单，每单自包含、可并行；索引见该目录 `README.md` |
+| `.env.example` | 全体 | **配置项的唯一真值**，本文档不复制其内容 |
+| `backend/models.py` | 全体 | **数据模型的唯一定义源**，本文档只讲语义与陷阱 |
+
+### 0.3 给 AI 助手的硬性要求
+
+1. 改代码前先看第 7 节【契约】，那 9 条是本系统的承重墙。
+2. 改数据模型必须走第 5.4 节的三步 checklist，否则字段会静默丢失。
+3. 第 12 节列出的"已知缺陷与 dead code"里的东西**不要顺手修**——除非工单要求，否则先问。
+4. 不要为了"补齐文档"新建 md 文件；改动落到本文件对应章节即可。
+5. 不新增核心依赖；确需新增，先在第 2 节登记。
+
+---
+
+## 1. 项目是什么
 
 ### 1.1 定位
 
-PlotSystem 是一个**影视多智能体、多分枝剧情推演系统**。
+PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项目）。
 
-核心工作流：
+用户上传非结构化种子文本（小说 / 剧本 / 世界观设定），系统抽取实体建立知识图谱，
+生成一批带**信息不对称**的角色智能体；随后由**导演智能体**按场次组织推演，
+每场结束后评估并决策（继续 / 下一场 / 回滚）；全程以场次为单位自动打快照，
+用户可从任意快照分叉出 IF 线；最后由总结智能体产出小说 / 剧本 / 报告。
+
+### 1.2 血统与取舍（理解设计动机用）
+
+| 来源 | 学到了什么 | 抛弃了什么 |
+|------|-----------|-----------|
+| **MiroFish**（原基座，多智能体群体模拟） | 多层记忆设计、实体抽取 → 图谱 → 智能体的整体流水线 | 强依赖 Zep（付费昂贵）；一切实体被拍平成"社交账号"（游戏剧情里的天灾也变成发帖账号）；快照/分支难做 |
+| **SillyTavern**（角色扮演） | 角色卡（persona / speech_style）、lorebook 按关键词动态注入、持续上下文工程 | — |
+| **"GPT 接入原神"类项目** | 长线任务与具体角色都由 AI 驱动，而非脚本 | — |
+
+**因此本项目的形态是**：用户给大方向 → 导演做宏观调控 → 角色自然演绎。
+不是剧本执行器，也不是社交模拟器。
+
+> 【实况】CLAUDE.md 早期版本把 AutoGen / LlamaIndex / microsoft-graphrag 写成核心实现，
+> 实际开发中三者均未接入运行路径（详见第 2 节）。这是开发期的技术选型演进结果，
+> 不影响最终能力，**不要试图"修复"回去**。
+
+### 1.3 真实工作流
+
 ```
-种子文本（小说/剧本/世界观文档）
-    ↓ GraphRAG 处理
-知识图谱 + 角色实体 + 世界规则
-    ↓ 角色初始化
-多个 CharacterAgent（具有独立记忆、视角、目标）
-    ↓ DirectorAgent 规划场景
-场景快照 → AutoGen 多轮对话模拟 → 导演决策（回滚/继续/下一场）
-    ↓ 分支树管理
-多版本场景日志
-    ↓ SummaryAgent
-网文 / 剧本 / 报告 输出
+① 上传种子文本  POST /projects/{id}/seed
+② 触发构建      POST /projects/{id}/build   （后台任务）
+        ↓  自研 LLM 抽取（非 microsoft/graphrag）
+   实体 + 关系 → Kuzu 图谱
+   角色实体     → CharacterCard（含 known_facts / unknown_facts）
+   世界规则     → LoreEntry
+   并创建 main 分支
+③ 导演规划场景  POST /projects/{id}/scenes/plan  → SceneConfig（建议，不落库）
+④ 创建场景      POST /projects/{id}/scenes       → Scene（落库，pending）
+⑤ 开始模拟      POST /scenes/{id}/start          （后台任务 + SSE）
+        ↓  前置快照 → 轮询发言 → 解析三态 → 终止判定 → 后置快照 → 记忆固化
+⑥ 自动评估      DirectorAgent.evaluate_scene → evaluations 表 → SSE 推送
+⑦ 导演决策      POST /scenes/{id}/decision
+        ├─ continue   同场加轮次重跑
+        ├─ next_scene 规划并创建新场景（可人工覆盖角色/地点/条件）
+        └─ rollback   恢复快照 + 新建"回滚重演"场景
+⑧ 生成输出      POST /projects/{id}/output  → 网文 / 剧本 / 舞台剧 / 报告 / 原始日志
 ```
 
-### 1.2 设计原则
+### 1.4 设计信条
 
-- **信息不对称**：每个 CharacterAgent 只持有其"已知信息"，不得访问全局知识图谱
-- **快照可回滚**：任何场景模拟前必须创建快照，支持带新初始条件重新模拟
-- **导演主权**：DirectorAgent 是唯一的全局协调者，负责所有跨场景决策
-- **本地优先**：所有依赖均可本地部署，无强制云服务依赖
-- **模块解耦**：各模块通过明确的 Python 接口通信，不直接跨模块访问内部状态
-
-### 1.3 团队信息
-
-- 团队规模：4人，AI 辅助开发为主
-- 许可证：MIT（除非另有说明）
-- Python 版本：≥ 3.11，≤ 3.12
+- **信息不对称是第一性的**：角色只能看到自己的 `known_facts`。公主不在朝堂，
+  就该在与王子对话后才自然地表现出惊讶。这是本项目区别于普通群聊模拟的核心。
+- **快照不追求确定性重放**：LLM 有随机性，回到快照重跑不会 100% 复现。
+  快照的目的是**"我能回到这里分叉 IF 线"**和**"演得不好能回来调"**，不是版本控制。
+- **导演宏观、角色微观**：导演不写台词，只搭场景、选人、评估、决策。
+- **本地优先 / 优雅降级**：kuzu、chromadb、autogen 全部缺失时系统仍可跑（见【契约6】）。
+- **编排集中**：所有跨模块调用只允许发生在 `backend/services/orchestrator.py`。
 
 ---
 
-## 2. 技术栈总览
+## 2. 技术栈实况
 
-| 层次 | 技术选型 | 版本要求 | 说明 |
-|------|----------|----------|------|
-| **场景引擎** | AutoGen 0.4 (`autogen-agentchat`) | `>=0.4.0` | GroupChat 模式驱动角色对话 |
-| **动态记忆/RAG** | LlamaIndex + ChromaDB | `>=0.10.0` / `>=0.4.0` | 角色短期动态记忆检索 |
-| **知识图谱** | Kuzu（嵌入式） | `>=0.6.0` | 支持 Cypher，文件级持久化，无需 Docker |
-| **GraphRAG** | microsoft/graphrag | `>=1.0.0` | 种子文本 → 实体关系提取，内置 Kuzu 支持 |
-| **快照存储** | SQLite + JSON 文件树 | 内置 | 场景状态快照与分支索引 |
-| **后端框架** | FastAPI + Uvicorn | `>=0.110.0` | 异步 API，SSE 推送模拟进度 |
-| **前端框架** | Vue 3 + Vite | Vue `>=3.4` | 参考 MiroFish 布局风格 |
-| **图谱可视化** | AntV G6 | `>=5.0.0` | 知识图谱渲染，支持大规模节点 |
-| **状态管理** | Pinia | `>=2.0.0` | Vue 3 官方推荐 |
-| **HTTP 客户端** | Axios | `>=1.6.0` | 前端请求后端 |
-| **LLM 接入** | OpenAI SDK（兼容格式） | `>=1.0.0` | 支持任意 OpenAI 格式 API |
+| 层次 | 实际使用 | 状态 | 说明 / 真实实现位置 |
+|------|---------|------|--------------------|
+| LLM 接入 | OpenAI 兼容 SDK + tenacity | ✅ 已接入 | `backend/utils/llm.py` 是**唯一出口** |
+| 实体抽取 | 自研 LLM + JSON 提示词 | ✅ 已接入 | `graphrag_pipeline/entity_extractor.py` |
+| 知识图谱 | Kuzu（嵌入式，Cypher） | ✅ 已接入 | `knowledge_graph/graph_manager.py`；缺失时降级为空图 |
+| 向量记忆 | chromadb 原生 client + 远程 embedding | ✅ 已接入 | `memory/long_term.py` + `memory/embeddings.py` |
+| 场景引擎 | **自研**手写对话循环 | ✅ 已接入 | `scene_engine/engine.py` |
+| 后端 | FastAPI + Uvicorn + sse-starlette | ✅ 已接入 | `backend/main.py` |
+| 持久化 | aiosqlite + JSON 文件树 | ✅ 已接入 | `utils/db.py` + `services/repository.py` |
+| 前端 | Vue 3 + Vite + Pinia + Axios | ✅ 已接入 | `frontend/src/` |
+| 图谱可视化 | AntV G6 | ✅ 已接入 | `GraphViewer.vue` / `GraphViewer2.vue` |
+| **AutoGen** (`autogen-agentchat`) | 仅 `base_agent.py` 与 `CharacterAgent.get_autogen_agent()` | 🚫 **已评估，倾向不引入** | 无调用方。GroupChat 编排会打破【契约3】的 system 静态 / user 动态结构；未来的"角色动作交由环境智能体裁决"用 OpenAI 原生 function calling 即可，不需要 AutoGen |
+| **LlamaIndex** | 无 | 🚫 **已评估，暂不引入** | 全仓库零 import。它对长期记忆的真实增量价值 = 时间衰减权重 + 混合检索(BM25) + 分层索引，这三项可在现有 Chroma 封装上手写，不必引入整个框架 |
+| **microsoft/graphrag** | 无 | ❌ **未使用** | 已移入 `[project.optional-dependencies].graphrag` |
+
+> 改 RAG 检索请改 `memory/long_term.py`；改实体抽取请改 `entity_extractor.py` 的提示词；
+> 改发言顺序请改 `scene_engine/engine.py`。**不要去找 GroupChat 或 settings.yaml。**
+
+### 2.1 三路异构模型
+
+`settings.director_model / character_model / summary_model` 分别读
+`LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY`，留空回退 `LLM_MODEL_NAME`。三个 Agent 已各自生效。
+
+温度约定：角色 0.8（创意）、导演 0.3（一致）、总结 0.7（平衡）。
 
 ---
 
-## 3. 项目目录结构
+## 3. 代码地图
 
 ```
-PlotSystem/
-├── CLAUDE.md                    # 本文件，项目唯一权威规范
-├── README.md                    # 用户面向的简要说明
-├── .env.example                 # 环境变量模板
-├── .env                         # 实际配置（不入 git）
-├── .gitignore
-├── pyproject.toml               # Python 项目配置（uv 管理）
-├── package.json                 # 根级脚本（同时启动前后端）
+backend/
+├── models.py           ★ 所有领域 dataclass 的唯一定义处
+├── config.py           ★ pydantic-settings 单例 + 派生路径 + 三路模型属性
+├── exceptions.py       业务异常树（ConflictError→409，其余 PlotSystemError→404）
+├── main.py             FastAPI 装配 + 全局异常处理 + lifespan（init_db / 构建对账）
 │
-├── backend/                     # Python 后端
-│   ├── main.py                  # FastAPI 入口
-│   ├── config.py                # 全局配置加载（从 .env）
-│   │
-│   ├── graphrag_pipeline/       # GraphRAG 处理管线
-│   │   ├── __init__.py
-│   │   ├── pipeline.py          # 主管线：种子文本 → 图谱
-│   │   ├── entity_extractor.py  # 实体与关系提取
-│   │   ├── persona_builder.py   # 从图谱生成角色 Persona
-│   │   └── world_rules.py       # 世界规则条目提取
-│   │
-│   ├── agents/                  # 智能体核心
-│   │   ├── __init__.py
-│   │   ├── character_agent.py   # CharacterAgent 定义
-│   │   ├── director_agent.py    # DirectorAgent 定义
-│   │   ├── summary_agent.py     # SummaryAgent 定义
-│   │   └── base_agent.py        # 公共基类
-│   │
-│   ├── scene_engine/            # 场景引擎
-│   │   ├── __init__.py
-│   │   ├── engine.py            # AutoGen GroupChat 封装
-│   │   ├── scene_config.py      # 场景配置数据类
-│   │   └── termination.py       # 场景终止条件
-│   │
-│   ├── memory/                  # 记忆系统
-│   │   ├── __init__.py
-│   │   ├── memory_manager.py    # 统一记忆管理接口
-│   │   ├── long_term.py         # 长期记忆（ChromaDB + LlamaIndex）
-│   │   ├── short_term.py        # 短期记忆（对话窗口管理）
-│   │   └── episodic.py          # 事件摘要记忆
-│   │
-│   ├── knowledge_graph/         # 知识图谱层
-│   │   ├── __init__.py
-│   │   ├── graph_manager.py     # Kuzu 图操作统一接口
-│   │   ├── schema.py            # 图谱 Schema 定义
-│   │   └── queries.py           # 常用 Cypher 查询集合
-│   │
-│   ├── snapshot/                # 快照与分支管理
-│   │   ├── __init__.py
-│   │   ├── snapshot_manager.py  # 快照创建/恢复/删除
-│   │   ├── branch_tree.py       # 分支树数据结构
-│   │   └── models.py            # 快照数据模型
-│   │
-│   ├── api/                     # API 路由层
-│   │   ├── __init__.py
-│   │   ├── projects.py          # 项目管理路由
-│   │   ├── characters.py        # 角色管理路由
-│   │   ├── scenes.py            # 场景控制路由
-│   │   ├── director.py          # 导演决策路由
-│   │   └── output.py            # 输出导出路由
-│   │
-│   └── utils/
-│       ├── __init__.py
-│       ├── logger.py            # 统一日志
-│       └── serializer.py        # 序列化工具
+├── services/           ★★ 编排层：找业务逻辑先看这里
+│   ├── orchestrator.py   唯一跨模块编排点（构建/规划/运行/决策/输出/对账）
+│   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON）
+│   └── events.py         SSE 内存事件总线（asyncio.Queue）
 │
-├── frontend/                    # Vue 3 前端
-│   ├── index.html
-│   ├── vite.config.ts
-│   ├── package.json
-│   ├── tsconfig.json
-│   │
-│   └── src/
-│       ├── main.ts
-│       ├── App.vue
-│       │
-│       ├── pages/
-│       │   ├── Workspace.vue    # 主工作台：种子上传 + 图谱可视化
-│       │   ├── Director.vue     # 导演视角：场景树 + 分支管理
-│       │   └── Output.vue       # 输出：日志 + 文本导出
-│       │
-│       ├── components/
-│       │   ├── GraphViewer.vue  # AntV G6 知识图谱组件
-│       │   ├── SceneTree.vue    # 分支树可视化组件
-│       │   ├── CharacterCard.vue# 角色卡片组件
-│       │   ├── DialogLog.vue    # 对话日志滚动组件
-│       │   └── DirectorPanel.vue# 导演决策面板
-│       │
-│       ├── stores/              # Pinia 状态
-│       │   ├── project.ts
-│       │   ├── characters.ts
-│       │   ├── scenes.ts
-│       │   └── director.ts
-│       │
-│       ├── api/
-│       │   └── client.ts        # Axios 封装 + API 函数
-│       │
-│       └── types/
-│           └── index.ts         # 前端 TypeScript 类型定义
+├── api/                路由层：只做参数校验 → 调 services → to_dict
+│   projects / characters / scenes / director / branches / output / graph / schemas
 │
-├── data/                        # 运行时数据（不入 git）
-│   ├── projects/                # 每个项目独立目录
-│   │   └── {project_id}/
-│   │       ├── seed_texts/      # 原始种子文本
-│   │       ├── graphrag_output/ # GraphRAG 处理结果
-│   │       ├── kuzu_db/         # Kuzu 图数据库文件
-│   │       ├── chroma_db/       # ChromaDB 向量数据
-│   │       └── snapshots/       # 快照 JSON 文件
-│   └── projects.db              # SQLite：项目/场景/分支索引
+├── agents/
+│   ├── character_agent.py  角色演绎（prompt 构建 + 记忆检索 + chat_safe）
+│   ├── director_agent.py   plan_scene / evaluate_scene / make_decision
+│   ├── summary_agent.py    5 种格式输出
+│   └── base_agent.py       AutoGen 模型客户端封装（⚠️ 无调用方）
 │
-└── tests/
-    ├── test_graphrag_pipeline.py
-    ├── test_character_agent.py
-    ├── test_scene_engine.py
-    ├── test_snapshot_manager.py
-    └── conftest.py
+├── scene_engine/
+│   ├── engine.py         手写对话循环 + 三态解析 + 快照编排
+│   ├── termination.py    终止条件判定
+│   └── scene_config.py   仅从 models.py 再导出
+│
+├── memory/
+│   ├── memory_manager.py 三层门面
+│   ├── short_term.py     deque 对话缓冲（纯内存）
+│   ├── long_term.py      ChromaDB 向量库（可降级为字符重叠伪检索）
+│   ├── episodic.py       关键词启发式的事件摘要（纯内存）
+│   └── embeddings.py     RemoteEmbeddingFunction（替换 Chroma 默认本地 onnx 模型）
+│
+├── knowledge_graph/
+│   ├── graph_manager.py  Kuzu 操作（同步 API 的 async 包装）
+│   ├── schema.py         DDL
+│   └── queries.py        ⚠️ dead code，零 import
+│
+├── snapshot/
+│   ├── snapshot_manager.py 快照创建/恢复/删除 + 分支 fork + 分支树
+│   ├── branch_tree.py      树结构组装
+│   └── models.py           仅从 models.py 再导出
+│
+├── graphrag_pipeline/
+│   ├── pipeline.py        分块 → 抽取 → 写图 → 生成角色卡 → 提取世界规则
+│   ├── entity_extractor.py
+│   ├── persona_builder.py
+│   └── world_rules.py
+│
+└── utils/
+    ├── llm.py         ★ LLM 唯一出口（chat / chat_safe / estimate_tokens）
+    ├── db.py          SQLite DDL + 连接
+    ├── serializer.py  to_dict（dataclass → JSON 安全字典）
+    ├── logger.py
+    └── init_db.py     `python -m backend.utils.init_db`
+
+frontend/src/
+├── pages/       Workspace.vue（项目+图谱） / Director.vue（分支树+日志+决策） / Output.vue
+├── components/  GraphViewer.vue、GraphViewer2.vue、SceneTree.vue、
+│                CharacterCard.vue、DialogLog.vue、DirectorPanel.vue
+├── stores/      project.ts / characters.ts / scenes.ts / director.ts
+├── router/index.ts、api/client.ts、types/index.ts、styles/global.css
 ```
+
+**入口速查**：
+- 想改「一场戏怎么演」→ `scene_engine/engine.py`
+- 想改「角色说什么」→ `agents/character_agent.py`
+- 想改「谁来演、演完怎么办」→ `services/orchestrator.py`
+- 想改「存了什么」→ `services/repository.py` + `utils/db.py`
+- 想加 API → `api/*.py`（**业务逻辑不要写在这层**）
 
 ---
 
-## 4. 核心概念与数据模型
+## 4. 数据模型
 
-### 4.1 Project（项目）
+> **唯一定义源：`backend/models.py`。** 这里只讲语义与陷阱，不复制字段清单。
 
-一个推演项目对应一部作品/世界观，包含其所有角色、场景、分支。
+### 4.1 模型总览
 
-```python
-@dataclass
-class Project:
-    project_id: str          # UUID
-    name: str                # 项目名称
-    description: str         # 简述
-    seed_texts: list[str]    # 种子文本文件路径列表
-    status: str              # "initializing" | "ready" | "simulating"
-    created_at: datetime
-    updated_at: datetime
-```
+| 模型 | 作用 | 存放位置 |
+|------|------|---------|
+| `Project` | 推演项目 | SQLite `projects` |
+| `CharacterCard` | 角色卡（persona + 信息不对称 + 关系 + 当前状态） | **文件** `characters/{cid}.json` |
+| `CharacterState` | 角色在某时刻的快照态（含短期缓冲 / 事件摘要） | 快照目录 JSON |
+| `LoreEntry` | 世界观条目（keywords 触发、scope 控制可见范围、priority 排序） | 内嵌于角色卡 |
+| `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
+| `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
+| `SceneEvaluation` | 四维评分 + 推荐决策 | SQLite `evaluations` |
+| `DirectorDecision` | 导演决策 + 人工覆盖字段 | SQLite `decisions` |
+| `Snapshot` / `Branch` / `BranchTree` | 快照与分支 | SQLite `snapshots`/`branches` + 快照目录 |
+| `MemoryChunk` / `MemorySnapshot` | 记忆检索与序列化载体 | 运行时 |
 
-### 4.2 CharacterCard（角色卡）
+### 4.2 容易踩的语义陷阱
 
-灵感来源：SillyTavern 角色卡设计，扩展了记忆层和信息不对称字段。
-
-```python
-@dataclass
-class CharacterCard:
-    character_id: str
-    project_id: str
-    name: str
-    # --- Persona（SillyTavern 风格）---
-    persona: str             # 性格、背景、说话风格描述
-    appearance: str          # 外貌描述
-    speech_style: str        # 说话习惯、口癖
-    # --- 世界观注入 ---
-    world_lore_entries: list[LoreEntry]   # 按相关性动态注入的世界观条目
-    # --- 信息不对称（关键）---
-    known_facts: list[str]   # 该角色"已知"的信息
-    unknown_facts: list[str] # 该角色"不知道"的信息（仅导演可见）
-    # --- 关系 ---
-    relationships: dict[str, RelationshipState]  # {character_id: 关系状态}
-    # --- 当前状态 ---
-    current_emotion: str
-    current_goal: str
-    current_location: str
-```
-
-### 4.3 LoreEntry（世界观条目）
-
-```python
-@dataclass
-class LoreEntry:
-    lore_id: str
-    content: str             # 世界观描述文本
-    keywords: list[str]      # 触发关键词
-    scope: str               # "global"（所有角色可见）| "character:{id}"（特定角色）
-    priority: int            # 注入优先级 1-10
-```
-
-### 4.4 Scene（场景）
-
-```python
-@dataclass
-class Scene:
-    scene_id: str
-    project_id: str
-    branch_id: str           # 所属分支
-    parent_scene_id: str | None
-    name: str
-    description: str         # 导演对场景的描述和目标
-    participating_characters: list[str]   # character_id 列表
-    location: str
-    initial_conditions: dict  # 导演设定的初始条件/变量
-    max_turns: int           # 最大模拟轮次
-    status: str              # "pending" | "running" | "paused" | "completed"
-    snapshot_id_before: str  # 模拟前快照 ID
-    snapshot_id_after: str | None
-    restore_snapshot_id: str # 回滚重演场景的来源快照 ID（用于回填运行时记忆）
-    turns_completed: int
-    dialogue_log: list[DialogueTurn]  # 完整对话记录
-```
-
-### 4.5 DialogueTurn（对话轮次）
-
-```python
-@dataclass
-class DialogueTurn:
-    turn_id: str
-    scene_id: str
-    turn_number: int
-    character_id: str        # 发言角色
-    character_name: str
-    # 分类记录（供 SummaryAgent 使用）
-    dialogue: str | None     # 对白内容
-    action: str | None       # 行动描述（*斜体*格式）
-    inner_thought: str | None  # 内心独白（角色自我视角）
-    # 元信息
-    timestamp: datetime
-    memory_context_used: list[str]  # 本轮检索到的记忆摘要（调试用）
-```
-
-### 4.6 Snapshot（快照）
-
-```python
-@dataclass
-class Snapshot:
-    snapshot_id: str
-    scene_id: str
-    branch_id: str
-    created_at: datetime
-    # 快照内容
-    character_states: dict[str, CharacterState]  # {character_id: 状态}
-    scene_context: dict      # 场景上下文变量
-    graph_checkpoint: str    # Kuzu 图快照文件路径
-    chroma_checkpoint: str   # ChromaDB 集合快照路径
-```
-
-```python
-@dataclass
-class CharacterState:
-    character_id: str
-    current_emotion: str
-    current_goal: str
-    current_location: str
-    relationships: dict[str, RelationshipState]
-    long_term_memory_snapshot: str   # ChromaDB 集合序列化路径
-    episodic_summary: str            # 重要事件摘要文本
-    short_term_buffer: list[str]     # 最近 N 轮对话缓冲
-```
-
-### 4.7 Branch（分支）
-
-```python
-@dataclass
-class Branch:
-    branch_id: str
-    project_id: str
-    parent_branch_id: str | None
-    fork_from_snapshot_id: str | None  # 从哪个快照分叉
-    fork_conditions: dict    # 新分支的初始条件差异
-    name: str                # 人类可读标签（如"林黛玉未死线"）
-    scenes: list[str]        # scene_id 有序列表
-    created_at: datetime
-    director_notes: str      # 导演对此分支的备注
-```
+1. **`Scene.snapshot_id_before` 为空是有意义的信号**：`SceneEngine.run()` 只有在它为空时
+   才创建前置快照。回滚重演场景**必须**留空它，否则会跳过快照、丢掉新初始条件。
+2. **`Scene.restore_snapshot_id` 与上者分工**：前者管"从哪儿回填运行时记忆"，
+   后者管"要不要打快照"。两者不可合并。
+3. **`Scene` 没有 `speaker_mode` 字段**。`SceneConfig.speaker_mode` 存在且引擎支持
+   selector/random 分支，但链路是断的（见第 12 节）。
+4. **`CharacterState.long_term_memory_snapshot` 恒为空字符串**，`_collect_states()` 不写它。
+5. **`DirectorDecision` 的 `next_*` 覆盖字段全为 `None` 时表示"保持 AI 自动规划"**，
+   不要用空字符串/空列表当默认值。
+6. **四维评分语义**：`narrative_goal` / `dramatic_tension` / `character_consistency` 越高越好；
+   `plot_deviation` **越低越好**（0 = 完全贴合主线）。
 
 ---
 
-## 5. 模块详细规范
+## 5. 持久化契约 ★
 
-### 5.1 GraphRAG 处理管线
+> 这一节是最容易写出静默 bug 的地方，改数据相关代码前必读。
 
-**位置**：`backend/graphrag_pipeline/`  
-**职责**：将非结构化种子文本转化为知识图谱和角色初始状态
+### 5.1 SQLite（`data/projects.db`，7 张表）
 
-#### 主接口
+`projects` / `branches` / `scenes` / `snapshots` / `evaluations` / `decisions` / `outputs`
 
-```python
-# backend/graphrag_pipeline/pipeline.py
+**【契约】统一模式：每张表的 `data_json` 列存放整个 dataclass 的 JSON，是唯一真相源；
+`name` / `status` / `branch_id` / `created_at` 等列仅用于索引、过滤与 CAS。**
 
-class GraphRAGPipeline:
-    def __init__(self, project_id: str, config: GraphRAGConfig): ...
+所有读取（`get_scene` / `list_projects` / ...）都从 `data_json` 反序列化。
+只更新列而不更新 `data_json`，对 API 完全不可见。
 
-    async def run(self, seed_text_paths: list[str]) -> PipelineResult:
-        """
-        主管线入口。依次执行：
-        1. 文本分块与清洗
-        2. 调用 microsoft/graphrag 提取实体关系
-        3. 将实体关系写入 Kuzu 图数据库
-        4. 为每个角色实体生成初始 CharacterCard
-        5. 提取世界规则，生成 LoreEntry 列表
-        返回 PipelineResult 包含所有生成的实体 ID
-        """
-        ...
+**唯一例外**：`scenes.status` 列会承载 CAS 瞬态值 `deciding`，且**刻意不写入 `data_json`**
+（见【契约5】）。因此该列的值域比 `SceneStatus` 枚举多一个。
 
-    async def extract_entities(self, texts: list[str]) -> list[Entity]: ...
-    async def build_graph(self, entities: list[Entity], relations: list[Relation]) -> None: ...
-    async def generate_personas(self, entity_ids: list[str]) -> list[CharacterCard]: ...
-    async def extract_world_rules(self, texts: list[str]) -> list[LoreEntry]: ...
+### 5.2 文件系统 `data/projects/{project_id}/`
+
+```
+characters/{character_id}.json    ★ 角色卡不入库，走文件系统
+seed_texts/                       原始种子文本
+kuzu_db                           ⚠️ 当前 Kuzu 版本下是【单个文件】，不是目录
+chroma_db/                        向量库
+snapshots/{snapshot_id}/
+    meta.json
+    character_states/{cid}.json
+    chroma_collections/
+build_status.json                 构建进度（供重启后对账）
 ```
 
-#### Kuzu Schema
+角色卡无 `delete_character`；删项目直接 `rmtree` 整个项目目录。
 
-```cypher
--- 节点类型
-CREATE NODE TABLE Character (
-    id STRING,
-    name STRING,
-    persona TEXT,
-    PRIMARY KEY (id)
-)
+### 5.3 进程内易失状态
 
-CREATE NODE TABLE Location (
-    id STRING,
-    name STRING,
-    description TEXT,
-    PRIMARY KEY (id)
-)
+`_active_scenes`（并发守卫）、`_running_engines`（暂停/中断）、`_build_status`（有磁盘兜底）、
+`events._subscribers`（SSE 订阅者）、每个 `MemoryManager` 的短期与事件记忆。
 
-CREATE NODE TABLE Event (
-    id STRING,
-    name STRING,
-    description TEXT,
-    timestamp_in_story STRING,
-    PRIMARY KEY (id)
-)
+### 5.4 【契约】修改数据模型的三步 checklist
 
-CREATE NODE TABLE Concept (
-    id STRING,
-    name STRING,
-    description TEXT,
-    PRIMARY KEY (id)
-)
+1. 改 `backend/models.py` 的 dataclass；
+2. **同步改 `services/repository.py` 里对应的 `_deserialize_*`**（`_deserialize_card` /
+   `_deserialize_scene` / 快照的 `_deserialize_character_state`）——漏这步字段会静默丢失；
+3. 评估是否需要新增 SQL 列（只有需要索引/过滤/CAS 时才加，普通字段靠 `data_json` 自动携带）。
 
--- 关系类型
-CREATE REL TABLE KNOWS (FROM Character TO Character, relation_type STRING, strength FLOAT)
-CREATE REL TABLE LOCATED_AT (FROM Character TO Location, time_context STRING)
-CREATE REL TABLE PARTICIPATED_IN (FROM Character TO Event, role STRING)
-CREATE REL TABLE RELATED_TO (FROM Concept TO Concept, relation STRING)
-CREATE REL TABLE MENTIONED_IN (FROM Character TO Concept, context STRING)
-```
+前端有对应类型时，同步改 `frontend/src/types/index.ts`。
 
 ---
 
-### 5.2 角色智能体（CharacterAgent）
+## 6. 核心调用链
 
-**位置**：`backend/agents/character_agent.py`  
-**职责**：封装 AutoGen `AssistantAgent`，注入角色 Persona 和动态记忆，维持角色一致性
+```mermaid
+graph TD
+  A[POST /seed] --> B[POST /build → BackgroundTask]
+  B --> C[orchestrator.run_graphrag]
+  C --> D[GraphRAGPipeline: 编码嗅探 → 分块 → EntityExtractor]
+  D --> E[GraphManager 写 Kuzu]
+  D --> F[PersonaBuilder 逐个生成 CharacterCard<br/>on_character 回调即时落盘]
+  D --> G[WorldRulesExtractor → LoreEntry]
+  C --> H[SnapshotManager.ensure_main_branch]
 
-#### 核心实现规范
-
-```python
-# backend/agents/character_agent.py
-
-class CharacterAgent:
-    """
-    封装 AutoGen AssistantAgent 的角色智能体。
-    每个实例对应一个角色，持有独立的记忆管理器。
-    """
-
-    def __init__(
-        self,
-        character_card: CharacterCard,
-        memory_manager: MemoryManager,
-        llm_config: dict,
-    ): ...
-
-    def build_system_prompt(self, scene_context: dict) -> str:
-        """
-        构建角色的 system prompt，结构如下：
-        1. 角色基础 Persona（固定）
-        2. 当前状态（情绪/目标/位置）
-        3. 动态注入的 LoreEntry（按关键词相关性筛选）
-        4. 已知信息列表（known_facts）
-        5. 关系状态摘要
-        6. 行为格式指令（对白/动作/内心独白分离）
-
-        【禁止】在 system prompt 中注入 unknown_facts
-        【禁止】在 system prompt 中泄露其他角色的内心独白
-        """
-        ...
-
-    async def retrieve_relevant_memory(self, context: str, top_k: int = 5) -> list[str]:
-        """
-        从长期记忆中检索与当前场景上下文相关的记忆片段。
-        使用 LlamaIndex 向量检索。
-        """
-        ...
-
-    def get_autogen_agent(self) -> AssistantAgent:
-        """返回配置好的 AutoGen AssistantAgent 实例"""
-        ...
-
-    async def update_state_after_scene(self, scene_log: list[DialogueTurn]) -> None:
-        """场景结束后更新角色状态和长期记忆"""
-        ...
+  I[POST /scenes/plan] --> J[DirectorAgent.plan_scene → SceneConfig]
+  J --> K[POST /scenes → Scene 落库 pending]
+  K --> L[POST /scenes/id/start → BackgroundTask]
+  L --> M[orchestrator.run_scene]
+  M --> N[_load_inherited_states 四级快照继承]
+  N --> O[build_character_agents + MemoryManager.prime]
+  O --> P[SceneEngine.run]
+  P --> Q[前置快照 → 选人 → respond → 解析 → 后置快照 → 固化记忆]
+  Q --> R[events.publish turn/status/snapshot]
+  R --> S[SSE /scenes/id/stream → 前端 DialogLog]
+  Q --> T[DirectorAgent.evaluate_scene → evaluations]
+  T --> U[POST /scenes/id/decision → apply_decision]
+  U --> V{continue / next_scene / rollback}
 ```
 
-#### System Prompt 模板
+### 6.1 构建（`run_graphrag`）
 
-```
-你是【{name}】。
+后台任务。进度经 `_set_build_status` 同时写内存与 `build_status.json`。
+角色卡在生成过程中通过 `on_character` 回调**逐个落盘**，前端轮询即可增量预览。
+失败时把 stage 写成 `失败: xxx` 并把项目状态退回 `initializing`。
 
-【角色设定】
-{persona}
+### 6.2 运行场景（`run_scene`）
 
-【说话风格】
-{speech_style}
+1. `_active_scenes` 并发守卫（检查与写入之间无 `await`，依赖单线程事件循环原子性）；
+2. `_load_inherited_states` 取运行时记忆；
+3. `build_character_agents`：**每场新建** `CharacterAgent` + `MemoryManager`（无跨场复用），
+   用 `prime()` 回填短期缓冲与事件摘要；长期记忆靠 ChromaDB 目录天然连续；
+4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
+   → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 → 追加 transcript
+   → `add_experience` → SSE 推送；
+5. 终止后后置快照 → 每个 agent `update_state_after_scene(new_turns)`；
+6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库 → 推 evaluation 与 completed。
 
-【当前状态】
-- 情绪：{current_emotion}
-- 目标：{current_goal}
-- 位置：{current_location}
+**注意**：`SceneEngine` 不碰 SQLite，它把结果写回传入的 `Scene` 对象，由 orchestrator 负责落盘。
 
-【你所了解的世界】
-{lore_entries}
+### 6.3 决策（`apply_decision`）
 
-【你知道的事实】
-{known_facts}
+见【契约5】。三分支行为：
 
-【人际关系】
-{relationship_summary}
+- **continue**：`max_turns = turns_completed + extra`（默认 6），状态改回 `pending`，
+  `asyncio.create_task(run_scene)` 重跑。**不写 decisions 表**（开启新一轮生命周期）。
+- **next_scene**：调 `plan_scene` 生成配置 → 应用人工覆盖（角色/地点/初始条件）
+  → 建新场景并记录 `parent_scene_id` → 写 decisions 表。
+- **rollback**：`restore_snapshot` → `_apply_character_states` 写回角色卡
+  → 新建"（回滚重演）"场景，`snapshot_id_before=""`、`restore_snapshot_id=target`
+  → 写 decisions 表。目标快照缺失时**不持久化决策**，允许用户补 ID 重试。
 
-【行为格式规范】
-- 对白直接说出，无需引号
-- 动作用 *星号包裹*，如：*走向窗边*
-- 内心独白用 [方括号包裹]，如：[他在说谎]
-- 每轮回应必须包含至少一种格式
-- 保持角色一致性，不得跳出角色视角
-- 你只知道你"已知"的信息，不得使用你不该知道的信息
-```
+### 6.4 启动对账（`reconcile_stale_builds`）
+
+`main.py` 的 lifespan 中调用：扫描所有 `build_status.json`，把进度在 (0,1) 且既非完成
+也非失败的状态标记为失败，避免前端无限轮询卡死。
 
 ---
 
-### 5.3 导演智能体（DirectorAgent）
+## 7. 【契约】九条承重墙
 
-**位置**：`backend/agents/director_agent.py`  
-**职责**：全局剧情规划、场景设计、模拟后决策（回滚/继续/下一场）
+改动触碰以下任意一条时，必须显式保持，破坏前先和人类确认。
 
-#### 核心实现规范
+### 契约 1 — 信息不对称（注意隔离边界）
 
-```python
-class DirectorAgent:
-    """
-    导演智能体，持有全局知识图谱访问权限。
-    是唯一可以查看所有角色内部状态的实体。
-    """
+**该隔离的**：
+- `unknown_facts` 只允许出现在 `PersonaBuilder` 生成过程与面向导演/用户的 API 响应中，
+  **绝不允许**进入 `CharacterAgent.build_system_prompt()` 或任何角色可见的上下文；
+- 一个角色的 `inner_thought` 不得进入其他角色的 prompt；
+- 角色不在场的场次里发生的信息（跨场次传播应走【设想】里的世界状态通道，不是直接给）。
 
-    def __init__(
-        self,
-        project_id: str,
-        graph_manager: GraphManager,
-        snapshot_manager: SnapshotManager,
-        llm_config: dict,
-    ): ...
+**不该隔离的**：同一场景中在场角色的**公开发言与动作**。这些是共享感知，
+每个在场角色都应该记住。
 
-    async def plan_scene(
-        self,
-        branch_id: str,
-        narrative_goal: str,
-        available_characters: list[CharacterCard],
-    ) -> SceneConfig:
-        """
-        根据叙事目标规划下一场景：
-        - 选择参与角色（2-6人为宜）
-        - 设定场景位置和初始条件
-        - 设定最大轮次
-        - 给出场景描述和期望走向（不强制结果）
-        """
-        ...
+> ⚠️ 早期文档只写"角色只持有已知信息"，被误读成"不该记录他人发言"，
+> 这是第 12 节"记忆只写发言者"那个 bug 的文档层成因。别再退回去。
 
-    async def evaluate_scene(
-        self,
-        scene: Scene,
-        dialogue_log: list[DialogueTurn],
-    ) -> SceneEvaluation:
-        """
-        场景模拟结束后的评估，返回：
-        - 梗概摘要
-        - 叙事目标达成度评分（0-10）
-        - 戏剧张力评分（0-10）
-        - 与主线偏离程度评分（0-10）
-        - 推荐决策（continue | next_scene | rollback）
-        - 回滚时建议的新初始条件
-        """
-        ...
+### 契约 2 — 快照前置（含唯一例外）
 
-    async def make_decision(
-        self,
-        evaluation: SceneEvaluation,
-        human_override: DirectorDecision | None = None,
-    ) -> DirectorDecision:
-        """
-        综合评估结果和人类干预，做出最终决策。
-        human_override 非空时优先使用人类决策。
-        """
-        ...
+场景模拟必须有前置快照。**唯一例外**：`scene.snapshot_id_before` 非空时（continue 续跑）
+引擎刻意跳过创建，避免覆盖首次快照。这是特性不是 bug。
 
-    async def query_character_state(self, character_id: str) -> CharacterState: ...
-    async def query_graph(self, cypher: str) -> list[dict]: ...
-```
+### 契约 3 — Prompt 前缀稳定（prefix cache）
 
-#### DirectorDecision 数据类
+`system` 消息只放**整场不变**的内容（人设 / 世界观 / 已知事实 / 关系 / 场景设定 / 格式规范）；
+每轮变化的内容（目前对话、检索到的记忆、发言指令）一律放 `user` 消息，
+且"目前对话"**只在末尾追加、不做逐行滑窗**——超出 `TRANSCRIPT_TOKEN_BUDGET` 时
+成块丢弃并记录 `_transcript_start`。
 
-```python
-@dataclass
-class DirectorDecision:
-    decision_type: str       # "continue" | "next_scene" | "rollback"
-    # continue 时
-    extra_turns: int | None  # 继续的额外轮次
-    # next_scene 时
-    next_scene_config: SceneConfig | None
-    # rollback 时
-    rollback_to_snapshot_id: str | None
-    new_initial_conditions: dict | None   # 回滚时的新起始条件
-    rollback_notes: str | None            # 导演对回滚原因的备注
-```
+目的：同一角色在同一场景内的 prompt 前缀保持稳定，命中服务端 prefix cache。
+**任何"优化"都不得把变化内容塞回 system，也不得改成逐行滑窗。**
 
-#### SceneEvaluation 评分维度
+### 契约 4 — 运行时记忆继承链
 
-| 维度 | 说明 | 影响决策 |
-|------|------|----------|
-| `narrative_goal_score` | 场景是否达成预设叙事目标（0-10） | < 4 建议回滚 |
-| `dramatic_tension_score` | 戏剧冲突强度（0-10） | < 3 建议继续或回滚 |
-| `plot_deviation_score` | 与主线偏离程度（0-10，0=完全一致） | > 7 警告，> 9 强制关注 |
-| `character_consistency_score` | 角色行为是否符合设定（0-10） | < 5 建议回滚 |
+短期缓冲与事件摘要是纯内存态，必须靠快照续命。`_load_inherited_states` 的四级优先级：
+
+1. `snapshot_id_after`（本场跑过 → continue 续跑）
+2. `restore_snapshot_id`（回滚重演）
+3. `snapshot_id_before`（异常恢复）
+4. 父场景的 `snapshot_id_after`（next_scene）
+
+取到后经 `MemoryManager.prime()` 回填。**顺序不可调换。**
+
+### 契约 5 — 幂等性是通用不变量
+
+**任何可被用户重试 / 网络重放触发的写接口，都必须设计幂等键。**
+这不是决策接口的局部规定，新增此类接口时同样适用。
+
+当前决策接口的三件套实现（可作为模板）：
+
+1. `decisions` 表（`scene_id` 主键 = 幂等键）持久化已生效决策 → 重试/重放返回同一
+   `next_scene_id`，不重复调 LLM、不重复建场景；提交不同 `decision_type` 抛 `ConflictError`(409)。
+2. `scenes.status` 的 CAS 条件更新 `completed → deciding` 拦截并发，
+   靠 SQLite 写锁跨进程有效；**只写列不写 `data_json`**。
+3. `finally: clear_scene_deciding` 释放守卫（仅当仍为 `deciding` 时恢复 `completed`）。
+
+`continue` 刻意不落表。已知边界：极晚到达的 continue 重试会再次续跑（确定性、不分叉，可接受）。
+
+### 契约 6 — 优雅降级
+
+`kuzu` / `chromadb` / `autogen` 全部走 try-import + `_XXX_AVAILABLE` 分支，
+缺失时降级（空图 / 字符重叠伪检索 / 不可用）。**离线与 CI 环境必须能跑通。**
+新增可选重依赖时沿用同一模式。
+
+### 契约 7 — LLM 唯一出口
+
+所有 LLM 调用必须经 `backend/utils/llm.py` 的 `chat()` / `chat_safe()`
+（tenacity 3 次指数退避、180s 超时、失败转 `LLMError`）。
+**禁止**在其他模块直接实例化 OpenAI 客户端——唯一例外是 `memory/embeddings.py`
+（Chroma 要求同步接口）。模型名一律走 `settings`，禁止硬编码。
+
+### 契约 8 — 分层边界
+
+- `api/` 只做参数校验 → 调 `services` → `to_dict`，**不写业务逻辑**；
+- 跨模块编排只在 `services/orchestrator.py`；
+- 写 SQLite 与角色 JSON 只在 `services/repository.py`；
+- 不在模块间传递 Kuzu / Chroma 的原始连接对象。
+
+### 契约 9 — 单进程假设
+
+`_active_scenes` 与 SSE 事件总线都是进程内的，**当前部署必须单 worker**。
+多 worker 会破坏场景并发守卫与 SSE 投递（决策幂等因走 DB CAS 不受影响）。
+要上多 worker 需先把这两处外置。
 
 ---
 
-### 5.4 场景引擎（SceneEngine）
+## 8. API 实况
 
-**位置**：`backend/scene_engine/`  
-**职责**：驱动 AutoGen GroupChat，管理场景生命周期
-
-```python
-class SceneEngine:
-    def __init__(
-        self,
-        scene_config: SceneConfig,
-        character_agents: list[CharacterAgent],
-        snapshot_manager: SnapshotManager,
-    ): ...
-
-    async def run(self) -> SceneResult:
-        """
-        场景执行主流程：
-        1. 创建模拟前快照（snapshot_before）
-        2. 初始化 AutoGen GroupChat
-        3. 注入场景开场描述（由导演提供）
-        4. 驱动多轮对话，每轮：
-           a. 角色检索相关记忆，更新 system prompt
-           b. 角色生成回应
-           c. 解析并存储 DialogueTurn（对白/动作/独白分类）
-           d. 检查终止条件
-        5. 场景结束：创建模拟后快照（snapshot_after）
-        6. 返回 SceneResult（含完整日志）
-        """
-        ...
-
-    def _parse_turn(self, raw_message: str, character_id: str) -> DialogueTurn:
-        """
-        解析角色原始回应，按格式规范分离：
-        - 对白：普通文本段落
-        - 动作：*...*
-        - 内心独白：[...]
-        """
-        ...
-
-    async def _check_termination(self, turns: list[DialogueTurn]) -> bool:
-        """
-        终止条件（满足任一即停止）：
-        - 已达 max_turns
-        - 导演智能体发出中断信号
-        - 所有角色连续3轮无新信息（对话停滞检测）
-        """
-        ...
-```
-
-#### 场景内角色发言顺序
-
-默认采用 AutoGen `RoundRobinGroupChat`，可在 `SceneConfig` 中配置为：
-- `round_robin`：轮流发言（默认）
-- `selector`：由 LLM 选择最合适的下一个发言者（更自然，成本略高）
-- `random`：随机（不推荐，仅测试用）
-
----
-
-### 5.5 记忆系统（MemorySystem）
-
-**位置**：`backend/memory/`
-
-#### 三层记忆架构
-
-```
-┌─────────────────────────────────────────────────┐
-│              MemoryManager（统一接口）            │
-├─────────────┬──────────────────┬────────────────┤
-│  短期记忆    │    长期记忆       │   事件摘要记忆  │
-│ ShortTerm   │   LongTerm       │   Episodic     │
-│             │                  │                │
-│ 对话窗口缓冲 │ ChromaDB向量存储  │ 重要事件文本摘要 │
-│ 最近N轮消息  │ LlamaIndex检索   │ 手动/自动触发   │
-│ 无需检索    │ top-k 语义相似    │ 存入长期记忆    │
-└─────────────┴──────────────────┴────────────────┘
-```
-
-```python
-class MemoryManager:
-    """每个 CharacterAgent 持有一个独立 MemoryManager 实例"""
-
-    def __init__(self, character_id: str, project_id: str): ...
-
-    async def add_experience(self, turn: DialogueTurn) -> None:
-        """将新的对话轮次加入短期记忆缓冲"""
-        ...
-
-    async def retrieve(self, query: str, top_k: int = 5) -> list[MemoryChunk]:
-        """从长期记忆中检索相关片段，返回按相关性排序的结果"""
-        ...
-
-    async def consolidate(self, force: bool = False) -> None:
-        """
-        将短期记忆转存到长期记忆。
-        触发条件：
-        - 短期缓冲超过阈值（默认 20 轮）
-        - 场景结束时强制触发（force=True）
-        - 检测到重要事件（由 episodic 模块标记）
-        """
-        ...
-
-    async def snapshot(self) -> MemorySnapshot:
-        """序列化当前记忆状态，用于快照"""
-        ...
-
-    async def restore(self, snapshot: MemorySnapshot) -> None:
-        """从快照恢复记忆状态"""
-        ...
-```
-
-#### 重要事件检测
-
-以下情况自动标记为"重要事件"并触发 episodic 记忆存储：
-- 角色关系状态发生重大变化（如结盟→背叛）
-- 角色明确陈述改变目标
-- 场景中发生死亡/重伤等不可逆事件
-- 角色获得关键信息（`known_facts` 更新）
-
----
-
-### 5.6 快照与分支管理（SnapshotManager）
-
-**位置**：`backend/snapshot/`
-
-```python
-class SnapshotManager:
-    def __init__(self, project_id: str, db_path: str): ...
-
-    async def create_snapshot(
-        self,
-        scene_id: str,
-        branch_id: str,
-        character_states: dict[str, CharacterState],
-        label: str = "",
-    ) -> Snapshot:
-        """
-        创建完整快照：
-        1. 序列化所有参与角色的 CharacterState
-        2. 将 Kuzu 数据库文件复制到快照目录
-        3. 导出 ChromaDB 集合到快照目录
-        4. 在 SQLite 中注册快照元数据
-        返回 Snapshot 对象
-        """
-        ...
-
-    async def restore_snapshot(self, snapshot_id: str) -> dict[str, CharacterState]:
-        """
-        从快照恢复：
-        1. 从 SQLite 查询快照元数据
-        2. 恢复 Kuzu 数据库文件
-        3. 恢复 ChromaDB 集合
-        4. 反序列化角色状态
-        返回 {character_id: CharacterState}
-        """
-        ...
-
-    async def fork_branch(
-        self,
-        from_snapshot_id: str,
-        new_conditions: dict,
-        branch_name: str,
-        director_notes: str = "",
-    ) -> Branch:
-        """
-        从快照创建新分支：
-        1. 调用 restore_snapshot 恢复状态
-        2. 应用 new_conditions 修改（初始条件覆盖）
-        3. 创建新 Branch 记录
-        4. 返回新 Branch 对象
-        """
-        ...
-
-    async def get_branch_tree(self, project_id: str) -> BranchTree:
-        """获取项目完整分支树（用于前端可视化）"""
-        ...
-```
-
-#### 快照文件结构
-
-```
-data/projects/{project_id}/snapshots/{snapshot_id}/
-├── meta.json                    # 快照元数据
-├── character_states/
-│   ├── {character_id}.json      # 角色状态序列化
-│   └── ...
-├── kuzu_checkpoint/             # Kuzu 数据库文件副本
-│   └── ...
-└── chroma_collections/
-    ├── {character_id}_memory/   # 各角色 ChromaDB 集合导出
-    └── ...
-```
-
----
-
-### 5.7 总结智能体（SummaryAgent）
-
-**位置**：`backend/agents/summary_agent.py`
-
-```python
-class SummaryAgent:
-    def __init__(self, llm_config: dict): ...
-
-    async def generate_synopsis(
-        self,
-        scenes: list[Scene],
-        style: str = "narrative",
-    ) -> str:
-        """
-        根据场景日志生成梗概摘要。
-        style: "narrative"（叙事）| "bullet"（要点）| "timeline"（时间线）
-        用途：供导演智能体评估场景时参考
-        """
-        ...
-
-    async def generate_output(
-        self,
-        scenes: list[Scene],
-        output_format: OutputFormat,
-        branch_id: str | None = None,
-    ) -> str:
-        """
-        生成最终输出文本。
-        output_format 指定目标格式（见 OutputFormat）
-        branch_id 为 None 时处理所有分支，否则只处理指定分支
-        """
-        ...
-```
-
-#### OutputFormat 枚举
-
-```python
-class OutputFormat(Enum):
-    WEB_NOVEL = "web_novel"      # 网络小说风格（流畅叙事，第三人称）
-    SCREENPLAY = "screenplay"     # 剧本格式（标准格式：场景行/人物名/对白）
-    STAGE_PLAY = "stage_play"    # 舞台剧本格式
-    SUMMARY_REPORT = "summary"   # 推演报告（分析向）
-    RAW_LOG = "raw"              # 原始对话日志导出（JSON）
-```
-
----
-
-### 5.8 后端 API（FastAPI）
-
-**位置**：`backend/api/`  
-**基础 URL**：`http://localhost:5001/api/v1`
-
-#### 通用响应格式
+统一前缀 `/api/v1`（`main.py::API_PREFIX`）。统一响应包络：
 
 ```json
-{
-  "success": true,
-  "data": {},
-  "error": null,
-  "timestamp": "2026-05-29T12:00:00Z"
-}
+{ "success": true, "data": {}, "error": null, "timestamp": "..." }
 ```
 
-#### 路由总览
+异常映射：`ConflictError` → 409，其余 `PlotSystemError` → 404（`main.py` 全局处理器）。
 
-详见第 6 节完整 API 规范。
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| POST / GET | `/projects` | 创建 / 列出项目 |
+| GET / DELETE | `/projects/{project_id}` | 详情 / 删除（连带 `rmtree` 项目目录） |
+| POST | `/projects/{project_id}/seed` | 上传种子文本（multipart） |
+| POST | `/projects/{project_id}/build` | 触发构建（后台任务） |
+| GET | `/projects/{project_id}/build/status` | 构建进度 |
+| GET | `/projects/{project_id}/graph` | 图谱可视化数据 |
+| GET | `/projects/{project_id}/characters` | 角色列表 |
+| GET / PATCH | `/projects/{project_id}/characters/{char_id}` | 角色详情 / 人工编辑 |
+| GET | `/projects/{project_id}/characters/{char_id}/memory` | ⚠️ 当前恒返回空，见第 12 节 |
+| POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**） |
+| POST | `/projects/{project_id}/scenes` | 创建场景 |
+| GET | `/projects/{project_id}/scenes/{scene_id}` | 场景详情 |
+| GET | `/scenes/{scene_id}` | 场景详情（无需 project_id） |
+| POST | `/scenes/{scene_id}/start` | 开始模拟（后台任务） |
+| POST | `/scenes/{scene_id}/pause` | 中断运行中的引擎 |
+| GET | `/scenes/{scene_id}/log` | 完整对话日志 |
+| GET | `/scenes/{scene_id}/stream` | **SSE** 实时流 |
+| GET | `/scenes/{scene_id}/evaluation` | 导演评估 |
+| GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
+| GET | `/projects/{project_id}/branches` | 分支树 |
+| GET | `/projects/{project_id}/snapshots` | 快照列表 |
+| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**） |
+| DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**） |
+| POST | `/projects/{project_id}/output` | 生成输出 |
+| GET | `/output/{output_id}` | 取回生成结果 |
 
-#### SSE 实时推送
-
-场景模拟过程中通过 SSE 推送进度：
-
-```
-GET /api/v1/scenes/{scene_id}/stream
-```
-
-SSE 事件类型：
-- `turn`：新对话轮次（含完整 DialogueTurn）
-- `status`：场景状态变更
-- `snapshot`：快照创建完成
-- `evaluation`：导演评估结果
-- `error`：错误信息
+**SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`error`。
 
 ---
 
-### 5.9 前端（Vue 3 + Vite）
+## 9. 前端实况
 
-**位置**：`frontend/src/`
+| 页面 | 路由 | 功能 |
+|------|------|------|
+| `Workspace.vue` | `/` | 项目管理、种子上传、构建进度轮询、G6 图谱 |
+| `Director.vue` | `/director/:projectId` | 分支树、场景配置、SSE 实时日志、决策面板 |
+| `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 预览导出 |
 
-#### 页面职责
+要点：
 
-| 页面 | 路由 | 主要功能 |
-|------|------|----------|
-| `Workspace.vue` | `/` | 项目列表、种子文本上传、GraphRAG 进度、知识图谱 G6 可视化 |
-| `Director.vue` | `/director/:projectId` | 分支树、场景配置、实时对话日志（SSE）、导演决策面板 |
-| `Output.vue` | `/output/:projectId` | 选择分支/格式、调用 SummaryAgent、预览与导出 |
-
-#### 核心组件规范
-
-**`GraphViewer.vue`**
-- 使用 AntV G6 渲染知识图谱
-- 节点类型对应不同颜色：`Character`=蓝、`Location`=绿、`Event`=橙、`Concept`=灰
-- 支持点击节点查看详情
-- 支持搜索高亮
-
-**`SceneTree.vue`**
-- 使用 AntV G6 的树形布局渲染分支树
-- 每个节点代表一个 Scene，颜色区分状态
-- 支持点击节点跳转到对应场景详情
-
-**`DirectorPanel.vue`**
-- 显示 `SceneEvaluation` 四维评分（雷达图或柱状图）
-- 提供三个决策按钮：继续 / 下一场 / 回滚
-- 回滚时显示"新初始条件"编辑框
-- 支持导演手动覆盖 AI 建议
-
-**`DialogLog.vue`**
-- 实时渲染 SSE 推送的 DialogueTurn
-- 对白/动作/独白用不同样式区分
-- 支持按角色过滤
-- 自动滚动到最新消息
-
-#### 样式规范
-
-- 风格参考 MiroFish（暗色主题、卡片式布局）
-- 主色：`#1a1a2e`（背景）、`#16213e`（卡片）、`#0f3460`（强调）、`#e94560`（高亮/危险）
-- 字体：系统字体栈，中文优先
+- **SSE 双保险**：`joinScene` 先用已持久化的 `dialogue_log` 铺底，
+  `startSimulation({keepLog})` 保留续跑日志，场景完成后 `reconcileLog()` 补齐
+  SSE 建立前遗漏的轮次。改动实时日志逻辑时别破坏这个对账。
+- `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。
+- `SceneTree.vue` 是纯 `h()` 渲染的嵌套列表（**不是 G6**），节点是 **Branch** 不是 Scene，
+  仅 emit 选中的 `branch_id`。
+- 样式：暗色卡片风。主色 `#1a1a2e` / `#16213e` / `#0f3460`，高亮 `#e94560`。
+- 数据模型变更需同步 `frontend/src/types/index.ts`。
 
 ---
 
-## 6. API 接口规范
+## 10. 开发规范
 
-### 项目管理
+### 10.1 Python
 
-```
-POST   /api/v1/projects                    # 创建项目
-GET    /api/v1/projects                    # 列出所有项目
-GET    /api/v1/projects/{project_id}       # 项目详情
-DELETE /api/v1/projects/{project_id}       # 删除项目
+- 公共函数必须完整类型注解；文件头 `from __future__ import annotations`。
+- 所有 IO（LLM / DB / 文件）必须 `async`；禁止 `time.sleep`。
+- 内部数据用 `@dataclass`（集中在 `models.py`），跨 API 边界用 Pydantic（`api/schemas.py`）。
+- 异常继承 `PlotSystemError`（`exceptions.py`），不要裸 `raise Exception`。
+- `ruff` 通过（配置见 `pyproject.toml`，已忽略 UP042）。
 
-POST   /api/v1/projects/{project_id}/seed  # 上传种子文本
-POST   /api/v1/projects/{project_id}/build # 触发 GraphRAG 处理
-GET    /api/v1/projects/{project_id}/build/status  # 处理进度
-```
+### 10.2 命名
 
-### 角色管理
+类 `PascalCase`；函数/变量 `snake_case`；常量 `UPPER_SNAKE`；
+API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内 `camelCase`。
 
-```
-GET    /api/v1/projects/{project_id}/characters              # 列出角色
-GET    /api/v1/projects/{project_id}/characters/{char_id}    # 角色详情（含 CharacterCard）
-PATCH  /api/v1/projects/{project_id}/characters/{char_id}    # 更新角色卡（人工编辑）
-GET    /api/v1/projects/{project_id}/characters/{char_id}/memory  # 查看角色记忆
-```
+### 10.3 提交与测试
 
-### 场景控制
+- Conventional Commits：`feat(agents): ...` / `fix(scene): ...` / `docs: ...`。
+- 核心模块（agents / snapshot / memory / orchestrator）新功能需附单测。
+- `tests/conftest.py` 会把 `DATA_DIR` 指向临时目录，测试不会污染 `data/`。
+- 端到端手测：`python -m scripts.run_demo`。
 
-```
-POST   /api/v1/projects/{project_id}/scenes           # 创建场景（导演规划）
-GET    /api/v1/projects/{project_id}/scenes/{scene_id}# 场景详情
-POST   /api/v1/scenes/{scene_id}/start                # 开始模拟
-POST   /api/v1/scenes/{scene_id}/pause                # 暂停模拟
-GET    /api/v1/scenes/{scene_id}/stream               # SSE 实时流
-GET    /api/v1/scenes/{scene_id}/log                  # 完整对话日志
-```
+### 10.4 注释
 
-### 导演决策
-
-```
-GET    /api/v1/scenes/{scene_id}/evaluation           # 获取场景评估
-GET    /api/v1/scenes/{scene_id}/decision              # 查询已生效的决策（幂等重放/超时恢复）
-POST   /api/v1/scenes/{scene_id}/decision             # 提交导演决策
-  Body: {
-    "decision_type": "continue" | "next_scene" | "rollback",
-    "extra_turns": 10,                          // continue 时
-    "next_scene_description": "...",            // next_scene 时
-    "rollback_snapshot_id": "...",              // rollback 时
-    "new_initial_conditions": {}               // rollback 时
-  }
-```
-
-### 快照与分支
-
-```
-GET    /api/v1/projects/{project_id}/branches         # 分支树
-GET    /api/v1/projects/{project_id}/snapshots        # 快照列表
-POST   /api/v1/snapshots/{snapshot_id}/fork           # 从快照创建新分支
-DELETE /api/v1/snapshots/{snapshot_id}               # 删除快照
-```
-
-### 输出导出
-
-```
-POST   /api/v1/projects/{project_id}/output           # 生成输出文本
-  Body: {
-    "format": "web_novel" | "screenplay" | "stage_play" | "summary" | "raw",
-    "branch_id": null,          // null=所有分支，否则指定分支
-    "scene_ids": []             // 可选，指定场景子集
-  }
-GET    /api/v1/output/{output_id}                    # 获取生成结果
-```
+业务语义注释用中文；只写"代码本身看不出来的信息"（为什么这么做、哪条契约在起作用），
+不要复述下一行在干什么。
 
 ---
 
-## 7. 开发规范与约定
+## 11. 环境与启动
 
-### 7.1 Python 代码规范
+配置项的**唯一真值是 `.env.example`**，本文档不复制。只强调：
 
-```python
-# 类型注解：所有公共函数必须有完整类型注解
-async def plan_scene(
-    self,
-    branch_id: str,
-    narrative_goal: str,
-) -> SceneConfig:  # ✅ 必须标注返回类型
-
-# 数据类：使用 @dataclass 或 Pydantic BaseModel
-# 跨 API 边界的数据（请求/响应）：使用 Pydantic
-# 内部传递的数据：使用 @dataclass
-
-# 异步：所有 IO 操作（LLM调用、数据库、文件）必须是 async
-# 禁止在 async 函数中使用 time.sleep()，使用 asyncio.sleep()
-
-# 错误处理：明确的自定义异常类
-class PlotSystemError(Exception): ...
-class SnapshotNotFoundError(PlotSystemError): ...
-class SceneEngineError(PlotSystemError): ...
-```
-
-### 7.2 命名约定
-
-| 对象 | 命名风格 | 示例 |
-|------|----------|------|
-| Python 类 | PascalCase | `CharacterAgent`, `SceneEngine` |
-| Python 函数/变量 | snake_case | `build_system_prompt`, `character_id` |
-| Python 常量 | UPPER_SNAKE | `MAX_TURNS_DEFAULT = 20` |
-| API 路由参数 | snake_case | `/scenes/{scene_id}` |
-| Vue 组件 | PascalCase | `DirectorPanel.vue` |
-| Vue 变量/方法 | camelCase | `currentScene`, `handleDecision` |
-| Pinia Store | camelCase | `useProjectStore` |
-| 数据库字段 | snake_case | `character_id`, `created_at` |
-
-### 7.3 Git 提交规范
-
-使用 Conventional Commits：
-
-```
-feat(agents): add CharacterAgent memory retrieval
-fix(scene): resolve termination condition bug
-docs(api): update scene endpoint documentation
-refactor(snapshot): simplify restore logic
-test(director): add evaluation scoring tests
-chore: update dependencies
-```
-
-### 7.4 AI 助手协作规范
-
-当 AI 助手（Claude/Copilot）生成代码时，必须遵守：
-
-1. **不得违反信息不对称原则**：CharacterAgent 的任何代码不得直接访问 `unknown_facts`
-2. **快照前置**：任何启动场景的代码，必须在 `engine.run()` 开头调用 `create_snapshot`
-3. **接口优先**：新功能先定义接口（函数签名 + docstring），再实现
-4. **不新增依赖**：未在技术栈列表中的库，需在 `CLAUDE.md` 更新后才能使用
-5. **测试覆盖**：核心模块（agents、snapshot、memory）的新功能必须附带单元测试
-6. **中文注释**：面向业务逻辑的注释用中文，面向技术实现的注释用英文均可
-
-### 7.5 LLM 调用规范
-
-```python
-# 统一使用 config.py 中的 LLM 配置，不硬编码模型名
-LLM_CONFIG = {
-    "model": settings.LLM_MODEL_NAME,
-    "api_key": settings.LLM_API_KEY,
-    "base_url": settings.LLM_BASE_URL,
-}
-
-# 所有 LLM 调用必须设置超时
-# 所有 LLM 调用必须有重试逻辑（最多3次）
-# 角色 Agent 的 temperature 默认 0.8（创意性）
-# 导演 Agent 的 temperature 默认 0.3（一致性）
-# 总结 Agent 的 temperature 默认 0.7（平衡）
-```
-
----
-
-## 8. 环境配置
-
-### 8.1 `.env.example`
-
-```dotenv
-# LLM API 配置（支持任意 OpenAI 兼容格式）
-LLM_API_KEY=your_api_key_here
-LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_MODEL_NAME=qwen-plus
-
-# 后端配置
-BACKEND_HOST=0.0.0.0
-BACKEND_PORT=5001
-DEBUG=false
-
-# 数据存储路径
-DATA_DIR=./data
-
-# GraphRAG 配置
-GRAPHRAG_LLM_MODEL=qwen-plus
-GRAPHRAG_EMBEDDING_MODEL=text-embedding-v3
-
-# 场景引擎默认配置
-DEFAULT_MAX_TURNS=20
-DEFAULT_SPEAKER_MODE=round_robin   # round_robin | selector
-
-# 记忆配置
-SHORT_TERM_BUFFER_SIZE=20          # 短期记忆最大轮次
-MEMORY_TOP_K=5                     # RAG 检索返回条数
-
-# 角色对话上下文窗口
-MEMORY_QUERY_WINDOW=6              # 拼接检索 query 时采样的最近对话行数
-RECENT_TRANSCRIPT_WINDOW=0         # "目前对话"最大行数，0=不限行数仅受 token 预算约束
-TRANSCRIPT_TOKEN_BUDGET=24000      # "目前对话"token 预算（估算）
-
-# 日志级别
-LOG_LEVEL=INFO
-```
-
-### 8.2 依赖安装
+- 三路模型 `LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY` 留空即回退 `LLM_MODEL_NAME`。
+- `EMBEDDING_API_KEY / EMBEDDING_BASE_URL` 留空即复用 LLM 的那套。
+  **换 embedding 模型必须清空 `chroma_db/`**，否则维度不一致。
+- `GRAPHRAG_LLM_MODEL` 已弃用，代码从不读取。
 
 ```bash
-# Python 依赖（推荐使用 uv）
-uv sync
-
-# 或使用 pip
-pip install -e ".[dev]"
-
-# 前端依赖
+uv sync                       # 或 pip install -e ".[dev]"
 cd frontend && npm install
-```
-
-### 8.3 启动命令
-
-```bash
-# 开发模式（同时启动前后端）
-npm run dev
-
-# 单独启动
-npm run backend    # FastAPI: http://localhost:5001
-npm run frontend   # Vite:    http://localhost:3000
-
-# 初始化数据库
 python -m backend.utils.init_db
+
+npm run dev        # 前后端同时起
+npm run backend    # FastAPI  http://localhost:5001
+npm run frontend   # Vite     http://localhost:3000
 ```
 
-### 8.4 `pyproject.toml` 依赖声明
-
-```toml
-[project]
-name = "plotsystem"
-version = "0.1.0"
-requires-python = ">=3.11,<3.13"
-
-dependencies = [
-    "autogen-agentchat>=0.4.0",
-    "autogen-ext[openai]>=0.4.0",
-    "llama-index>=0.10.0",
-    "llama-index-vector-stores-chroma>=0.1.0",
-    "chromadb>=0.4.0",
-    "kuzu>=0.6.0",
-    "graphrag>=1.0.0",
-    "fastapi>=0.110.0",
-    "uvicorn[standard]>=0.27.0",
-    "pydantic>=2.5.0",
-    "pydantic-settings>=2.0.0",
-    "openai>=1.0.0",
-    "aiofiles>=23.0.0",
-    "aiosqlite>=0.19.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "httpx>=0.27.0",
-    "ruff>=0.3.0",
-]
-```
+Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【契约9】）。
 
 ---
 
-## 9. 开发优先级路线图
+## 12. 已知缺陷与 dead code
 
-### Phase 1：核心骨架（目标：2周内可跑通端到端流程）
+> **这一节的东西不要顺手"修复"。** 它们要么无人使用、要么已有工单在跟。
+> 确实要动，先确认属于当前工单范围。
 
-```
-Week 1:
-□ P1.1  项目目录初始化 + pyproject.toml + .env 配置
-□ P1.2  Kuzu Schema 建立 + GraphManager 基础接口
-□ P1.3  GraphRAG Pipeline 集成（microsoft/graphrag + Kuzu）
-□ P1.4  CharacterCard 数据模型 + persona_builder.py
-□ P1.5  MemoryManager 基础版（短期缓冲 + ChromaDB存储）
+### 12.1 已知缺陷（真 bug，有工单或待排期）
 
-Week 2:
-□ P1.6  CharacterAgent 基础版（system prompt构建 + AutoGen集成）
-□ P1.7  SceneEngine 基础版（GroupChat + 对话解析 + 日志存储）
-□ P1.8  SnapshotManager 基础版（创建 + 恢复）
-□ P1.9  DirectorAgent 基础版（场景规划 + 简单评估）
-□ P1.10 FastAPI 基础路由（项目CRUD + 场景启动）
-□ P1.11 CLI 测试脚本：端到端跑通一个完整场景
-```
+| 缺陷 | 现象 | 备注 |
+|------|------|------|
+| **图谱快照失效** | `GraphManager.checkpoint_to()` 用 `copytree` 复制 `kuzu_db`，但当前 Kuzu 版本下它是**单个文件** → 抛 `NotADirectoryError`，被 `create_snapshot` 的 `except → logger.debug` 静默吞掉。结果：`Snapshot.graph_checkpoint` 恒为空，回滚不恢复图谱 | **当前无实际影响**：图谱只在构建时写一次，之后只读，回滚不恢复也等价。等工单 `06-dynamic-graph-writeback.md`（动态图谱写回）落地时会变成真数据丢失，**应作为该工单的前置任务**，不是独立 P0。修法：按 `Path.is_dir()` 分支选 `copytree`/`copy2`，并把吞异常的日志提到 `warning` |
+| **记忆只写发言者** | 引擎每轮只对 speaker 调 `add_experience`，`update_state_after_scene` 又按 `character_id` 过滤 → 每个角色的长期记忆是"自言自语独白集"，不符合"在场感知"语义 | 工单 `15-perceived-memory-and-dedup.md` |
+| **`speaker_mode` 断链** | `SceneConfig.speaker_mode` 与引擎的 selector/random 分支都在，但 `Scene` 无该字段、`orchestrator.run_scene` 构造 `SceneConfig` 时不传 → **永远 round_robin** | 要么补 `Scene.speaker_mode` + 三处传参，要么删掉半条链，别留半截 |
+| **`GET /characters/{id}/memory` 恒空** | 每次新建 `MemoryManager`，而短期/事件记忆是纯内存态 | 修法：复用 `_load_inherited_states` 的快照读取；否则下线该接口 |
+| **前端未消费 `GET /decision`** | 后端幂等查询接口已实现但无调用方，超时/409 后的状态恢复能力为空 | — |
 
-### Phase 2：分支与前端（目标：再2周，可视化协作）
+### 12.2 Dead code（存在但零调用）
 
-```
-□ P2.1  SnapshotManager 完整版（fork_branch + 分支树）
-□ P2.2  DirectorAgent 完整版（evaluate_scene + make_decision）
-□ P2.3  SSE 实时推送（场景模拟进度）
-□ P2.4  前端 Workspace.vue（项目管理 + G6 图谱）
-□ P2.5  前端 Director.vue（分支树 + 实时日志 + 决策面板）
-□ P2.6  前端 Output.vue（格式选择 + 预览导出）
-□ P2.7  SummaryAgent 完整版（多格式输出）
-```
-
-### Phase 3：质量与体验（目标：打磨，可对外展示）
-
-```
-□ P3.1  记忆系统完整版（episodic + 重要事件检测 + consolidation）
-□ P3.2  世界观 LoreEntry 动态注入优化
-□ P3.3  角色关系状态追踪与可视化
-□ P3.4  导演评分四维雷达图
-□ P3.5  完整测试套件
-□ P3.6  性能优化（并发场景、大规模图谱）
-□ P3.7  文档完善
-```
+- `knowledge_graph/queries.py` —— 全仓库零 import。
+- `agents/base_agent.py` 的 AutoGen 封装 + `CharacterAgent.get_autogen_agent()` —— 无调用方。
+- `DirectorAgent.query_graph()` / `query_character_state()` —— 零调用；后者返回空壳，
+  且传入的 `GraphManager` 从未 `connect()`，真调用会报错。
+  **导演目前不读图谱、不读角色内部状态**，只吃角色卡与对白文本。
+- `MemoryManager.snapshot()` / `restore()` —— 零调用。真实快照路径是
+  `SceneEngine._collect_states()` 直接读 `short_term.dump()` / `episodic.dump()`，
+  恢复路径是 `_load_inherited_states()` + `MemoryManager.prime()`。
+- `CharacterState.long_term_memory_snapshot` —— 恒为空字符串。
+- `settings.GRAPHRAG_LLM_MODEL` —— 从不读取。
+- `scene_engine/scene_config.py`、`snapshot/models.py` —— 仅从 `models.py` 再导出，
+  保留是为了 import 路径兼容，**不要往里加定义**。
 
 ---
 
-## 10. 常见问题与禁止事项
+## 13. 【设想】尚未实现的规划
 
-### ❌ 禁止事项
+> 以下全部**尚不存在于代码中**，且多数**尚未立项**。此处只做集中登记，防止在别处
+> 被误当成现状引用；真正要做时先去 `docs/fix-tickets/` 开单、先补接口再实现。
 
-1. **绝对禁止**：在 CharacterAgent 的 system prompt 或任何角色可见的上下文中注入 `unknown_facts`
-2. **禁止**：在未创建快照的情况下启动场景模拟
-3. **禁止**：直接在模块间传递 Kuzu/ChromaDB 的内部连接对象，必须通过接口层
-4. **禁止**：将 `.env` 中的 API Key 硬编码到任何源文件中
-5. **禁止**：在未更新本文档的情况下引入新的核心依赖
-6. **禁止**：SummaryAgent 直接访问 CharacterAgent 的 `inner_thought`（只能通过日志中已记录的部分）
-7. **禁止**：跳过 Phase 1 的 CLI 验证直接开发前端
+| 设想 | 想解决什么 | 工单 / 状态 |
+|------|-----------|------------|
+| **Selector 打通** | `speaker_mode` 目前是断链（见 12.1），引擎里 selector/random 分支已存在。打通后可用上下文预测下一个发言人，比轮询自然；进一步方案：独立判断 / 对候选人 Rerank，并引入**重复惩罚**（近期发言多则降权，但仍允许连续发言） | `11-selector-and-world-interaction.md`；**属于纯修复，优先级高** |
+| **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen** | `11-...`；会改动 SceneEngine 对话循环本身，建议作为独立大提案最后做 |
+| **世界状态 / 事件变量** | 跨场次的信息传递通道。信息不对称保证"角色不该知道的不知道"，世界状态负责"该传播的能传播"（含环境层跨场景广播） | `07-world-state.md` |
+| **统一 Inspection API 层** | 用户 / 导演 / 总结智能体共享同一套"查角色情绪·记忆·位置·内心"的地基，并支持微调 | 建议**先于** `04` / `05` / 导演分镜稿立项 |
+| **私有内心 OS** | 角色输出前的自适应思考，**不入档**——与现在会落档的 `inner_thought` 是两回事 | 未立项 |
+| **分镜稿（storyboard）** | 导演当前只有提示词 + 压缩后的既往剧情，长线维持能力弱。设想给导演一份可读写的持久化文件（类似 AI 的记忆文件），随快照一起版本化；分支时需向导演说明差异。配套需要 `DirectorAgent.query_character_state`（现为空壳）真正落地 | 未立项 |
+| **AutoPilot 模式** | 自动采纳导演建议的决策，无人值守连跑多场 | `12-auto-pilot-director.md`（依赖工单 13，已完成） |
+| **MCTS / 多结局** | 当前"每次只生成一场 + 采纳导演建议" ≈ 已默认剪枝的单条路径；多结局靠人工从快照分叉。待场景评价与分镜稿都持久化后，可在其上做真正的搜索 | 未立项 |
 
-### ⚠️ 注意事项
-
-1. GraphRAG 处理消耗 Token 较多，开发阶段建议使用小型种子文本（< 5000字）测试
-2. AutoGen GroupChat 的 `selector` 模式每轮额外消耗一次 LLM 调用，调试时使用 `round_robin`
-3. Kuzu 不支持真正的事务回滚，快照机制必须在文件层面复制数据库目录
-4. ChromaDB 集合导出/导入在大规模数据时较慢，快照频率不宜过高
-5. SSE 连接在 Nginx 反向代理时需配置 `proxy_buffering off`
-
-### 📝 本文档更新规范
-
-以下情况**必须**更新 `CLAUDE.md`：
-- 新增核心依赖
-- 修改模块接口（函数签名、返回类型）
-- 修改数据模型字段
-- 新增 API 路由
-- 修改目录结构
-- 修改开发规范
-
-更新时在对应章节末尾添加变更记录：
-```
-<!-- 变更记录 -->
-<!-- 2026-05-29: 初始版本 by Claude -->
-```
+**关于项目书里的"多结局与 MCTS"**：不要把它理解成已实现的搜索算法。
+当前是「贪心单路径 + 人工分叉」，这是有意为之的成本取舍。
 
 ---
 
-*本文档由 Claude（GitHub Copilot）基于项目设计讨论自动生成，2026-05-29。*
-*后续所有对本文档的修改须经团队确认后生效。*
+## 14. 文档维护规则
+
+以下情况**必须**同步更新本文件：
+
+- 新增/移除核心依赖 → 第 2 节
+- 目录结构变化 → 第 3 节
+- 数据模型字段变化 → 第 4 节 + 走 5.4 checklist
+- 新增/修改 API → 第 8 节
+- 触碰第 7 节任一契约 → 更新契约描述并说明理由
+- 修掉第 12 节的缺陷 / 落地第 13 节的设想 → 把条目从对应清单里删掉，
+  并把内容升格到正文（【设想】→【实况】）
+
+**不要**新建"变更说明.md""重构总结.md"之类的文件；改动落到对应章节即可。
+在途任务写进 `docs/fix-tickets/`，完成后更新该目录的 `README.md` 索引。
 
 <!-- 变更记录 -->
-<!-- 2026-05-29: 初始版本 by Claude -->
-<!-- 2026-05-30: 完整实现项目骨架 by Copilot
-     - 后端全部模块落地（models 集中、config、utils、knowledge_graph、memory、
-       graphrag_pipeline、agents、scene_engine、snapshot、services、api、main）
-     - 新增 services 层（orchestrator/repository/events）作为编排与持久化枢纽
-     - 可选依赖（kuzu/chromadb/autogen/graphrag）均实现优雅降级，离线可运行
-     - 前端 Vue3+Vite+Pinia+G6 全套页面与组件
-     - 端到端 CLI 演示 scripts/run_demo.py
-     - 测试 14 项全过，ruff 通过（UP042 忽略）
+<!-- 2026-05-29: 初始版本（设计规范导向） -->
+<!-- 2026-05-30 ~ 2026-07-28: 骨架落地、决策幂等（工单13）、运行时记忆续跑（工单14） -->
+<!-- 2026-08-01: 基于代码审计彻底重写。文档定位从"设计愿景规范"改为
+     "与代码对齐的地图 + 契约清单"：
+     - 引入【实况】/【契约】/【设想】三类标记，杜绝把未实现内容写成现状
+     - 移除 AutoGen GroupChat / LlamaIndex / microsoft-graphrag 的失实描述
+     - 补齐 services 编排层、models.py、持久化 data_json 真相源契约
+     - 新增第 12 节「已知缺陷与 dead code」防止误修，第 13 节收拢全部设想
 -->
-<!-- 2026-07-27: 决策幂等保护升级为数据库级（工单13）by Copilot
-     - SQLite 新增 decisions 表（scene_id 主键）：顺序重试/网络重放幂等重放同一结果
-     - scenes.status 列 CAS 条件更新（completed→deciding）替代内存集合，跨进程有效；
-       仅列级瞬态值，不入 data_json，对 API 响应不可见
-     - 新增 GET /api/v1/scenes/{scene_id}/decision；continue 决策不持久化（新一轮周期）
-     - 前端 DirectorPanel 表单改为提交成功后才关闭/清空，失败保留用户输入
--->
-<!-- 2026-07-28: 运行时记忆续跑 + 角色上下文窗口（工单14）by Copilot
-     - Prompt 结构约定：system 只放整场不变的内容（人设/世界观/已知事实/关系/场景设定/
-       格式规范），每轮变化的内容（目前对话、检索记忆、发言指令）放 user 消息，
-       且"目前对话"只在末尾追加不做逐行滑窗 → prompt 前缀稳定，可命中 prefix cache
-     - 上下文窗口去硬编码：新增 MEMORY_QUERY_WINDOW / RECENT_TRANSCRIPT_WINDOW /
-       TRANSCRIPT_TOKEN_BUDGET；默认按 token 预算而非固定 12 行截断，超预算时成块丢弃
-     - Scene 新增 restore_snapshot_id 字段；orchestrator 新增 _load_inherited_states，
-       build_character_agents 支持传入 CharacterState 回填短期缓冲/事件摘要
-     - 修复 MemoryManager.snapshot() 先 consolidate 再 dump 导致短期缓冲恒为空
-     - 前端场景 store：续跑时用已持久化 dialogue_log 铺底，并在场景完成后对账补齐
--->
-
