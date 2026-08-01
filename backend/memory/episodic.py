@@ -22,17 +22,26 @@ class EpisodicMemory:
         self.summary: str = ""
         self._events: list[str] = []
 
-    def is_important(self, turn: DialogueTurn) -> bool:
-        """启发式判断一轮对话是否构成重要事件。"""
-        text = " ".join(
-            t for t in (turn.dialogue, turn.action, turn.inner_thought) if t
-        )
+    def is_important(self, turn: DialogueTurn, include_inner_thought: bool = True) -> bool:
+        """启发式判断一轮对话是否构成重要事件。
+
+        include_inner_thought=False 用于记录他人轮次时：不得用其他角色的私有内心
+        独白参与判定或被写入摘要（CLAUDE.md 第10节/契约1）。
+        """
+        texts = [turn.dialogue, turn.action]
+        if include_inner_thought:
+            texts.append(turn.inner_thought)
+        text = " ".join(t for t in texts if t)
         return any(kw in text for kw in _IMPORTANT_KEYWORDS)
 
-    def record(self, turn: DialogueTurn) -> str | None:
-        """若为重要事件则记录并返回摘要文本，否则返回 None。"""
-        if not self.is_important(turn):
-            return None
+    def record(self, turn: DialogueTurn, include_inner_thought: bool = True) -> bool:
+        """若为重要事件则计入摘要，返回是否重要。
+
+        不再返回可另外写入长期记忆的正文副本——摘要只用于 dump()/续跑回填，
+        原文由调用方统一走 add_experience → consolidate 一次性入库（工单15去重）。
+        """
+        if not self.is_important(turn, include_inner_thought=include_inner_thought):
+            return False
         parts = []
         if turn.action:
             parts.append(f"（{turn.action}）")
@@ -40,7 +49,7 @@ class EpisodicMemory:
             parts.append(turn.dialogue)
         snippet = f"[重要] {turn.character_name}: {' '.join(parts)}".strip()
         self._events.append(snippet)
-        return snippet
+        return True
 
     def build_summary(self) -> str:
         """汇总所有重要事件为摘要文本。"""

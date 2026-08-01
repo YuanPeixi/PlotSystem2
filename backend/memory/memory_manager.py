@@ -17,13 +17,19 @@ from backend.utils.logger import get_logger
 logger = get_logger("memory.manager")
 
 
-def _turn_to_text(turn: DialogueTurn) -> str:
+def _turn_to_text(turn: DialogueTurn, include_inner_thought: bool = True) -> str:
+    """将一轮对话渲染为记忆文本。
+
+    include_inner_thought=False 用于写入"他人轮次"（在场感知）：
+    必须剥离内心独白，否则会把该角色的私有内心泄露进旁观者的记忆库
+    （CLAUDE.md 第10节/契约1，工单15）。
+    """
     parts = []
     if turn.action:
         parts.append(f"*{turn.action}*")
     if turn.dialogue:
         parts.append(turn.dialogue)
-    if turn.inner_thought:
+    if include_inner_thought and turn.inner_thought:
         parts.append(f"[{turn.inner_thought}]")
     return f"{turn.character_name}: {' '.join(parts)}"
 
@@ -44,13 +50,20 @@ class MemoryManager:
             await self.long_term.connect()
             self._connected = True
 
-    async def add_experience(self, turn: DialogueTurn) -> None:
-        """记录一轮新对话。加入短期缓冲，必要时标记重要事件。"""
-        text = _turn_to_text(turn)
-        self.short_term.add(text)
-        important = self.episodic.record(turn)
-        if important:
-            await self.long_term.add(important, {"type": "episodic"})
+    async def add_experience(self, turn: DialogueTurn, *, from_self: bool = True) -> None:
+        """记录一轮新对话（唯一写入点，由 SceneEngine 对本场全部参演角色调用）。
+
+        from_self=False 表示记录"在场感知"到的他人轮次：剥离内心独白，
+        并在 metadata 打上 speaker/self 标记供未来分层检索使用（工单15/09）。
+        """
+        text = _turn_to_text(turn, include_inner_thought=from_self)
+        important = self.episodic.record(turn, include_inner_thought=from_self)
+        self.short_term.add(
+            text,
+            important=important,
+            is_self=from_self,
+            speaker=turn.character_name,
+        )
         if self.short_term.is_full():
             await self.consolidate()
 
@@ -60,15 +73,26 @@ class MemoryManager:
         return await self.long_term.retrieve(query, top_k or settings.MEMORY_TOP_K)
 
     async def consolidate(self, force: bool = False) -> None:
-        """将短期缓冲转存至长期记忆。"""
+        """将短期缓冲转存至长期记忆。
+
+        每条记录只写一次（工单15去重）：重要事件不再额外落一条 episodic 正文副本，
+        而是复用同一条文本，仅把 metadata["type"] 标记为 episodic。
+        """
         await self.connect()
-        items = self.short_term.dump()
+        items = self.short_term.dump_with_meta()
         if not items:
             return
         if not force and not self.short_term.is_full():
             return
-        for text in items:
-            await self.long_term.add(text, {"type": "dialogue"})
+        for text, meta in items:
+            await self.long_term.add(
+                text,
+                {
+                    "type": "episodic" if meta.get("important") else "dialogue",
+                    "speaker": meta.get("speaker", ""),
+                    "self": meta.get("is_self", True),
+                },
+            )
         self.short_term.clear()
         self.episodic.build_summary()
         logger.debug("角色 %s 记忆固化 %d 条", self.character_id, len(items))
