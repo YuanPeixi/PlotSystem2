@@ -130,3 +130,32 @@ async def test_scene_run_strips_inner_thought_for_other_agents():
     # 第 1 轮由 c1（甲）发言：甲自己的记忆保留内心独白，乙（旁观者）的记忆不应包含
     assert "这局面不妙" in agent_a.memory.short_term.dump()[0]
     assert "这局面不妙" not in agent_b.memory.short_term.dump()[0]
+
+
+@pytest.mark.asyncio
+async def test_scene_run_after_snapshot_has_empty_short_term_buffer():
+    """固化必须先于后置快照，否则 continue/rollback/next_scene 的记忆回填
+    （prime()）会让已经写入长期记忆的台词随下一场的 consolidate 被二次写入
+    （长期记忆按角色+项目共享、不随分支回滚，重复只会累积）。
+
+    验证方式：真实（不 mock）走 consolidate，检查后置快照里保存的
+    short_term_buffer 必须是空的——这正是"已落库、可安全回填"的标志。
+    """
+    agent_a = _make_agent("c1", "甲")
+    agent_b = _make_agent("c2", "乙")
+    scene = Scene(scene_id="s-order", project_id="proj-se", branch_id="b-order")
+    config = SceneConfig(
+        name="对峙", participating_characters=["c1", "c2"], location="客栈", max_turns=2
+    )
+    sm = SnapshotManager("proj-se")
+    engine = SceneEngine(scene, config, [agent_a, agent_b], sm)
+
+    with patch.object(
+        CharacterAgent, "respond", new=AsyncMock(return_value="*点头* 我明白了。")
+    ):
+        result = await engine.run()
+
+    snap_after = await sm.get_snapshot(result.snapshot_id_after)
+    assert snap_after is not None
+    for cid in ("c1", "c2"):
+        assert snap_after.character_states[cid].short_term_buffer == []
