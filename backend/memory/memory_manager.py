@@ -112,25 +112,35 @@ class MemoryManager:
     async def snapshot(self, dest_dir: Path | None = None) -> MemorySnapshot:
         """序列化当前记忆状态。dest_dir 给出时导出 ChromaDB 副本。
 
-        注意顺序：必须先取短期缓冲副本再 consolidate —— consolidate(force=True)
-        会清空 short_term，顺序颠倒会让 short_term_buffer 恒为空（工单14 修复）。
+        注意：不在此处强制 consolidate。短期缓冲此时尚未写入长期记忆，
+        原样连同 metadata（重要性/发言者）一起存入快照；若在此处
+        consolidate(force=True) 后再读取，缓冲区已被清空为空列表（曾是
+        工单14修复的 bug）；但反过来若先读取缓冲副本再 consolidate，这批
+        文本会同时存在于"已写入长期记忆"和"快照的 short_term_buffer"两处，
+        一旦该快照被 restore() 回填、之后再次触发 consolidate，会被二次
+        写入长期记忆。保持"不强制固化"是唯一不产生重复写入的顺序。
         """
         await self.connect()
-        buffer = self.short_term.dump()
-        await self.consolidate(force=True)
+        buffer_with_meta = self.short_term.dump_with_meta()
         export_path = ""
         if dest_dir is not None:
             export_path = self.long_term.export_to(Path(dest_dir))
         return MemorySnapshot(
             character_id=self.character_id,
-            short_term_buffer=buffer,
+            short_term_buffer=[text for text, _ in buffer_with_meta],
+            short_term_meta=[meta for _, meta in buffer_with_meta],
             episodic_summary=self.episodic.dump(),
             chroma_export_path=export_path,
         )
 
     async def restore(self, snap: MemorySnapshot) -> None:
         """从快照恢复记忆状态。"""
-        self.short_term.load(snap.short_term_buffer)
+        if snap.short_term_meta:
+            self.short_term.load_with_meta(
+                list(zip(snap.short_term_buffer, snap.short_term_meta))
+            )
+        else:
+            self.short_term.load(snap.short_term_buffer)
         self.episodic.load(snap.episodic_summary)
         if snap.chroma_export_path:
             self.long_term.import_from(Path(snap.chroma_export_path))

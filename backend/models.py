@@ -350,5 +350,6 @@ class MemorySnapshot:
 
     character_id: str = ""
     short_term_buffer: list[str] = field(default_factory=list)
+    short_term_meta: list[dict] = field(default_factory=list)
     episodic_summary: str = ""
     chroma_export_path: str = ""

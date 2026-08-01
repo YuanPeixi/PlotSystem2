@@ -331,8 +331,13 @@ graph TD
    → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 → 追加 transcript
    → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；写他人轮次时
    剥离 `inner_thought`）→ SSE 推送；
-5. 终止后后置快照 → 每个 agent `update_state_after_scene(new_turns)` 只做批量
-   `consolidate(force=True)`，不再重复写入（唯一写入点在第4步）；
+5. 终止后先固化记忆（`consolidate(force=True)`，唯一写入点在第4步，不重复写入）
+   → 再打后置快照（此时短期缓冲已清空，快照记录的是"已落库"的干净状态，
+   供下一场 `prime()` 回填也不会重新引入已固化过的内容）。**顺序不可颠倒**：
+   若先打快照再固化，快照里的短期缓冲会带着"即将被固化"的原始文本，
+   一旦该快照被 continue/rollback/next_scene 用于 `prime()` 回填，
+   这批已写入长期记忆的台词会在新场景的下一次 consolidate 时被二次写入；
+
 6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库 → 推 evaluation 与 completed。
 
 **注意**：`SceneEngine` 不碰 SQLite，它把结果写回传入的 `Scene` 对象，由 orchestrator 负责落盘。

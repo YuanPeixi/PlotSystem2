@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import Any
 
 from backend.config import settings
 
@@ -15,9 +16,9 @@ class ShortTermMemory:
         self._buffer: deque[str] = deque(maxlen=self.capacity)
         # 每条记忆的元数据（重要性/发言者/是否本人），仅进程内使用，
         # 不参与 dump()/load() 的快照契约（工单15：避免影响持久化格式）。
-        self._meta: deque[dict] = deque(maxlen=self.capacity)
+        self._meta: deque[dict[str, Any]] = deque(maxlen=self.capacity)
 
-    def add(self, text: str, **meta) -> None:
+    def add(self, text: str, **meta: Any) -> None:
         self._buffer.append(text)
         self._meta.append(meta)
 
@@ -43,3 +44,8 @@ class ShortTermMemory:
     def load(self, items: list[str]) -> None:
         self._buffer = deque(items, maxlen=self.capacity)
         self._meta = deque(({} for _ in items), maxlen=self.capacity)
+
+    def load_with_meta(self, items: list[tuple[str, dict[str, Any]]]) -> None:
+        """与 dump_with_meta() 对称的恢复方法，保留重要性/发言者等元数据。"""
+        self._buffer = deque((text for text, _ in items), maxlen=self.capacity)
+        self._meta = deque((dict(meta) for _, meta in items), maxlen=self.capacity)
