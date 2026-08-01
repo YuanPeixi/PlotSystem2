@@ -329,8 +329,10 @@ graph TD
    用 `prime()` 回填短期缓冲与事件摘要；长期记忆靠 ChromaDB 目录天然连续；
 4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
    → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 → 追加 transcript
-   → `add_experience` → SSE 推送；
-5. 终止后后置快照 → 每个 agent `update_state_after_scene(new_turns)`；
+   → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；写他人轮次时
+   剥离 `inner_thought`）→ SSE 推送；
+5. 终止后后置快照 → 每个 agent `update_state_after_scene(new_turns)` 只做批量
+   `consolidate(force=True)`，不再重复写入（唯一写入点在第4步）；
 6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库 → 推 evaluation 与 completed。
 
 **注意**：`SceneEngine` 不碰 SQLite，它把结果写回传入的 `Scene` 对象，由 orchestrator 负责落盘。
@@ -370,7 +372,8 @@ graph TD
 每个在场角色都应该记住。
 
 > ⚠️ 早期文档只写"角色只持有已知信息"，被误读成"不该记录他人发言"，
-> 这是第 12 节"记忆只写发言者"那个 bug 的文档层成因。别再退回去。
+> 曾是"记忆只写发言者"那个 bug（工单15，已修复：`SceneEngine.run()` 现在对本场
+> 全部参演角色写入每一轮，写他人轮次时剥离 `inner_thought`）的文档层成因。别再退回去。
 
 ### 契约 2 — 快照前置（含唯一例外）
 
@@ -567,7 +570,6 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 | 缺陷 | 现象 | 备注 |
 |------|------|------|
 | **图谱快照失效** | `GraphManager.checkpoint_to()` 用 `copytree` 复制 `kuzu_db`，但当前 Kuzu 版本下它是**单个文件** → 抛 `NotADirectoryError`，被 `create_snapshot` 的 `except → logger.debug` 静默吞掉。结果：`Snapshot.graph_checkpoint` 恒为空，回滚不恢复图谱 | **当前无实际影响**：图谱只在构建时写一次，之后只读，回滚不恢复也等价。等工单 `06-dynamic-graph-writeback.md`（动态图谱写回）落地时会变成真数据丢失，**应作为该工单的前置任务**，不是独立 P0。修法：按 `Path.is_dir()` 分支选 `copytree`/`copy2`，并把吞异常的日志提到 `warning` |
-| **记忆只写发言者** | 引擎每轮只对 speaker 调 `add_experience`，`update_state_after_scene` 又按 `character_id` 过滤 → 每个角色的长期记忆是"自言自语独白集"，不符合"在场感知"语义 | 工单 `15-perceived-memory-and-dedup.md` |
 | **`speaker_mode` 断链** | `SceneConfig.speaker_mode` 与引擎的 selector/random 分支都在，但 `Scene` 无该字段、`orchestrator.run_scene` 构造 `SceneConfig` 时不传 → **永远 round_robin** | 要么补 `Scene.speaker_mode` + 三处传参，要么删掉半条链，别留半截 |
 | **`GET /characters/{id}/memory` 恒空** | 每次新建 `MemoryManager`，而短期/事件记忆是纯内存态 | 修法：复用 `_load_inherited_states` 的快照读取；否则下线该接口 |
 | **前端未消费 `GET /decision`** | 后端幂等查询接口已实现但无调用方，超时/409 后的状态恢复能力为空 | — |
