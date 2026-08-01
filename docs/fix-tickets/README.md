@@ -1,36 +1,158 @@
-# PlotSystem 修复工单索引
+# PlotSystem 工单索引 v2（重排版）
 
 > 本目录下每份文档都是一个**独立、自包含**的修复工单，可以单独分发给任意 AI 编程助手 session 处理，
 > 不依赖其他工单或历史对话上下文。每份工单包含：问题背景、精确错误位置、目标（Definition of Done）、
 > 涉及文件、建议实现步骤、验收方式。
 >
-> 处理顺序建议按优先级（P0 → P3），但各工单之间除特别标注的依赖关系外，均可**并行**处理。
+> 本文件是工单**索引**（2026-08-01 重排版，替代早期版本）：合并了拆分错位的工单、补入了此前只存在于
+> 讨论中的新功能，并按「先还框架债、再打地基、最后上新能力」重新排序。
+>
+> 编号规则：01–15 沿用原编号与原文件；**16 起为新增，文件尚未创建（标注「待建单」）**。
+> 各工单除标注依赖外仍可并行。架构改动须与根目录 `CLAUDE.md` 保持一致。
 
-## 工单列表
+---
+
+## 0. 已完成（不再排期）
+
+| 编号 | 标题 | 归档说明 |
+|---|---|---|
+| 01 | 修复导演回滚决策断点 | ✅ 分支 `fix/rollback-build-status` |
+| 02 | 长期记忆接入远程 Embedding | ✅ PR #4（合入 main：`c49f3d7` + `f5e7df6`） |
+| 10 | 重复点击"开始模拟"导致并发分叉 | ✅ PR #3 |
+| 13 | 决策接口幂等 + "下一场"可编辑范围 | ✅ PR #5 |
+| 14 | 续跑/回滚运行时记忆丢失 + 上下文窗口 | ✅ 已合并（PR #7，`0d17d2c`到`d96bee1`） |
+
+---
+
+## 1. 阶段 A — 框架欠债（**先做**，否则后续功能建在流沙上）
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
-| [01](./01-rollback-fix.md) | 修复导演回滚（rollback）决策断点 | P0 | 无 | ✅ 已修复（分支 `fix/rollback-build-status`） |
-| [02](./02-embedding-remote.md) | 长期记忆接入远程 Embedding（替代本地降级） | P0 | 无 | ✅ 已修复（PR #4） |
-| [03](./03-branch-switch-frontend.md) | 修复前端分支切换无联动问题 | P1 | 无 | 待处理 |
-| [04](./04-director-context.md) | 补全导演评估上下文 + 实现 query_character_state | P1 | 建议在 14 之后做（其 §3.2 的"记忆先留空"折中可升级为从最近快照读取） | 待处理 |
-| [05](./05-character-inspector.md) | 新增角色 Inspect（导演视角详情）前端入口 | P1 | 建议在 04 之后做（可复用 query_character_state）；记忆面板依赖的 `/characters/{id}/memory` 目前恒返回空，需先随 04 改为读快照；"环境变量/角色详情可编辑"部分与 13 联动 | 待处理 |
-| [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 无 | 待处理 |
-| [07](./07-world-state.md) | 新增动态世界变量（WorldState）模型与流程 | P2 | 建议了解 01（快照需纳入 WorldState） | 待处理 |
-| [08](./08-fork-branch-conditions.md) | fork_branch / new_initial_conditions 生效 | P2 | 依赖 01（复用其"由决策创建新场景"的模式） | 待处理 |
-| [09](./09-memory-quality-optional.md) | 记忆检索质量优化（分层加权 / 中文分词降级） | P3 | 建议在 02、**15** 完成后做（15 未修则是在重复副本污染的数据上调权重） | 待处理 |
-| [10](./10-scene-start-idempotency.md) | 修复重复点击"开始模拟"导致场景并发分叉运行 | P1 | 无 | ✅ 已修复（PR #3） |
-| [11](./11-selector-and-world-interaction.md) | 完善 Selector 发言模式 + 动作/环境交互处理 | P2 | 建议先做 07，可联动 06 | 待处理 |
-| [12](./12-auto-pilot-director.md) | 新增 Auto Pilot（自动执行导演决策） | P2 | 建议先做 13（决策接口幂等） | 待处理 |
-| [13](./13-decision-idempotency-and-scope.md) | 场景决策接口缺少幂等保护 + "下一场"可编辑范围过窄 | P1 | 建议了解 01、10 | ✅ 已修复（PR#5 分支 `fix/decision-idempotency-and-scope`） |
-| [14](./14-continuity-memory-context.md) | 场景续跑/回滚后运行时记忆丢失 + 角色上下文窗口固定截断 | P1 | 建议了解 02、09 | 🔍 审核中（PR #7） |
-| [15](./15-perceived-memory-and-dedup.md) | 角色记忆写入范围错误（只记自己的台词）+ 同一句台词重复入库 | P1 | 建议在 14 之后做；应在 09 之前做 | 待处理 |
+| [15](./15-perceived-memory-and-dedup.md) | 记忆写入范围改为「在场感知」+ 同句去重 | **P0** | 14 | 待处理 |
+| [11](./11-selector-and-world-interaction.md) | **（已瘦身）** 打通 Selector 发言模式 | **P1** | 无 | 待处理 |
+| 16 | **【新】** 修复 Kuzu 快照持久化（单文件 vs `copytree`） | **P1** | 无 | 待建单 |
+| [03](./03-branch-switch-frontend.md) | 前端分支切换无联动 | P1 | 无 | 待处理 |
+| 19 | **【新】** 前端消费 `GET /scenes/{id}/decision` | P2 | 13 ✅ | 待建单 |
 
-## 项目背景速览（给不熟悉本项目的 session）
+**工单 11 的拆分**：原 11 同时包含「Selector 发言模式」与「动作/环境交互裁决」，二者体量与风险完全不同。
+现拆为：**11 = Selector 打通（纯修复）**，**20 = 环境智能体（大提案，见阶段 D）**。
+Selector 属于纯修复：`SceneConfig.speaker_mode` 与引擎的 selector/random 分支都已存在，
+但 `Scene` 无该字段、`orchestrator.run_scene` 构造 `SceneConfig` 时不传 → **永远 round_robin**。
+要么补 `Scene.speaker_mode` + 三处传参打通，要么删掉半条链，不要留半截。
+打通后可继续做「重复惩罚」（近期发言多则降权，但仍允许连续发言）与候选人 Rerank。
 
-- 项目：`PlotSystem`，影视多智能体剧情推演系统。后端 FastAPI（`backend/`），前端 Vue3+Vite+Pinia（`frontend/`）。
-- 唯一权威规范文档：仓库根目录 `CLAUDE.md`，任何架构改动需与其保持一致或同步更新。
-- 核心链路：GraphRAG 建图 → 角色卡生成 → 场景引擎驱动多角色对话（AutoGen 可选） → 导演评估决策 → 快照/分支 → 输出。
-- 数据存储：SQLite（`data/projects.db`，项目/场景/分支/评估元数据）+ 每项目 JSON 文件（角色卡）+ Kuzu 嵌入式图数据库 + ChromaDB 向量库。
-- 启动：`python -m uvicorn backend.main:app --port 5001`（后端），`cd frontend && npm run dev`（前端，代理 `/api` → 5001）。
-- 测试：`python -m pytest -q`（注意：全量跑可能因 chromadb→onnxruntime 触发 DLL 崩溃，可单独跑不涉及 chroma 的测试文件）。
+---
+
+## ⚠️ 2. 必须先看：动态图谱目前**没有持久化**
+
+这是排期里最容易被漏掉的坑，直接决定工单 06 能不能做：
+
+- `GraphManager.checkpoint_to()` 用 `shutil.copytree()` 复制 `kuzu_db`，
+  但当前 Kuzu 版本下 `kuzu_db` 是**单个文件**（实测 19–21 MB），不是目录 → 必抛 `NotADirectoryError`；
+- 该异常被 `SnapshotManager.create_snapshot` 的 `except Exception → logger.debug` **静默吞掉**；
+- 结果：`Snapshot.graph_checkpoint` 恒为空字符串，`restore_snapshot` 因找不到 checkpoint 而跳过，
+  **快照从不包含知识图谱，回滚也不恢复图谱**。
+
+**当前为什么不是 P0**：图谱只在 GraphRAG 构建阶段写入一次，之后全程只读。
+既然内容不变，"回滚不恢复图谱"与"恢复了图谱"在效果上等价，因此现在**无实际影响**。
+
+**什么时候变成真 bug**：工单 06（场景结束后动态回写图谱）一旦落地，图谱就成为随场次演进的可变状态，
+届时"快照不含图谱"= **回滚丢数据**、分支之间图谱互相污染。
+
+**结论**：工单 16 是工单 06 的**硬前置**，不是独立 P0。修法两步：
+1. `checkpoint_to` / `restore_from` 按 `Path.is_dir()` 分支选择 `copytree` / `copy2`；
+2. 把 `create_snapshot` 里吞异常的 `logger.debug` 提升为 `logger.warning` —— 这个 bug 正是被日志级别藏起来的。
+
+---
+
+## 3. 阶段 B — 能力地基（多个上层功能共用）
+
+| 编号 | 标题 | 优先级 | 依赖 | 状态 |
+|---|---|---|---|---|
+| 17 | **【新】** 统一 Inspection API 层（角色情绪/记忆/位置/内心的查询与微调） | **P1** | 14 | 待建单 |
+| [04](./04-director-context.md) | 补全导演评估上下文 + `query_character_state` 落地 | P1 | 17 | 待处理 |
+| [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17、04 | 待处理 |
+| [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 |
+| [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | **16（硬前置）** | 待处理 |
+| [08](./08-fork-branch-conditions.md) | `fork_branch` / `new_initial_conditions` 真正生效 | P2 | 01 ✅ | 待处理 |
+
+**为什么把 17 提到 04/05 之前**：用户面板、导演评估、最终总结智能体这三方要看的其实是同一份东西
+（角色的情绪、记忆、位置、内心）。若各做各的，会出现三套口径不一致的读取路径。
+17 建一层地基，04/05 及后续「总结智能体的角色内部视角」都复用它。
+
+17 顺带修掉一个既有缺陷：`GET /characters/{id}/memory` 每次新建 `MemoryManager`，
+而短期/事件记忆是纯内存态 → **恒返回空**。修法是复用工单 14 的 `_load_inherited_states` + `prime()` 读快照。
+`DirectorAgent.query_character_state()` 现在也是返回空壳的死代码，同样在这一层落地。
+
+---
+
+## 4. 阶段 C — 新功能
+
+| 编号 | 标题 | 优先级 | 依赖 | 状态 |
+|---|---|---|---|---|
+| 18 | **【新】** 导演分镜稿（storyboard）持久化 | P2 | 17 | 待建单 |
+| [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 可选 | 待处理 |
+| [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、**15** | 待处理 |
+
+**18 分镜稿**：导演目前只有提示词 + 压缩后的既往剧情，长线维持能力弱。
+给导演一份可读写的持久化文件（类似 AI 的记忆文件），随快照一起版本化；
+分支/回滚时需向导演说明与原线的差异。这是"导演 Heavy Duty 却配套工具不足"的正面解法。
+
+**09 的前置强调**：15 未修之前，长期记忆里是"自言自语独白集"且存在重复副本，
+在这种数据上调权重等于在污染数据上调参，做了也白做。
+
+---
+
+## 5. 阶段 D — 大提案（改动核心循环，放最后）
+
+| 编号 | 标题 | 优先级 | 依赖 | 状态 |
+|---|---|---|---|---|
+| 20 | **【新，从 11 拆出】** 环境智能体（裁决角色动作与环境规则） | P3 | 07、11 | 待建单 |
+| 21 | **【新】** 私有内心 OS（角色输出前的自适应思考，**不入档**） | P3 | 20 | 待建单 |
+| 22 | **【新】** 评估 + 分镜稿存档 → 支撑 MCTS / 多结局搜索 | P3 | 18 | 待建单 |
+
+**20 环境智能体**：承接介于「角色动作」与「环境变量」之间的判定。
+例：配角想拔石中剑 → 判定"没拔动"；角色好奇触碰祭祀水盆 → 展示水盆的特殊功能。
+实现走 **OpenAI 原生 function calling**，**不需要引入 AutoGen**
+（AutoGen 的 GroupChat 编排会打破 `CLAUDE.md` 契约 3 的 system 静态 / user 动态结构与 prefix cache）。
+它会改动 `SceneEngine` 的对话循环本身，风险最高，因此排最后。
+
+**21 私有内心 OS**：与现在会落档的 `DialogueTurn.inner_thought` **是两回事** —— 前者是输出前的临时思考、不持久化。
+与 20 是同一件事的两面（动作的裁决 vs 动作的酝酿），可考虑合并提案。
+
+**22 MCTS**：当前是「每次只生成一场 + 采纳导演建议」= 已默认剪枝的贪心单路径，多结局靠人工从快照分叉。
+只有当**场景评价与分镜稿都持久化**之后，树上才有可比较的节点价值，搜索才谈得上。不要提前上算法。
+
+---
+
+## 6. 依赖关系速览
+
+```mermaid
+graph LR
+  T14[14 记忆续跑 ✅已合并] --> T15[15 在场感知记忆]
+  T14 --> T17[17 Inspection 地基]
+  T15 --> T09[09 记忆检索质量]
+  T16[16 Kuzu 快照修复] --> T06[06 动态图谱写回]
+  T17 --> T04[04 导演上下文]
+  T17 --> T05[05 角色 Inspect 前端]
+  T17 --> T18[18 分镜稿]
+  T18 --> T12[12 AutoPilot]
+  T18 --> T22[22 MCTS 存档]
+  T07[07 WorldState] --> T20[20 环境智能体]
+  T11[11 Selector 打通] --> T20
+  T20 --> T21[21 私有内心 OS]
+```
+
+---
+
+## 7. 项目背景速览（给不熟悉本项目的 session）
+
+- 项目：`PlotSystem`，多分支多智能体剧情推演系统。后端 FastAPI（`backend/`），前端 Vue3+Vite+Pinia（`frontend/`）。
+- **先读根目录 `CLAUDE.md`**（已于 2026-08-01 按代码实况重写）：第 7 节九条契约是承重墙，
+  第 12 节列出的已知缺陷与 dead code **不要顺手修**。
+- 核心链路：实体抽取建图 → 角色卡生成 → **自研**场景引擎驱动多角色对话（非 AutoGen GroupChat）
+  → 导演评估决策 → 快照/分支 → 总结输出。
+- 数据存储：SQLite `data/projects.db`（`data_json` 列是唯一真相源）+ 角色卡 JSON 文件
+  + Kuzu 嵌入式图库（单文件）+ ChromaDB 向量库。
+- 启动：`npm run dev`（前后端同起）；单独：`npm run backend` / `npm run frontend`。
+- 测试：`python -m pytest -q`（全量跑可能因 chromadb→onnxruntime 触发 DLL 崩溃，可单跑不涉及 chroma 的文件）。
