@@ -112,8 +112,12 @@ class SceneEngine:
             new_turns.append(turn)
             transcript.append(self._turn_line(turn))
 
-            # 实时写入该角色记忆
-            await agent.memory.add_experience(turn)
+            # 在场即记忆（工单15）：本场全部参演角色都感知到这一轮，而不只是发言者；
+            # 对非发言者剥离内心独白，避免私有内心泄露给旁观角色（契约1）。
+            for participant in self.agents:
+                await participant.memory.add_experience(
+                    turn, from_self=(participant.character_id == turn.character_id)
+                )
 
             if on_turn:
                 await on_turn(turn)

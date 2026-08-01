@@ -252,8 +252,9 @@ class CharacterAgent:
 
     # ---- 状态更新 ----
     async def update_state_after_scene(self, scene_log: list[DialogueTurn]) -> None:
-        """场景结束后固化记忆。"""
-        for turn in scene_log:
-            if turn.character_id == self.character_id:
-                await self.memory.add_experience(turn)
+        """场景结束后固化记忆。
+
+        逐轮写入已在 SceneEngine.run() 循环里对全部参演角色实时完成（工单15），
+        这里只做批量固化，不再重复 add_experience，避免同一句台词入库两次。
+        """
         await self.memory.consolidate(force=True)

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from backend.agents.character_agent import CharacterAgent
 from backend.config import settings
 from backend.memory import MemoryManager
-from backend.models import CharacterCard, LoreEntry, RelationshipState
+from backend.models import CharacterCard, DialogueTurn, LoreEntry, RelationshipState
 
 
 def _make_card() -> CharacterCard:
@@ -122,6 +124,42 @@ def test_recent_transcript_trims_in_blocks_and_keeps_start_stable(monkeypatch):
     second = agent._recent_transcript([*transcript, "乙: 新的一句"])
     assert agent._transcript_start == start
     assert second.startswith(first)  # 新内容只在末尾追加
+
+
+@pytest.mark.asyncio
+async def test_update_state_after_scene_does_not_duplicate_write():
+    """工单15：写入已在 SceneEngine 每轮实时完成，update_state_after_scene 只应
+    固化缓冲，不应再对 scene_log 重新调用 add_experience（否则同一句台词会入库两次）。"""
+    agent = _make_agent()
+    turns = [
+        DialogueTurn(turn_number=1, character_id="char-1", character_name="萧无名", dialogue="你好")
+    ]
+    with (
+        patch.object(agent.memory, "add_experience", new=AsyncMock()) as mock_add,
+        patch.object(agent.memory, "consolidate", new=AsyncMock()) as mock_consolidate,
+    ):
+        await agent.update_state_after_scene(turns)
+
+    mock_add.assert_not_called()
+    mock_consolidate.assert_awaited_once_with(force=True)
+
+
+@pytest.mark.asyncio
+async def test_memory_manager_consolidate_writes_each_entry_once():
+    """工单15：重要事件不再另外写一份正文副本，consolidate 按条写入一次，
+    仅通过 metadata['type'] 标记重要程度。"""
+    mem = MemoryManager("char-dedup", "proj-dedup")
+    turn = DialogueTurn(
+        turn_number=1, character_id="char-dedup", character_name="甲", dialogue="我发誓要复仇"
+    )
+    await mem.add_experience(turn)  # 命中“发誓”重要关键词
+
+    with patch.object(mem.long_term, "add", new=AsyncMock()) as mock_add:
+        await mem.consolidate(force=True)
+
+    mock_add.assert_awaited_once()
+    _, meta = mock_add.call_args.args
+    assert meta["type"] == "episodic"
 
 
 def test_recent_transcript_respects_line_window_override(monkeypatch):
