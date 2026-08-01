@@ -122,7 +122,18 @@ class SceneEngine:
             if on_turn:
                 await on_turn(turn)
 
-        # 4. 模拟后快照
+        # 4. 固化记忆（必须先于后置快照！只固化本次新增轮次，历史轮次在上次
+        # 结束时已固化）。consolidate 会清空 short_term 缓冲。若顺序颠倒——
+        # 先打快照再固化——快照里的 short_term_buffer 会带着"即将被固化"的
+        # 原始文本；一旦这份快照后续被 continue/rollback/next_scene 用于
+        # prime() 回填新场景的记忆，这批本已写入长期记忆的台词会随新场景的
+        # 下一次 consolidate 被二次写入长期记忆（跨场景重复，且长期记忆按
+        # 角色+项目共享、不随分支回滚，重复只会累积不会自愈）。
+        for agent in self.agents:
+            await agent.update_state_after_scene(new_turns)
+
+        # 5. 模拟后快照（此时短期缓冲已清空，快照记录的是"已落库"的干净状态，
+        # 供下一场 prime() 回填也不会重新引入已固化过的内容）
         after_states = self._collect_states()
         snap_after = await self.snapshot_manager.create_snapshot(
             scene_id=self.scene.scene_id,
@@ -131,10 +142,6 @@ class SceneEngine:
             scene_context=self._scene_context(),
             label=f"after:{self.config.name}",
         )
-
-        # 5. 固化记忆（只固化本次新增轮次，历史轮次在上次结束时已固化）
-        for agent in self.agents:
-            await agent.update_state_after_scene(new_turns)
 
         self.scene.dialogue_log = turns
         self.scene.turns_completed = turn_number
