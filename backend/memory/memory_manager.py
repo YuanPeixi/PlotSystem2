@@ -22,7 +22,7 @@ def _turn_to_text(turn: DialogueTurn, include_inner_thought: bool = True) -> str
 
     include_inner_thought=False 用于写入"他人轮次"（在场感知）：
     必须剥离内心独白，否则会把该角色的私有内心泄露进旁观者的记忆库
-    （CLAUDE.md 第10节/契约1，工单15）。
+    （CLAUDE.md 第7节“契约1”，工单15）。
     """
     parts = []
     if turn.action:
