@@ -24,6 +24,7 @@ from backend.models import (
     RelationshipState,
     Scene,
     SceneEvaluation,
+    SpeakerMode,
     now,
 )
 from backend.utils import db
@@ -204,6 +205,7 @@ def _deserialize_scene(data: dict) -> Scene:
         snapshot_id_after=data.get("snapshot_id_after"),
         restore_snapshot_id=data.get("restore_snapshot_id", ""),
         turns_completed=data.get("turns_completed", 0),
+        speaker_mode=data.get("speaker_mode", SpeakerMode.ROUND_ROBIN.value),
         dialogue_log=log,
     )
 

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     LLM_MODEL_DIRECTOR: str = ""   # 导演：长上下文、指令遵循强
     LLM_MODEL_CHARACTER: str = ""  # 角色：扮演沉浸、创意性强
     LLM_MODEL_SUMMARY: str = ""    # 总结：写作风格好
+    LLM_MODEL_SELECTOR: str = ""   # 发言者打分：短输入短输出，可挂本地小模型
+    # selector 独立服务商（留空复用 LLM_API_KEY / LLM_BASE_URL）
+    LLM_SELECTOR_BASE_URL: str = ""
+    LLM_SELECTOR_API_KEY: str = ""
 
     @property
     def director_model(self) -> str:
@@ -40,6 +44,18 @@ class Settings(BaseSettings):
     @property
     def summary_model(self) -> str:
         return self.LLM_MODEL_SUMMARY or self.LLM_MODEL_NAME
+
+    @property
+    def selector_model(self) -> str:
+        return self.LLM_MODEL_SELECTOR or self.LLM_MODEL_NAME
+
+    @property
+    def selector_base_url(self) -> str:
+        return self.LLM_SELECTOR_BASE_URL or self.LLM_BASE_URL
+
+    @property
+    def selector_api_key(self) -> str:
+        return self.LLM_SELECTOR_API_KEY or self.LLM_API_KEY
 
     # --- 后端 ---
     BACKEND_HOST: str = "0.0.0.0"
@@ -59,6 +75,24 @@ class Settings(BaseSettings):
     # --- 场景引擎 ---
     DEFAULT_MAX_TURNS: int = 20
     DEFAULT_SPEAKER_MODE: str = "round_robin"
+
+    # --- 发言者选择（speaker_mode=selector，工单11）---
+    # 最终得分 = w_urge*urge + w_relevance*relevance + w_initiative*initiative
+    #            + addressed_bonus*[被点名] - repeat_penalty*penalty
+    SELECTOR_WEIGHT_URGE: float = 1.0
+    SELECTOR_WEIGHT_RELEVANCE: float = 1.2
+    SELECTOR_WEIGHT_INITIATIVE: float = 0.6
+    SELECTOR_ADDRESSED_BONUS: float = 4.0
+    SELECTOR_REPEAT_PENALTY: float = 6.0
+    # 重复惩罚的几何衰减底数：penalty = Σ decay^(距今轮数)，越接近 1 记忆越长
+    SELECTOR_PENALTY_DECAY: float = 0.5
+    # >0 时按最终得分做 softmax 采样，=0 时取 argmax（确定性）
+    SELECTOR_TEMPERATURE: float = 0.0
+    # 打分调用自身的 LLM 温度（打分是判断任务，应低温）
+    SELECTOR_SCORE_TEMPERATURE: float = 0.2
+    # 打分 prompt 里"目前对话"的 token 预算。远小于角色的预算：
+    # selector 每轮要为每个候选各发一次，上下文过长会让成本随人数线性放大
+    SELECTOR_TRANSCRIPT_BUDGET: int = 4000
 
     # --- 记忆 ---
     # 工单15后语义变为"我在场感知过的最近 N 句"（而非仅"我说过的"），

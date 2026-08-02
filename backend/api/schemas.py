@@ -62,7 +62,8 @@ class CreateSceneRequest(BaseModel):
     initial_conditions: dict = Field(default_factory=dict)
     max_turns: int = 12
     opening_narration: str = ""
-    speaker_mode: str = "round_robin"
+    # 留空则采用 settings.DEFAULT_SPEAKER_MODE（.env 配置）
+    speaker_mode: str = ""
 
 
 class DecisionRequest(BaseModel):

@@ -118,14 +118,19 @@ PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项�
 | **microsoft/graphrag** | 无 | ❌ **未使用** | 已移入 `[project.optional-dependencies].graphrag` |
 
 > 改 RAG 检索请改 `memory/long_term.py`；改实体抽取请改 `entity_extractor.py` 的提示词；
-> 改发言顺序请改 `scene_engine/engine.py`。**不要去找 GroupChat 或 settings.yaml。**
+> 改发言顺序请改 `scene_engine/engine.py` 与 `scene_engine/speaker_selector.py`。
+> **不要去找 GroupChat 或 settings.yaml。**
 
-### 2.1 三路异构模型
+### 2.1 四路异构模型
 
-`settings.director_model / character_model / summary_model` 分别读
-`LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY`，留空回退 `LLM_MODEL_NAME`。三个 Agent 已各自生效。
+`settings.director_model / character_model / summary_model / selector_model` 分别读
+`LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY / SELECTOR`，留空回退 `LLM_MODEL_NAME`。四者均已生效。
 
-温度约定：角色 0.8（创意）、导演 0.3（一致）、总结 0.7（平衡）。
+温度约定：角色 0.8（创意）、导演 0.3（一致）、总结 0.7（平衡）、选择器 0.2（判断）。
+
+selector 另有独立的 `LLM_SELECTOR_BASE_URL / LLM_SELECTOR_API_KEY`（留空复用主配置），
+用于把"发言者打分"这种短输入短输出的判断任务挂到本地小模型上。透传路径仍是
+`utils/llm.py` 的 `chat()/chat_safe()` 的 `base_url` / `api_key` 参数，**契约7 未破**。
 
 ---
 
@@ -153,9 +158,10 @@ backend/
 │   └── base_agent.py       AutoGen 模型客户端封装（⚠️ 无调用方）
 │
 ├── scene_engine/
-│   ├── engine.py         手写对话循环 + 三态解析 + 快照编排
-│   ├── termination.py    终止条件判定
-│   └── scene_config.py   仅从 models.py 再导出
+│   ├── engine.py           手写对话循环 + 三态解析 + 快照编排
+│   ├── speaker_selector.py selector 模式的独立评分选人（工单11）
+│   ├── termination.py      终止条件判定
+│   └── scene_config.py     仅从 models.py 再导出
 │
 ├── memory/
 │   ├── memory_manager.py 三层门面
@@ -229,8 +235,10 @@ frontend/src/
    才创建前置快照。回滚重演场景**必须**留空它，否则会跳过快照、丢掉新初始条件。
 2. **`Scene.restore_snapshot_id` 与上者分工**：前者管"从哪儿回填运行时记忆"，
    后者管"要不要打快照"。两者不可合并。
-3. **`Scene` 没有 `speaker_mode` 字段**。`SceneConfig.speaker_mode` 存在且引擎支持
-   selector/random 分支，但链路是断的（见第 12 节）。
+3. **`Scene.speaker_mode` 与 `SceneConfig.speaker_mode` 是同一条链**（工单11 已打通）。
+   缺省值来自 `settings.DEFAULT_SPEAKER_MODE`，由 `CreateSceneRequest` 或
+   `DirectorAgent.plan_scene` 写入 `Scene`，再由 `run_scene` 传给 `SceneConfig`。
+   新增枚举值时三处都要跟。
 4. **`CharacterState.long_term_memory_snapshot` 恒为空字符串**，`_collect_states()` 不写它。
 5. **`DirectorDecision` 的 `next_*` 覆盖字段全为 `None` 时表示"保持 AI 自动规划"**，
    不要用空字符串/空列表当默认值。
@@ -328,6 +336,8 @@ graph TD
 3. `build_character_agents`：**每场新建** `CharacterAgent` + `MemoryManager`（无跨场复用），
    用 `prime()` 回填短期缓冲与事件摘要；长期记忆靠 ChromaDB 目录天然连续；
 4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
+   （`selector` 模式下转交 `ScoringSpeakerSelector`：每个候选各一次并行打分调用，
+   叠加被点名加分与重复发言惩罚；兜底必须 warning 可见，不得静默选 `agents[0]`）
    → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 → 追加 transcript
    → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；写他人轮次时
    剥离 `inner_thought`）→ SSE 推送；
@@ -369,7 +379,8 @@ graph TD
 
 **该隔离的**：
 - `unknown_facts` 只允许出现在 `PersonaBuilder` 生成过程与面向导演/用户的 API 响应中，
-  **绝不允许**进入 `CharacterAgent.build_system_prompt()` 或任何角色可见的上下文；
+  **绝不允许**进入 `CharacterAgent.build_system_prompt()`、`speaker_selector` 的打分 prompt
+  或任何角色可见的上下文；
 - 一个角色的 `inner_thought` 不得进入其他角色的 prompt；
 - 角色不在场的场次里发生的信息（跨场次传播应走【设想】里的世界状态通道，不是直接给）。
 
@@ -575,7 +586,6 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 | 缺陷 | 现象 | 备注 |
 |------|------|------|
 | **图谱快照失效** | `GraphManager.checkpoint_to()` 用 `copytree` 复制 `kuzu_db`，但当前 Kuzu 版本下它是**单个文件** → 抛 `NotADirectoryError`，被 `create_snapshot` 的 `except → logger.debug` 静默吞掉。结果：`Snapshot.graph_checkpoint` 恒为空，回滚不恢复图谱 | **当前无实际影响**：图谱只在构建时写一次，之后只读，回滚不恢复也等价。等工单 `06-dynamic-graph-writeback.md`（动态图谱写回）落地时会变成真数据丢失，**应作为该工单的前置任务**，不是独立 P0。修法：按 `Path.is_dir()` 分支选 `copytree`/`copy2`，并把吞异常的日志提到 `warning` |
-| **`speaker_mode` 断链** | `SceneConfig.speaker_mode` 与引擎的 selector/random 分支都在，但 `Scene` 无该字段、`orchestrator.run_scene` 构造 `SceneConfig` 时不传 → **永远 round_robin** | 要么补 `Scene.speaker_mode` + 三处传参，要么删掉半条链，别留半截 |
 | **`GET /characters/{id}/memory` 恒空** | 每次新建 `MemoryManager`，而短期/事件记忆是纯内存态 | 修法：复用 `_load_inherited_states` 的快照读取；否则下线该接口 |
 | **前端未消费 `GET /decision`** | 后端幂等查询接口已实现但无调用方，超时/409 后的状态恢复能力为空 | — |
 
@@ -603,7 +613,6 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 
 | 设想 | 想解决什么 | 工单 / 状态 |
 |------|-----------|------------|
-| **Selector 打通** | `speaker_mode` 目前是断链（见 12.1），引擎里 selector/random 分支已存在。打通后可用上下文预测下一个发言人，比轮询自然；进一步方案：独立判断 / 对候选人 Rerank，并引入**重复惩罚**（近期发言多则降权，但仍允许连续发言） | `11-selector-and-world-interaction.md`；**属于纯修复，优先级高** |
 | **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen** | `11-...`；会改动 SceneEngine 对话循环本身，建议作为独立大提案最后做 |
 | **世界状态 / 事件变量** | 跨场次的信息传递通道。信息不对称保证"角色不该知道的不知道"，世界状态负责"该传播的能传播"（含环境层跨场景广播） | `07-world-state.md` |
 | **统一 Inspection API 层** | 用户 / 导演 / 总结智能体共享同一套"查角色情绪·记忆·位置·内心"的地基，并支持微调 | 建议**先于** `04` / `05` / 导演分镜稿立项 |
@@ -641,4 +650,9 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      - 移除 AutoGen GroupChat / LlamaIndex / microsoft-graphrag 的失实描述
      - 补齐 services 编排层、models.py、持久化 data_json 真相源契约
      - 新增第 12 节「已知缺陷与 dead code」防止误修，第 13 节收拢全部设想
+-->
+<!-- 2026-08-02: 工单11（Selector 打通）落地。speaker_mode 断链修复，
+     新增 scene_engine/speaker_selector.py（独立评分选人 + 点名加分 + 重复惩罚），
+     异构模型扩为四路（新增 selector，含独立 base_url/api_key）。
+     对应删除 12.1 的 speaker_mode 断链条目与 13 的「Selector 打通」设想。
 -->

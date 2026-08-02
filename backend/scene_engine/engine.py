@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 from collections.abc import Awaitable, Callable
 
@@ -24,9 +25,9 @@ from backend.models import (
     SpeakerMode,
     new_id,
 )
+from backend.scene_engine.speaker_selector import ScoringSpeakerSelector
 from backend.scene_engine.termination import check_termination
 from backend.snapshot import SnapshotManager
-from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
 logger = get_logger("scene_engine")
@@ -54,6 +55,7 @@ class SceneEngine:
         self.snapshot_manager = snapshot_manager
         self._interrupt = False
         self._history_transcript: list[str] = []  # continue 时注入的历史
+        self._selector: ScoringSpeakerSelector | None = None
 
     def interrupt(self) -> None:
         """外部请求中断（如导演/暂停）。"""
@@ -104,7 +106,7 @@ class SceneEngine:
                 terminated_reason = reason
                 break
 
-            agent = await self._select_speaker(turn_number, transcript)
+            agent = await self._select_speaker(turn_number, transcript, turns)
             raw = await agent.respond(self._scene_context(), transcript)
             turn_number += 1
             turn = self._parse_turn(raw, agent, turn_number)
@@ -158,33 +160,20 @@ class SceneEngine:
         )
 
     # ---- 发言者选择 ----
-    async def _select_speaker(self, turn_number: int, transcript: list[str]) -> CharacterAgent:
+    async def _select_speaker(
+        self, turn_number: int, transcript: list[str], turns: list[DialogueTurn]
+    ) -> CharacterAgent:
         mode = self.config.speaker_mode
         if mode == SpeakerMode.RANDOM.value:
-            import random
-
             return random.choice(self.agents)
-        if mode == SpeakerMode.SELECTOR.value and transcript:
-            return await self._llm_select_speaker(transcript)
+        # 首轮没有任何已发生的轮次，无从评分，直接按出场顺序开场
+        if mode == SpeakerMode.SELECTOR.value and turns:
+            if self._selector is None:
+                self._selector = ScoringSpeakerSelector(self.agents)
+            agent, _trace = await self._selector.select(transcript, turns)
+            return agent
         # 默认 round_robin
         return self.agents[turn_number % len(self.agents)]
-
-    async def _llm_select_speaker(self, transcript: list[str]) -> CharacterAgent:
-        names = [a.name for a in self.agents]
-        recent = "\n".join(transcript[-6:])
-        prompt = (
-            f"以下是场景对话片段：\n{recent}\n\n"
-            f"候选发言者：{', '.join(names)}\n"
-            f"谁最适合接下来发言？只回答一个名字。"
-        )
-        try:
-            choice = (await chat_safe([{"role": "user", "content": prompt}], temperature=0.3)).strip()
-            for agent in self.agents:
-                if agent.name in choice:
-                    return agent
-        except Exception:  # noqa: BLE001
-            pass
-        return self.agents[0]
 
     # ---- 解析 ----
     def _parse_turn(self, raw: str, agent: CharacterAgent, turn_number: int) -> DialogueTurn:

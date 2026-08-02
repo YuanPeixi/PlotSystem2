@@ -217,6 +217,7 @@ class Scene:
     # "运行时记忆（短期缓冲/事件摘要）应从哪个快照回填"。
     restore_snapshot_id: str = ""
     turns_completed: int = 0
+    speaker_mode: str = SpeakerMode.ROUND_ROBIN.value
     dialogue_log: list[DialogueTurn] = field(default_factory=list)
     created_at: datetime = field(default_factory=now)
 
