@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     DEFAULT_SPEAKER_MODE: str = "round_robin"
 
     # --- 记忆 ---
-    # 工卓15后语义变为"我在场感知过的最近 N 句"（而非仅"我说过的"），
+    # 工单15后语义变为"我在场感知过的最近 N 句"（而非仅"我说过的"），
     # 写入量变为参演人数倍，适当调大以避免多人场景下缓冲区只能覆盖少数几轮。
     SHORT_TERM_BUFFER_SIZE: int = 40
     MEMORY_TOP_K: int = 5

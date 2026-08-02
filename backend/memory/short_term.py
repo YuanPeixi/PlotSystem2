@@ -38,7 +38,7 @@ class ShortTermMemory:
     def dump(self) -> list[str]:
         return list(self._buffer)
 
-    def dump_with_meta(self) -> list[tuple[str, dict]]:
+    def dump_with_meta(self) -> list[tuple[str, dict[str, Any]]]:
         return list(zip(self._buffer, self._meta))
 
     def load(self, items: list[str]) -> None:

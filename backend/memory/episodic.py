@@ -26,7 +26,7 @@ class EpisodicMemory:
         """启发式判断一轮对话是否构成重要事件。
 
         include_inner_thought=False 用于记录他人轮次时：不得用其他角色的私有内心
-        独白参与判定或被写入摘要（CLAUDE.md 第10节/契约1）。
+        独白参与判定或被写入摘要（CLAUDE.md 第7节“契约1”）。
         """
         texts = [turn.dialogue, turn.action]
         if include_inner_thought:
