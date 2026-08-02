@@ -25,7 +25,7 @@ from backend.models import (
     SpeakerMode,
     new_id,
 )
-from backend.scene_engine.speaker_selector import ScoringSpeakerSelector
+from backend.scene_engine.speaker_selector import ScoringSpeakerSelector, SelectionTrace
 from backend.scene_engine.termination import check_termination
 from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
@@ -37,6 +37,17 @@ TurnCallback = Callable[[DialogueTurn], Awaitable[None]] | None
 # 解析格式：*动作*、[内心独白]、其余为对白
 _ACTION_RE = re.compile(r"\*(.+?)\*", re.DOTALL)
 _THOUGHT_RE = re.compile(r"\[(.+?)\]", re.DOTALL)
+
+_KNOWN_SPEAKER_MODES = {m.value for m in SpeakerMode}
+
+
+def _selector_notice(trace: SelectionTrace) -> str:
+    """把 selector 的降级情况压成一句给前端展示的短提示，正常时为空串。"""
+    if trace.degraded:
+        return "服务不可用：降级选择"
+    if trace.llm_failures:
+        return f"{trace.llm_failures}/{len(trace.scores)} 打分失败：已兜底"
+    return ""
 
 
 class SceneEngine:
@@ -56,6 +67,7 @@ class SceneEngine:
         self._interrupt = False
         self._history_transcript: list[str] = []  # continue 时注入的历史
         self._selector: ScoringSpeakerSelector | None = None
+        self._unknown_mode_warned = False
 
     def interrupt(self) -> None:
         """外部请求中断（如导演/暂停）。"""
@@ -106,10 +118,11 @@ class SceneEngine:
                 terminated_reason = reason
                 break
 
-            agent = await self._select_speaker(turn_number, transcript, turns)
+            agent, selector_notice = await self._select_speaker(turn_number, transcript, turns)
             raw = await agent.respond(self._scene_context(), transcript)
             turn_number += 1
             turn = self._parse_turn(raw, agent, turn_number)
+            turn.selector_notice = selector_notice
             turns.append(turn)
             new_turns.append(turn)
             transcript.append(self._turn_line(turn))
@@ -162,18 +175,27 @@ class SceneEngine:
     # ---- 发言者选择 ----
     async def _select_speaker(
         self, turn_number: int, transcript: list[str], turns: list[DialogueTurn]
-    ) -> CharacterAgent:
+    ) -> tuple[CharacterAgent, str]:
+        """选出下一个发言者，并返回一句可展示给用户的降级提示（正常为空串）。"""
         mode = self.config.speaker_mode
         if mode == SpeakerMode.RANDOM.value:
-            return random.choice(self.agents)
+            return random.choice(self.agents), ""
         # 首轮没有任何已发生的轮次，无从评分，直接按出场顺序开场
         if mode == SpeakerMode.SELECTOR.value and turns:
             if self._selector is None:
                 self._selector = ScoringSpeakerSelector(self.agents)
-            agent, _trace = await self._selector.select(transcript, turns)
-            return agent
+            agent, trace = await self._selector.select(transcript, turns)
+            return agent, _selector_notice(trace)
+        if mode not in _KNOWN_SPEAKER_MODES and not self._unknown_mode_warned:
+            # 只警告一次，避免每轮刷屏；数据来源可能是绕过 API 写入的历史脏数据
+            self._unknown_mode_warned = True
+            logger.warning(
+                "[scene] 场景 %s 的 speaker_mode=%r 不是合法取值，本场回退 round_robin",
+                self.scene.scene_id,
+                mode,
+            )
         # 默认 round_robin
-        return self.agents[turn_number % len(self.agents)]
+        return self.agents[turn_number % len(self.agents)], ""
 
     # ---- 解析 ----
     def _parse_turn(self, raw: str, agent: CharacterAgent, turn_number: int) -> DialogueTurn:

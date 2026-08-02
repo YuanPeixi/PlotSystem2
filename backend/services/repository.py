@@ -186,6 +186,7 @@ def _deserialize_scene(data: dict) -> Scene:
             action=t.get("action"),
             inner_thought=t.get("inner_thought"),
             memory_context_used=list(t.get("memory_context_used", []) or []),
+            selector_notice=t.get("selector_notice", ""),
         )
         for t in (data.get("dialogue_log") or [])
     ]

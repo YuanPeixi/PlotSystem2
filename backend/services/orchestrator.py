@@ -494,6 +494,8 @@ async def apply_decision(
                     location=scene.location,
                     initial_conditions=new_conditions,
                     max_turns=scene.max_turns,
+                    # 重演必须沿用原场景的选人模式，否则 selector 场景一回滚就静默退回轮询
+                    speaker_mode=scene.speaker_mode,
                     status=SceneStatus.PENDING.value,
                     # 注意：此处不能填 target。SceneEngine.run() 只有在
                     # scene.snapshot_id_before 为空时才会创建模拟前快照，

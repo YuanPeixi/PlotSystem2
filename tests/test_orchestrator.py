@@ -29,6 +29,7 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
     SceneResult,
+    SpeakerMode,
 )
 from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
@@ -88,6 +89,8 @@ async def _setup_project_scene_and_snapshot():
 @pytest.mark.asyncio
 async def test_rollback_updates_character_and_creates_new_scene():
     project_id, character_id, scene, snap = await _setup_project_scene_and_snapshot()
+    scene.speaker_mode = SpeakerMode.SELECTOR.value
+    await repository.save_scene(scene)
 
     override = DirectorDecision(
         decision_type="rollback",
@@ -113,8 +116,8 @@ async def test_rollback_updates_character_and_creates_new_scene():
     # 恢复后的最新状态（工单 01 回归项）。
     assert new_scene.snapshot_id_before == ""
     # 但应记住回滚来源快照，供 run_scene 回填运行时记忆（工協14）
-    assert new_scene.restore_snapshot_id == snap.snapshot_id
-
+    assert new_scene.restore_snapshot_id == snap.snapshot_id    # 选人模式不能因重演而静默退回 round_robin
+    assert new_scene.speaker_mode == SpeakerMode.SELECTOR.value
     # 3. 角色卡应被写回快照中的状态（而不是回滚前的最新状态）
     card = await repository.get_character(project_id, character_id)
     assert card.current_emotion == "愤怒"

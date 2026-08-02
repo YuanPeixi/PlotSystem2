@@ -55,6 +55,7 @@ export interface DialogueTurn {
   dialogue: string | null
   action: string | null
   inner_thought: string | null
+  selector_notice?: string
 }
 
 export interface Scene {

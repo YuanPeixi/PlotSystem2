@@ -40,6 +40,9 @@ watch(
       <div v-for="t in filtered" :key="t.turn_id" class="turn">
         <div class="turn-head">
           <span class="speaker">{{ t.character_name }}</span>
+          <span v-if="t.selector_notice" class="selector-notice" :title="`选人阶段降级：${t.selector_notice}`">
+            ({{ t.selector_notice }})
+          </span>
           <span class="dim">#{{ t.turn_number }}</span>
         </div>
         <div v-if="t.action" class="action">*{{ t.action }}*</div>
@@ -85,6 +88,10 @@ watch(
 .speaker {
   font-weight: 600;
   color: var(--highlight);
+}
+.selector-notice {
+  color: var(--text-dim);
+  font-size: 12px;
 }
 .action {
   color: #f0a020;

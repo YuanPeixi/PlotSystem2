@@ -62,7 +62,10 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 `LLM_SELECTOR_BASE_URL` / `LLM_SELECTOR_API_KEY`），可挂本地小模型。
 兜底全部可观测：单个候选失败取其余人的中位数、全部失败退化为纯本地打分并 warning，
 不再静默回退 `agents[0]`。链路已打通：`Scene.speaker_mode` → 反序列化 → API/导演规划
-→ `run_scene` 构造 `SceneConfig`，缺省值取 `settings.DEFAULT_SPEAKER_MODE`。
+→ `run_scene` 构造 `SceneConfig` → `apply_decision` 的 rollback 重演场景，
+缺省值取 `settings.DEFAULT_SPEAKER_MODE`。非法取值在 `CreateSceneRequest`（422）
+与 `Settings.DEFAULT_SPEAKER_MODE`（启动即失败）两处拦截，引擎兜底回退时 warning 一次。
+降级还会写入 `DialogueTurn.selector_notice`，前端在角色名后以灰字展示（如"服务不可用：降级选择"）。
 
 未做（有意留下）：让角色先生成一句草稿再竞价——需要 N 次角色模型调用/轮，
 成本约等于场景本身翻 N 倍，收益不确定，待 selector 跑出实测数据后再评估。

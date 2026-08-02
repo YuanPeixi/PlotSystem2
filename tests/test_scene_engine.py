@@ -355,3 +355,64 @@ async def test_engine_selector_mode_uses_scoring_selector():
     assert result.dialogue_log[0].character_id == "c1"
     # 全员同分时重复惩罚保证不会连着选同一个人
     assert result.dialogue_log[1].character_id == "c2"
+    assert all(t.selector_notice == "" for t in result.dialogue_log)
+
+
+@pytest.mark.asyncio
+async def test_engine_marks_turns_when_selector_degrades():
+    """选人降级必须落到轮次上，前端才能在角色名后给出灰字提示。"""
+    agent_a = _make_agent("c1", "甲")
+    agent_b = _make_agent("c2", "乙")
+    scene = Scene(scene_id="s-sel-degrade", project_id="proj-se", branch_id="b-sel")
+    config = SceneConfig(
+        name="对峙",
+        participating_characters=["c1", "c2"],
+        max_turns=3,
+        speaker_mode=SpeakerMode.SELECTOR.value,
+    )
+    engine = SceneEngine(scene, config, [agent_a, agent_b], SnapshotManager("proj-se"))
+
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="*点头* 我明白了。")),
+        patch(
+            "backend.scene_engine.speaker_selector.chat_safe",
+            new=AsyncMock(side_effect=LLMError("boom")),
+        ),
+    ):
+        result = await engine.run()
+
+    # 首轮走开场顺序，未经过 selector，不应带提示
+    assert result.dialogue_log[0].selector_notice == ""
+    assert result.dialogue_log[1].selector_notice == "服务不可用：降级选择"
+
+
+@pytest.mark.asyncio
+async def test_engine_unknown_speaker_mode_warns_once(caplog):
+    """非法 speaker_mode 仍回退 round_robin，但必须留下可见告警。"""
+    agent_a = _make_agent("c1", "甲")
+    agent_b = _make_agent("c2", "乙")
+    scene = Scene(scene_id="s-sel-bad", project_id="proj-se", branch_id="b-sel")
+    config = SceneConfig(
+        name="对峙", participating_characters=["c1", "c2"], max_turns=3, speaker_mode="foo"
+    )
+    engine = SceneEngine(scene, config, [agent_a, agent_b], SnapshotManager("proj-se"))
+
+    with (
+        caplog.at_level("WARNING"),
+        patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="*点头* 我明白了。")),
+    ):
+        result = await engine.run()
+
+    warnings = [r for r in caplog.records if "speaker_mode" in r.getMessage()]
+    assert len(warnings) == 1
+    assert [t.character_id for t in result.dialogue_log] == ["c1", "c2", "c1"]
+
+
+def test_create_scene_request_rejects_unknown_speaker_mode():
+    from pydantic import ValidationError
+
+    from backend.api.schemas import CreateSceneRequest
+
+    assert CreateSceneRequest(branch_id="b", name="x").speaker_mode == ""
+    with pytest.raises(ValidationError):
+        CreateSceneRequest(branch_id="b", name="x", speaker_mode="foo")
