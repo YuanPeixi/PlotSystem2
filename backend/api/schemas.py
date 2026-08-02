@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from backend.models import SpeakerMode
+
+_SPEAKER_MODES = {m.value for m in SpeakerMode}
 
 
 def _now_iso() -> str:
@@ -64,6 +68,14 @@ class CreateSceneRequest(BaseModel):
     opening_narration: str = ""
     # 留空则采用 settings.DEFAULT_SPEAKER_MODE（.env 配置）
     speaker_mode: str = ""
+
+    @field_validator("speaker_mode")
+    @classmethod
+    def _validate_speaker_mode(cls, v: str) -> str:
+        # 非法值若放行会在引擎里静默退化成 round_robin，用户无从察觉
+        if v and v not in _SPEAKER_MODES:
+            raise ValueError(f"speaker_mode 必须是 {sorted(_SPEAKER_MODES)} 之一，收到 {v!r}")
+        return v
 
 
 class DecisionRequest(BaseModel):

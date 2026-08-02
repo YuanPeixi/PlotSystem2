@@ -8,7 +8,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from backend.models import SpeakerMode
 
 
 class Settings(BaseSettings):
@@ -111,6 +114,15 @@ class Settings(BaseSettings):
 
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
+
+    @field_validator("DEFAULT_SPEAKER_MODE")
+    @classmethod
+    def _validate_default_speaker_mode(cls, v: str) -> str:
+        # .env 里拼错模式名应当启动即失败，而不是整个项目静默跑成 round_robin
+        allowed = sorted(m.value for m in SpeakerMode)
+        if v not in allowed:
+            raise ValueError(f"DEFAULT_SPEAKER_MODE 必须是 {allowed} 之一，收到 {v!r}")
+        return v
 
     # ---- 派生属性 ----
     @property

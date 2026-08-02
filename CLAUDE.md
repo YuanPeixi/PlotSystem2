@@ -238,11 +238,17 @@ frontend/src/
 3. **`Scene.speaker_mode` 与 `SceneConfig.speaker_mode` 是同一条链**（工单11 已打通）。
    缺省值来自 `settings.DEFAULT_SPEAKER_MODE`，由 `CreateSceneRequest` 或
    `DirectorAgent.plan_scene` 写入 `Scene`，再由 `run_scene` 传给 `SceneConfig`。
-   新增枚举值时三处都要跟。
-4. **`CharacterState.long_term_memory_snapshot` 恒为空字符串**，`_collect_states()` 不写它。
-5. **`DirectorDecision` 的 `next_*` 覆盖字段全为 `None` 时表示"保持 AI 自动规划"**，
+   **所有新建 `Scene` 的地方都要跟**——尤其是 `apply_decision` 的 rollback 分支，
+   它手工构造重演场景，漏传就会让 selector 场景静默退回轮询。
+   取值受两处校验保护：`CreateSceneRequest`（422）与 `Settings.DEFAULT_SPEAKER_MODE`
+   （启动即失败）；`SceneEngine._select_speaker` 兜底回退 round_robin 时会 warning 一次。
+4. **`DialogueTurn.selector_notice` 只在 selector 选人降级时非空**，内容是给前端
+   在角色名后显示的一句灰字（服务不可用/部分打分失败）。它是展示用信号，
+   不参与任何逻辑判断，也不进入角色 prompt。
+5. **`CharacterState.long_term_memory_snapshot` 恒为空字符串**，`_collect_states()` 不写它。
+6. **`DirectorDecision` 的 `next_*` 覆盖字段全为 `None` 时表示"保持 AI 自动规划"**，
    不要用空字符串/空列表当默认值。
-6. **四维评分语义**：`narrative_goal` / `dramatic_tension` / `character_consistency` 越高越好；
+7. **四维评分语义**：`narrative_goal` / `dramatic_tension` / `character_consistency` 越高越好；
    `plot_deviation` **越低越好**（0 = 完全贴合主线）。
 
 ---
@@ -655,4 +661,8 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      新增 scene_engine/speaker_selector.py（独立评分选人 + 点名加分 + 重复惩罚），
      异构模型扩为四路（新增 selector，含独立 base_url/api_key）。
      对应删除 12.1 的 speaker_mode 断链条目与 13 的「Selector 打通」设想。
+-->
+<!-- 2026-08-02: PR review 修复。rollback 重演场景补传 speaker_mode；
+     speaker_mode 增加取值校验（API 422 / 配置启动即失败 / 引擎兜底 warning）；
+     新增 DialogueTurn.selector_notice，selector 降级时前端在角色名后灰字提示。
 -->

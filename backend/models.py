@@ -193,6 +193,8 @@ class DialogueTurn:
     inner_thought: str | None = None
     timestamp: datetime = field(default_factory=now)
     memory_context_used: list[str] = field(default_factory=list)
+    # selector 选人降级时的短提示，供前端在角色名后灰字展示；正常为空串
+    selector_notice: str = ""
 
 
 @dataclass
