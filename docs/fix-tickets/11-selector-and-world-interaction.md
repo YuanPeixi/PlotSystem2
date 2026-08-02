@@ -29,7 +29,42 @@
 
 ## 2. 目标（Definition of Done）
 
-### 2.1 Selector 模式完整化
+### 2.1 Selector 模式完整化 ✅ 已完成（2026-08-02）
+
+实现文件：`backend/scene_engine/speaker_selector.py`（`SceneEngine._select_speaker` 转为薄分发）
+
+最终方案不是"把候选列成一列问 LLM 选谁"，而是**独立评分**：对每个候选角色各发一次
+轻量打分调用（`asyncio.gather` 并行，整轮延迟仍是一个 RTT），打分器一次只看一个角色。
+这样从根上消除了两个问题——候选列表的位置偏见，以及 `agent.name in choice` 的子串误匹配
+（改为按 `character_id` 归属，点名检测用最长名优先掩码匹配，"李明"不会被"李明远"命中）。
+
+- LLM 输出三维结构化分：`urge`（发言欲望）/ `relevance`（相关度）/ `initiative`（主动性），
+  外加一句 `reason` 进日志
+- 叠加两个纯本地信号：被直呼其名加分、几何衰减的重复发言惩罚
+  （$p_i=\sum_j \lambda^{t-t_j}$，压低但**不硬禁**连续发言）
+- 选择用 argmax；`SELECTOR_TEMPERATURE > 0` 时改 softmax 采样
+- 独立接入点：`LLM_MODEL_SELECTOR` / `LLM_SELECTOR_BASE_URL` / `LLM_SELECTOR_API_KEY`
+  （留空回退主配置），可挂本地小模型；透传路径仍是 `utils/llm.py`，契约7 未破
+- 权重全部走 `settings`（`.env` 可调），跑实验不必改代码
+- 兜底可观测：单个候选失败取其余人的中位数分（不被 0 分永久排除）、全部失败退化为
+  纯本地打分并 `warning` 标记 degraded，**不再静默回退 `agents[0]`**
+- 契约1：打分 prompt 只取 `known_facts`，绝不含 `unknown_facts`；transcript 用公共版本
+- 契约3：打分 system 前缀整场不变，"目前对话"只追加不滑窗、超 `SELECTOR_TRANSCRIPT_BUDGET`
+  时成块丢弃（该预算远小于角色的 `TRANSCRIPT_TOKEN_BUDGET`，因为 selector 每轮要发 N 次）
+
+链路打通（原"断链"缺陷）：`Scene.speaker_mode` 新增字段 → `repository._deserialize_scene`
+→ `CreateSceneRequest` / `DirectorAgent.plan_scene` 写入 → `orchestrator.run_scene` 传给
+`SceneConfig`，缺省值取 `settings.DEFAULT_SPEAKER_MODE`。前端 `types/index.ts` 已同步。
+
+单测见 `tests/test_scene_engine.py`（9 条）：最长名匹配、正常选中、单个失败中位数兜底、
+全部失败降级、重复惩罚、点名加分、输出非法 JSON、`unknown_facts` 不泄漏、引擎集成。
+
+**有意未做**：让角色先生成一句草稿再竞价（原设想里"预先生成的一句话"）。
+需要 N 次**角色模型**调用/轮，成本约等于场景本身翻 N 倍，收益不确定，
+待 selector 跑出实测数据后再评估。
+
+<details>
+<summary>原始需求（存档）</summary>
 
 文件：`backend/scene_engine/engine.py` 的 `_llm_select_speaker()`
 
@@ -43,6 +78,8 @@
   限制，`selector` 模式下可能连续多轮选中同一角色）。
 - 补充单元测试：mock `chat_safe` 返回值，覆盖"正常选中"“返回了不存在的
   character_id”“LLM 调用异常”三种场景，断言选择结果和日志行为。
+
+</details>
 
 ### 2.2 动作解析与环境交互（WorldState 写回）
 

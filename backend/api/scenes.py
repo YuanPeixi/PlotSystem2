@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks
 from sse_starlette.sse import EventSourceResponse
 
 from backend.api.schemas import ApiResponse, CreateSceneRequest, PlanSceneRequest
+from backend.config import settings
 from backend.models import Scene, SceneStatus, new_id
 from backend.services import events, orchestrator, repository
 from backend.utils.serializer import to_dict
@@ -41,6 +42,7 @@ async def create_scene(project_id: str, req: CreateSceneRequest) -> ApiResponse:
         location=req.location,
         initial_conditions=initial,
         max_turns=req.max_turns,
+        speaker_mode=req.speaker_mode or settings.DEFAULT_SPEAKER_MODE,
         status=SceneStatus.PENDING.value,
     )
     await repository.save_scene(scene)

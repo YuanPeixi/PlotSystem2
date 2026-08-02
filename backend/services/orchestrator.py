@@ -290,6 +290,7 @@ async def create_scene_from_config(
         location=config.location,
         initial_conditions=config.initial_conditions,
         max_turns=config.max_turns,
+        speaker_mode=config.speaker_mode,
         status=SceneStatus.PENDING.value,
     )
     await repository.save_scene(scene)
@@ -328,6 +329,7 @@ async def run_scene(scene_id: str) -> None:
         location=scene.location,
         initial_conditions=scene.initial_conditions,
         max_turns=scene.max_turns,
+        speaker_mode=scene.speaker_mode,
         opening_narration=scene.initial_conditions.get("opening_narration", ""),
     )
     engine = SceneEngine(scene, config, agents, sm)

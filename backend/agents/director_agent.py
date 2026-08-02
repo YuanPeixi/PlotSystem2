@@ -138,6 +138,7 @@ class DirectorAgent:
             location=data.get("location", "未知地点"),
             initial_conditions=data.get("initial_conditions", {}) or {},
             max_turns=int(data.get("max_turns", 12) or 12),
+            speaker_mode=settings.DEFAULT_SPEAKER_MODE,
             opening_narration=data.get("opening_narration", ""),
         )
 

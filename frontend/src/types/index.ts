@@ -71,6 +71,7 @@ export interface Scene {
   snapshot_id_before: string
   snapshot_id_after: string | null
   turns_completed: number
+  speaker_mode: string
   dialogue_log: DialogueTurn[]
 }
 
