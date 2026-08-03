@@ -74,6 +74,7 @@ export interface Scene {
   turns_completed: number
   speaker_mode: string
   dialogue_log: DialogueTurn[]
+  created_at: string
 }
 
 export interface SceneConfig {
@@ -98,6 +99,32 @@ export interface SceneEvaluation {
   rollback_suggestion: Record<string, unknown> | null
 }
 
+export interface DirectorDecision {
+  decision_type: string
+  extra_turns: number | null
+  next_scene_config: SceneConfig | null
+  next_scene_id: string | null
+  rollback_to_snapshot_id: string | null
+  new_initial_conditions: Record<string, unknown> | null
+  next_scene_description: string | null
+  next_participating_characters: string[] | null
+  next_location: string | null
+  next_initial_conditions: Record<string, unknown> | null
+  rollback_notes: string | null
+}
+
+export interface Snapshot {
+  snapshot_id: string
+  scene_id: string
+  branch_id: string
+  label: string
+  created_at: string
+  character_states: Record<string, unknown>
+  scene_context: Record<string, unknown>
+  graph_checkpoint: string
+  chroma_checkpoint: string
+}
+
 export interface Branch {
   branch_id: string
   project_id: string
@@ -105,6 +132,7 @@ export interface Branch {
   fork_from_snapshot_id: string | null
   name: string
   scenes: string[]
+  created_at: string
   director_notes: string
 }
 

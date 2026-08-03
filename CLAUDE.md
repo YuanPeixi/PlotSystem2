@@ -489,7 +489,7 @@ graph TD
 | GET / PATCH | `/projects/{project_id}/characters/{char_id}` | 角色详情 / 人工编辑 |
 | GET | `/projects/{project_id}/characters/{char_id}/memory` | ⚠️ 当前恒返回空，见第 12 节 |
 | POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**） |
-| POST | `/projects/{project_id}/scenes` | 创建场景 |
+| GET / POST | `/projects/{project_id}/scenes` | 按可选 `branch_id` 查询场景 / 创建场景 |
 | GET | `/projects/{project_id}/scenes/{scene_id}` | 场景详情 |
 | GET | `/scenes/{scene_id}` | 场景详情（无需 project_id） |
 | POST | `/scenes/{scene_id}/start` | 开始模拟（后台任务） |
@@ -514,14 +514,18 @@ graph TD
 | 页面 | 路由 | 功能 |
 |------|------|------|
 | `Workspace.vue` | `/` | 项目管理、种子上传、构建进度轮询、G6 图谱 |
-| `Director.vue` | `/director/:projectId` | 分支树、场景配置、SSE 实时日志、决策面板 |
+| `Director.vue` | `/director/:projectId` | 分支/场景/快照导航、SSE 日志、评估与决策恢复 |
 | `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 预览导出 |
 
 要点：
 
-- **SSE 双保险**：`joinScene` 先用已持久化的 `dialogue_log` 铺底，
-  `startSimulation({keepLog})` 保留续跑日志，场景完成后 `reconcileLog()` 补齐
-  SSE 建立前遗漏的轮次。改动实时日志逻辑时别破坏这个对账。
+- **导航恢复**：URL query 保存 `branch_id` / `scene_id`，Pinia 不作为恢复真相源；进入页面后
+  重新拉取分支、场景、日志、评估、已生效决策和快照。无效 URL 回退到有效分支及最新场景。
+- **场景三态分流**：pending 仅在用户明确操作时调用 `/start`；running 只铺底后端已持久化日志
+  并订阅 SSE；completed 只读。SSE 完成后 `reconcileScene()` 用完整 `dialogue_log` 对账。
+  工单23落地前，running 刷新只能恢复后端已经持久化的轮次。
+- **快照时间线**：按分支展示 before/after 快照并提供 fork 入口；查看快照不表示恢复运行时，
+  rollback 仍走导演决策。
 - `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。
 - `SceneTree.vue` 是纯 `h()` 渲染的嵌套列表（**不是 G6**），节点是 **Branch** 不是 Scene，
   仅 emit 选中的 `branch_id`。
@@ -593,7 +597,6 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 |------|------|------|
 | **图谱快照失效** | `GraphManager.checkpoint_to()` 用 `copytree` 复制 `kuzu_db`，但当前 Kuzu 版本下它是**单个文件** → 抛 `NotADirectoryError`，被 `create_snapshot` 的 `except → logger.debug` 静默吞掉。结果：`Snapshot.graph_checkpoint` 恒为空，回滚不恢复图谱 | **当前无实际影响**：图谱只在构建时写一次，之后只读，回滚不恢复也等价。等工单 `06-dynamic-graph-writeback.md`（动态图谱写回）落地时会变成真数据丢失，**应作为该工单的前置任务**，不是独立 P0。修法：按 `Path.is_dir()` 分支选 `copytree`/`copy2`，并把吞异常的日志提到 `warning` |
 | **`GET /characters/{id}/memory` 恒空** | 每次新建 `MemoryManager`，而短期/事件记忆是纯内存态 | 修法：复用 `_load_inherited_states` 的快照读取；否则下线该接口 |
-| **前端未消费 `GET /decision`** | 后端幂等查询接口已实现但无调用方，超时/409 后的状态恢复能力为空 | — |
 
 ### 12.2 Dead code（存在但零调用）
 
@@ -665,4 +668,9 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 <!-- 2026-08-02: PR review 修复。rollback 重演场景补传 speaker_mode；
      speaker_mode 增加取值校验（API 422 / 配置启动即失败 / 引擎兜底 warning）；
      新增 DialogueTurn.selector_notice，selector 降级时前端在角色名后灰字提示。
+-->
+<!-- 2026-08-03: 工单03+19（导演工作台统一修复）完成于
+  fix/director-workbench-navigation：新增按分支查询场景 API；导演页用 URL 恢复分支/场景，
+  严格区分 pending 显式启动、running 仅订阅、completed 只读；接入历史评估、已生效决策、
+  快照时间线与 fork 入口。运行中逐轮持久化与重启对账仍由独立工单23负责。
 -->

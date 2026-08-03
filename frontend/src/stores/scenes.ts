@@ -1,15 +1,27 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api, openSceneStream } from '@/api/client'
-import type { DialogueTurn, Scene, SceneConfig, SceneEvaluation } from '@/types'
+import type {
+  DialogueTurn,
+  DirectorDecision,
+  Scene,
+  SceneConfig,
+  SceneEvaluation,
+} from '@/types'
 
 export const useSceneStore = defineStore('scenes', () => {
   const currentScene = ref<Scene | null>(null)
+  const scenesInBranch = ref<Scene[]>([])
   const turns = ref<DialogueTurn[]>([])
   const evaluation = ref<SceneEvaluation | null>(null)
+  const currentDecision = ref<DirectorDecision | null>(null)
   const running = ref(false)
   const statusMsg = ref('')
   const decisionPending = ref(false)
+  const listLoading = ref(false)
+  const sceneLoading = ref(false)
+  const listError = ref('')
+  const sceneError = ref('')
   let es: EventSource | null = null
 
   async function plan(projectId: string, branchId: string, goal: string): Promise<SceneConfig> {
@@ -20,23 +32,34 @@ export const useSceneStore = defineStore('scenes', () => {
     currentScene.value = await api.createScene(projectId, payload)
     turns.value = []
     evaluation.value = null
+    currentDecision.value = null
     return currentScene.value
   }
 
-  function startSimulation(sceneId: string, opts: { keepLog?: boolean } = {}) {
-    // keepLog：续跑（continue）在同一场景上追加轮次，后端 SSE 只推送新增部分，
-    // 此时必须保留已铺底的历史日志，否则界面上之前的对话会整段消失。
-    if (!opts.keepLog) {
-      turns.value = []
+  async function loadByBranch(projectId: string, branchId: string) {
+    listLoading.value = true
+    listError.value = ''
+    scenesInBranch.value = []
+    try {
+      scenesInBranch.value = await api.listScenes(projectId, branchId)
+      return scenesInBranch.value
+    } catch (error) {
+      listError.value = error instanceof Error ? error.message : '场景列表加载失败'
+      throw error
+    } finally {
+      listLoading.value = false
     }
-    evaluation.value = null
-    running.value = true
-    statusMsg.value = '准备中...'
+  }
 
-    es?.close()
+  function subscribeToScene(sceneId: string) {
+    stopStream()
+    running.value = true
+    statusMsg.value = '连接场景...'
+
     es = openSceneStream(sceneId)
     es.addEventListener('turn', (e) => {
-      turns.value.push(JSON.parse((e as MessageEvent).data))
+      const turn = JSON.parse((e as MessageEvent).data) as DialogueTurn
+      if (!turns.value.some((item) => item.turn_id === turn.turn_id)) turns.value.push(turn)
     })
     es.addEventListener('status', (e) => {
       const d = JSON.parse((e as MessageEvent).data)
@@ -44,9 +67,7 @@ export const useSceneStore = defineStore('scenes', () => {
       if (d.status === 'completed') {
         running.value = false
         es?.close()
-        // 以后端持久化的完整日志为准做一次对账：SSE 订阅建立之前
-        // （如决策触发续跑后才连上流）产生的轮次不会被推送，这里补齐。
-        void reconcileLog(sceneId)
+        void reconcileScene(sceneId)
       }
     })
     es.addEventListener('evaluation', (e) => {
@@ -56,21 +77,57 @@ export const useSceneStore = defineStore('scenes', () => {
       statusMsg.value = '连接中断'
       running.value = false
     })
-
-    return api.startScene(sceneId)
   }
 
-  /** 用后端持久化的 dialogue_log 覆盖本地日志，修补 SSE 期间可能遗漏的轮次。 */
-  async function reconcileLog(sceneId: string) {
+  async function startSimulation(sceneId: string) {
+    if (currentScene.value?.scene_id !== sceneId) await loadScene(sceneId)
+    if (currentScene.value?.status !== 'pending') return
+    evaluation.value = null
+    currentDecision.value = null
+    subscribeToScene(sceneId)
+    statusMsg.value = '准备中...'
+    await api.startScene(sceneId)
+  }
+
+  async function reconcileScene(sceneId: string) {
     try {
       const scene = await api.getSceneById(sceneId)
       if (currentScene.value?.scene_id !== sceneId) return
       currentScene.value = scene
-      if ((scene.dialogue_log?.length ?? 0) >= turns.value.length) {
-        turns.value = scene.dialogue_log ?? []
-      }
+      turns.value = scene.dialogue_log ?? []
+      ;[evaluation.value, currentDecision.value] = await Promise.all([
+        api.getEvaluation(sceneId),
+        api.getDecision(sceneId),
+      ])
     } catch {
-      // 对账失败不影响已展示的内容，保持现状即可
+      // SSE 已展示内容仍可用，完整对账留待下次刷新。
+    }
+  }
+
+  async function loadScene(sceneId: string) {
+    stopStream()
+    sceneLoading.value = true
+    sceneError.value = ''
+    currentScene.value = null
+    turns.value = []
+    evaluation.value = null
+    currentDecision.value = null
+    try {
+      const scene = await api.getSceneById(sceneId)
+      currentScene.value = scene
+      turns.value = scene.dialogue_log ?? []
+      ;[evaluation.value, currentDecision.value] = await Promise.all([
+        api.getEvaluation(sceneId),
+        api.getDecision(sceneId),
+      ])
+      statusMsg.value = scene.status === 'completed' ? '只读 · 已完成' : scene.status
+      if (scene.status === 'running') subscribeToScene(sceneId)
+      return scene
+    } catch (error) {
+      sceneError.value = error instanceof Error ? error.message : '场景加载失败'
+      throw error
+    } finally {
+      sceneLoading.value = false
     }
   }
 
@@ -78,9 +135,20 @@ export const useSceneStore = defineStore('scenes', () => {
     await api.pauseScene(sceneId)
   }
 
+  function clearSelection() {
+    stopStream()
+    currentScene.value = null
+    turns.value = []
+    evaluation.value = null
+    currentDecision.value = null
+    sceneError.value = ''
+    statusMsg.value = ''
+  }
+
   function stopStream() {
     es?.close()
     es = null
+    running.value = false
   }
 
   async function submitDecision(sceneId: string, payload: Record<string, unknown>) {
@@ -91,39 +159,33 @@ export const useSceneStore = defineStore('scenes', () => {
     decisionPending.value = true
     try {
       const decision = await api.submitDecision(sceneId, payload)
-      // continue / next_scene 决策返回 next_scene_id 时，自动建立对应场景的流
-      const nextId = (decision as Record<string, unknown>)?.next_scene_id as string | undefined
-      if (nextId) {
-        await joinScene(nextId)
-      }
+      currentDecision.value = decision
       return decision
     } finally {
       decisionPending.value = false
     }
   }
 
-  /** 加入一个已存在的场景（获取场景元信息 + 启动模拟流） */
-  async function joinScene(sceneId: string) {
-    const scene = await api.getSceneById(sceneId)
-    currentScene.value = scene
-    // 先用已持久化的对话日志铺底：continue 续跑时后端只推送新增轮次，
-    // 若这里清空，用户会看到"点了继续，之前的对话全没了"。
-    turns.value = scene.dialogue_log ?? []
-    evaluation.value = null
-    await startSimulation(sceneId, { keepLog: true })
-  }
-
   return {
     currentScene,
+    scenesInBranch,
     turns,
     evaluation,
+    currentDecision,
     running,
     statusMsg,
     decisionPending,
+    listLoading,
+    sceneLoading,
+    listError,
+    sceneError,
     plan,
     createScene,
+    loadByBranch,
+    loadScene,
+    clearSelection,
+    subscribeToScene,
     startSimulation,
-    joinScene,
     pause,
     stopStream,
     submitDecision,

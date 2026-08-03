@@ -49,6 +49,13 @@ async def create_scene(project_id: str, req: CreateSceneRequest) -> ApiResponse:
     return ApiResponse.ok(to_dict(scene))
 
 
+@project_router.get("")
+async def list_scenes(project_id: str, branch_id: str | None = None) -> ApiResponse:
+    """列出项目场景，可按分支过滤。"""
+    project_scenes = await repository.list_scenes(project_id, branch_id)
+    return ApiResponse.ok([to_dict(scene) for scene in project_scenes])
+
+
 @project_router.get("/{scene_id}")
 async def get_scene(project_id: str, scene_id: str) -> ApiResponse:
     scene = await repository.get_scene(scene_id)

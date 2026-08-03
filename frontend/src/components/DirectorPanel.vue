@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { CharacterCard, SceneEvaluation } from '@/types'
+import type { CharacterCard, DirectorDecision, SceneEvaluation } from '@/types'
 
 const props = defineProps<{
   evaluation: SceneEvaluation | null
   sceneId: string
   characters?: CharacterCard[]
   pending?: boolean
+  decision?: DirectorDecision | null
+  readonly?: boolean
 }>()
 const emit = defineEmits<{
   // done 回调由父组件在请求结束后调用：ok=true 时面板才关闭/清空表单，
@@ -97,6 +99,11 @@ function confirmRollback() {
 <template>
   <div class="director-panel card">
     <h3>导演决策面板</h3>
+    <div v-if="decision" class="decision-result">
+      <strong>决策已生效</strong>
+      <span>{{ decision.decision_type }}</span>
+      <span v-if="decision.next_scene_id">目标场景：{{ decision.next_scene_id }}</span>
+    </div>
     <div v-if="!evaluation" class="dim" style="margin: 16px 0">场景完成后将自动生成评估。</div>
     <template v-else>
       <p class="synopsis">{{ evaluation.synopsis }}</p>
@@ -114,7 +121,7 @@ function confirmRollback() {
       <div class="recommend dim">AI 建议：{{ evaluation.recommended_decision }}</div>
     </template>
 
-    <div class="actions">
+    <div v-if="!decision && evaluation && !readonly" class="actions">
       <button :disabled="pending" @click="decide('continue')">▶ 继续</button>
       <button :disabled="pending" @click="decide('next_scene')">⏭ 下一场</button>
       <button class="danger" :disabled="pending" @click="decide('rollback')">↩ 回滚</button>
@@ -194,6 +201,19 @@ function confirmRollback() {
 .recommend {
   margin: 14px 0;
   font-size: 13px;
+}
+.decision-result {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+  padding: 10px;
+  border-left: 3px solid #3ec46d;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.decision-result strong {
+  color: var(--text);
 }
 .actions {
   display: flex;
