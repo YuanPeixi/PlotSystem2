@@ -98,10 +98,13 @@
 ## 6. 完成记录
 
 - 分支：`fix/director-workbench-navigation`
+- PR：#11（审核中）
 - 实现：按分支查询场景；URL 恢复分支/场景；pending 显式启动、running 仅订阅、completed
   只读；历史日志/评估/已生效决策恢复；快照时间线及 fork 入口；加载、空态与错误回退。
 - 前端验证：`npm --prefix frontend test`，3 个测试文件、7 个用例通过；
   `npm --prefix frontend run build` 通过。
+- 安全复核：Vite / Vitest 开发工具链升级后，`npm --prefix frontend audit` 与
+  `npm --prefix frontend audit --omit=dev` 均为 0 vulnerabilities。
 - 后端验证：`python -m pytest tests/test_scene_api.py -q`，1 个用例通过；
   `python -m ruff check backend/api/scenes.py tests/test_scene_api.py` 通过。
 - 原工单19已并入，不再单独排期；索引与 `CLAUDE.md` 已同步。

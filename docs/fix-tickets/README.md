@@ -45,10 +45,10 @@
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
-| [11](./11-selector-and-world-interaction.md) | **（已瘦身）** 打通 Selector 发言模式 | **P1** | 无 | **🔍 审核中（PR #10）** |
+| [11](./11-selector-and-world-interaction.md) | **（已瘦身）** 打通 Selector 发言模式 | **P1** | 无 | **✅ PR #10（`8f93fa5`到`bfd2f59`）** |
 | 16 | **【新】** 修复 Kuzu 快照持久化（单文件 vs `copytree`） | **P1** | 无 | 待建单 |
 | [23](./23-running-scene-recovery.md) | **【新】** 运行中场景持久化与断线恢复 | **P1** | 10、13、14 ✅ | 待处理 |
-| [03](./03-branch-switch-frontend.md) | 导演工作台统一修复（分支/场景/快照导航与刷新恢复） | **P1** | 13 ✅；23 独立增强 | **⏳ 等待 PR（`fix/director-workbench-navigation`）** |
+| [03](./03-branch-switch-frontend.md) | 导演工作台统一修复（分支/场景/快照导航与刷新恢复） | **P1** | 13 ✅；23 独立增强 | **🔍 审核中（PR #11）** |
 | 19 | 前端消费 `GET /scenes/{id}/decision` | P2 | 13 ✅ | **并入 03，不再单独排期** |
 
 **工单 03 的合并范围**：原有分支切换、历史场景列表与选中反馈，连同工单19的决策恢复，
