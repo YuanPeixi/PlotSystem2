@@ -19,6 +19,14 @@ project_router = APIRouter(prefix="/projects/{project_id}/scenes", tags=["scenes
 scene_router = APIRouter(prefix="/scenes", tags=["scenes"])
 
 
+def _scene_response(scene: Scene) -> dict:
+    """查询时投影进程内运行态，避免已启动场景仍被前端显示为 pending。"""
+    data = to_dict(scene)
+    if orchestrator.is_scene_active(scene.scene_id):
+        data["status"] = SceneStatus.RUNNING.value
+    return data
+
+
 @project_router.post("/plan")
 async def plan_scene(project_id: str, req: PlanSceneRequest) -> ApiResponse:
     """导演规划场景，返回 SceneConfig 建议（不创建）。"""
@@ -53,20 +61,20 @@ async def create_scene(project_id: str, req: CreateSceneRequest) -> ApiResponse:
 async def list_scenes(project_id: str, branch_id: str | None = None) -> ApiResponse:
     """列出项目场景，可按分支过滤。"""
     project_scenes = await repository.list_scenes(project_id, branch_id)
-    return ApiResponse.ok([to_dict(scene) for scene in project_scenes])
+    return ApiResponse.ok([_scene_response(scene) for scene in project_scenes])
 
 
 @project_router.get("/{scene_id}")
 async def get_scene(project_id: str, scene_id: str) -> ApiResponse:
     scene = await repository.get_scene(scene_id)
-    return ApiResponse.ok(to_dict(scene))
+    return ApiResponse.ok(_scene_response(scene))
 
 
 @scene_router.get("/{scene_id}")
 async def get_scene_by_id(scene_id: str) -> ApiResponse:
     """通过 scene_id 直接获取场景详情（不需要 project_id）。"""
     scene = await repository.get_scene(scene_id)
-    return ApiResponse.ok(to_dict(scene))
+    return ApiResponse.ok(_scene_response(scene))
 
 
 @scene_router.post("/{scene_id}/start")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.api.scenes import list_scenes, project_router
+from backend.api.scenes import get_scene_by_id, list_scenes, project_router
 from backend.models import Scene
 from backend.services import repository
 
@@ -28,3 +28,17 @@ async def test_list_scenes_filters_by_project_and_branch() -> None:
         "scene-a1",
         "scene-a2",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_scene_projects_active_runtime_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    scene = Scene(scene_id="scene-active", project_id="project-a", branch_id="branch-a")
+    await repository.save_scene(scene)
+    monkeypatch.setattr(
+        "backend.api.scenes.orchestrator.is_scene_active",
+        lambda scene_id: scene_id == "scene-active",
+    )
+
+    response = await get_scene_by_id("scene-active")
+
+    assert response.data["status"] == "running"

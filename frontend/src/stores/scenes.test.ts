@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DirectorDecision, Scene } from '@/types'
 
 const apiMock = vi.hoisted(() => ({
+  createScene: vi.fn(),
   listScenes: vi.fn(),
   getSceneById: vi.fn(),
   getEvaluation: vi.fn(),
@@ -105,5 +106,26 @@ describe('scene store navigation', () => {
 
     await store.startSimulation('scene-pending')
     expect(apiMock.startScene).toHaveBeenCalledOnce()
+    expect(store.currentScene?.status).toBe('running')
+  })
+
+  it('deduplicates concurrent scene creation and start requests', async () => {
+    let finishCreate: ((scene: Scene) => void) | undefined
+    apiMock.createScene.mockReturnValue(new Promise<Scene>((resolve) => { finishCreate = resolve }))
+    const store = useSceneStore()
+
+    const firstCreate = store.createScene('project-1', {})
+    const secondCreate = store.createScene('project-1', {})
+    expect(apiMock.createScene).toHaveBeenCalledOnce()
+    finishCreate?.(makeScene('pending'))
+    await Promise.all([firstCreate, secondCreate])
+
+    let finishStart: ((result: { status: string }) => void) | undefined
+    apiMock.startScene.mockReturnValue(new Promise((resolve) => { finishStart = resolve }))
+    const firstStart = store.startSimulation('scene-pending')
+    const secondStart = store.startSimulation('scene-pending')
+    expect(apiMock.startScene).toHaveBeenCalledOnce()
+    finishStart?.({ status: 'started' })
+    await Promise.all([firstStart, secondStart])
   })
 })

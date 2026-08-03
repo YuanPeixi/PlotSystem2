@@ -14,6 +14,7 @@ const emit = defineEmits<{
   // done 回调由父组件在请求结束后调用：ok=true 时面板才关闭/清空表单，
   // 失败（409/网络错误/500）时保留用户已填写的内容供修正重试。
   (e: 'decision', payload: Record<string, unknown>, done?: (ok: boolean) => void): void
+  (e: 'openScene', sceneId: string): void
 }>()
 
 const rollbackConditions = ref('')
@@ -50,6 +51,21 @@ function decide(type: string) {
     return
   }
   emit('decision', { decision_type: type, extra_turns: type === 'continue' ? 6 : null })
+}
+
+function applyRecommendation() {
+  const type = props.evaluation?.recommended_decision
+  if (!type || props.pending || props.readonly) return
+  if (type === 'continue') {
+    emit('decision', { decision_type: type, extra_turns: 6 })
+  } else if (type === 'next_scene') {
+    emit('decision', { decision_type: type })
+  } else if (type === 'rollback') {
+    emit('decision', {
+      decision_type: type,
+      new_initial_conditions: props.evaluation?.rollback_suggestion || {},
+    })
+  }
 }
 
 function confirmNextScene() {
@@ -102,7 +118,14 @@ function confirmRollback() {
     <div v-if="decision" class="decision-result">
       <strong>决策已生效</strong>
       <span>{{ decision.decision_type }}</span>
-      <span v-if="decision.next_scene_id">目标场景：{{ decision.next_scene_id }}</span>
+      <button
+        v-if="decision.next_scene_id"
+        class="decision-target"
+        title="打开目标场景"
+        @click="$emit('openScene', decision.next_scene_id)"
+      >
+        打开目标场景
+      </button>
     </div>
     <div v-if="!evaluation" class="dim" style="margin: 16px 0">场景完成后将自动生成评估。</div>
     <template v-else>
@@ -121,11 +144,20 @@ function confirmRollback() {
       <div class="recommend dim">AI 建议：{{ evaluation.recommended_decision }}</div>
     </template>
 
-    <div v-if="!decision && evaluation && !readonly" class="actions">
+    <div v-if="evaluation && !readonly" class="actions">
       <button :disabled="pending" @click="decide('continue')">▶ 继续</button>
       <button :disabled="pending" @click="decide('next_scene')">⏭ 下一场</button>
       <button class="danger" :disabled="pending" @click="decide('rollback')">↩ 回滚</button>
     </div>
+    <button
+      v-if="evaluation && !readonly"
+      class="auto-decision"
+      :disabled="pending"
+      title="仅执行当前评估的建议一次，不会连续运行后续场景"
+      @click="applyRecommendation"
+    >
+      执行 AI 建议
+    </button>
     <div v-if="pending" class="dim" style="margin-top: 8px; font-size: 12px">
       决策正在处理中，请勿重复提交...
     </div>
@@ -215,10 +247,18 @@ function confirmRollback() {
 .decision-result strong {
   color: var(--text);
 }
+.decision-target {
+  justify-self: start;
+  padding: 4px 8px;
+  font-size: 12px;
+}
 .actions {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+}
+.auto-decision {
+  margin-top: 8px;
 }
 .rollback-box {
   margin-top: 14px;

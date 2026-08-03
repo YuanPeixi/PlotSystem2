@@ -523,7 +523,13 @@ graph TD
   重新拉取分支、场景、日志、评估、已生效决策和快照。无效 URL 回退到有效分支及最新场景。
 - **场景三态分流**：pending 仅在用户明确操作时调用 `/start`；running 只铺底后端已持久化日志
   并订阅 SSE；completed 只读。SSE 完成后 `reconcileScene()` 用完整 `dialogue_log` 对账。
-  工单23落地前，running 刷新只能恢复后端已经持久化的轮次。
+  场景查询会把 `_active_scenes` 投影为 running，避免已启动场景仍显示 pending；SSE 轮次会实时
+  更新详情与左侧列表。工单23落地前，running 刷新仍只能恢复后端已经持久化的轮次。
+- **决策交互**：已生效决策只用于展示，不锁死 completed 场景的动作区；next_scene / rollback
+  成功后自动打开 `next_scene_id`，目标场景也可手动点击。面板的“执行 AI 建议”只提交当前
+  评估建议一次，是前端降级入口，**不等同于工单12 AutoPilot**，不会自动连跑后续场景。
+- **防重复创建/启动**：创建与启动分别有同步提交锁；启动后立即把前端场景状态切到 running，
+  直到 SSE / 查询结果对账，避免按钮窗口期产生多个孤立场景。
 - **快照时间线**：按分支展示 before/after 快照并提供 fork 入口；查看快照不表示恢复运行时，
   rollback 仍走导演决策。
 - `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。

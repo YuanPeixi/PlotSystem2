@@ -148,6 +148,20 @@ async function selectScene(scene: Scene) {
   }
 }
 
+async function openScene(sceneId: string) {
+  pageError.value = ''
+  try {
+    const scene = await sceneStore.loadScene(sceneId)
+    if (scene.branch_id !== branchId.value) {
+      branchId.value = scene.branch_id
+      await sceneStore.loadByBranch(props.projectId, scene.branch_id)
+    }
+    await writeNavigation(scene.branch_id, scene.scene_id)
+  } catch (error) {
+    pageError.value = error instanceof Error ? error.message : '目标场景加载失败'
+  }
+}
+
 async function plan() {
   if (!goal.value.trim()) return
   planning.value = true
@@ -159,7 +173,7 @@ async function plan() {
 }
 
 async function startScene() {
-  if (!draft.value) return
+  if (!draft.value || sceneStore.creating || sceneStore.starting) return
   const scene = await sceneStore.createScene(props.projectId, {
     branch_id: branchId.value,
     name: draft.value.name,
@@ -171,6 +185,7 @@ async function startScene() {
     opening_narration: draft.value.opening_narration,
     speaker_mode: draft.value.speaker_mode || 'round_robin',
   })
+  if (!scene) return
   await sceneStore.loadByBranch(props.projectId, branchId.value)
   await writeNavigation(branchId.value, scene.scene_id)
   await sceneStore.startSimulation(scene.scene_id)
@@ -188,17 +203,21 @@ async function startPendingScene() {
 }
 
 async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean) => void) {
-  if (!sceneStore.currentScene) return
+  const sourceSceneId = sceneStore.currentScene?.scene_id
+  if (!sourceSceneId) return
   try {
-    const decision = await sceneStore.submitDecision(sceneStore.currentScene.scene_id, payload)
+    const decision = await sceneStore.submitDecision(sourceSceneId, payload)
+    if (!decision) return
     await Promise.all([
       directorStore.loadBranches(props.projectId),
       directorStore.loadSnapshots(props.projectId),
       sceneStore.loadByBranch(props.projectId, branchId.value),
     ])
     if (decision?.decision_type === 'continue') {
-      await sceneStore.loadScene(sceneStore.currentScene.scene_id)
-      sceneStore.subscribeToScene(sceneStore.currentScene.scene_id)
+      await sceneStore.loadScene(sourceSceneId)
+      if (!sceneStore.running) sceneStore.subscribeToScene(sourceSceneId)
+    } else if (decision?.next_scene_id) {
+      await openScene(decision.next_scene_id)
     }
     done?.(true)
   } catch (err) {
@@ -325,8 +344,11 @@ async function confirmFork() {
                 </span>
               </div>
             </div>
-            <button :disabled="sceneStore.running || !branchId" @click="startScene">
-              {{ sceneStore.running ? '模拟中...' : '▶ 开始模拟' }}
+            <button
+              :disabled="sceneStore.creating || sceneStore.starting || sceneStore.running || !branchId"
+              @click="startScene"
+            >
+              {{ sceneStore.creating ? '创建中...' : sceneStore.running ? '模拟中...' : '▶ 开始模拟' }}
             </button>
           </div>
         </div>
@@ -336,7 +358,13 @@ async function confirmFork() {
       <section class="card center">
         <div class="row" style="justify-content: space-between">
           <h3>{{ sceneStore.currentScene?.name || '对话日志' }}</h3>
-          <span class="tag">{{ sceneStore.statusMsg || '空闲' }}</span>
+          <div class="scene-state">
+            <small v-if="sceneStore.currentScene">
+              {{ sceneStore.currentScene.turns_completed }} / {{ sceneStore.currentScene.max_turns }} 轮
+              · 剩余 {{ Math.max(0, sceneStore.currentScene.max_turns - sceneStore.currentScene.turns_completed) }} 轮
+            </small>
+            <span class="tag">{{ sceneStore.statusMsg || '空闲' }}</span>
+          </div>
         </div>
         <div v-if="pageError" class="inline-error">{{ pageError }}</div>
         <div v-if="sceneStore.sceneLoading" class="dim state-block">加载场景内容...</div>
@@ -346,7 +374,9 @@ async function confirmFork() {
         </div>
         <div v-else-if="sceneStore.currentScene.status === 'pending'" class="pending-banner">
           <span>该场景尚未开始。查看不会启动模拟。</span>
-          <button :disabled="sceneStore.running" @click="startPendingScene">开始模拟</button>
+          <button :disabled="sceneStore.starting || sceneStore.running" @click="startPendingScene">
+            {{ sceneStore.starting ? '启动中...' : '开始模拟' }}
+          </button>
         </div>
         <DialogLog :turns="sceneStore.turns" />
       </section>
@@ -361,6 +391,7 @@ async function confirmFork() {
           :decision="sceneStore.currentDecision"
           :readonly="sceneStore.currentScene?.status !== 'completed'"
           @decision="onDecision"
+          @open-scene="openScene"
         />
         <div class="card snapshot-panel">
           <div class="section-heading">
@@ -447,6 +478,15 @@ async function confirmFork() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.scene-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scene-state small {
+  color: var(--text-dim);
+  font-size: 11px;
 }
 .draft {
   margin-top: 16px;
