@@ -6,10 +6,13 @@ import { useCharacterStore } from '@/stores/characters'
 import GraphViewer from '@/components/GraphViewer.vue'
 import GraphViewer2 from '@/components/GraphViewer2.vue'
 import CharacterCardView from '@/components/CharacterCard.vue'
+import CharacterInspector from '@/components/CharacterInspector.vue'
 
 const router = useRouter()
 const store = useProjectStore()
 const charStore = useCharacterStore()
+
+const inspectingId = ref('')
 
 const newName = ref('')
 const newDesc = ref('')
@@ -201,6 +204,7 @@ async function build() {
             v-for="c in charStore.characters"
             :key="c.character_id"
             :character="c"
+            @inspect="inspectingId = $event"
           />
           <div
             v-if="building && store.buildStatus.character_total && charStore.characters.length < store.buildStatus.character_total"
@@ -212,6 +216,13 @@ async function build() {
         </div>
       </section>
     </div>
+
+    <CharacterInspector
+      v-if="inspectingId && store.current"
+      :project-id="store.current.project_id"
+      :character-id="inspectingId"
+      @close="inspectingId = ''"
+    />
   </div>
 </template>
 

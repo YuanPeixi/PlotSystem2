@@ -22,6 +22,7 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
 )
+from backend.services import inspection
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -208,8 +209,17 @@ class DirectorAgent:
         return decision
 
     # ---- 全局查询（导演专属权限）----
-    async def query_character_state(self, character_id: str) -> CharacterState:
-        return CharacterState(character_id=character_id)
+    async def query_character_state(
+        self, character_id: str, scene_id: str = ""
+    ) -> CharacterState:
+        """读取角色在指定场景（缺省：最近快照）时点的内部状态。
+
+        与 Inspection 面板、总结智能体共用同一读取路径（工单17）。
+        """
+        state, _ = await inspection.load_character_state(
+            self.project_id, character_id, scene_id=scene_id
+        )
+        return state
 
     async def query_graph(self, cypher: str) -> list[dict]:
         if self.graph is None:

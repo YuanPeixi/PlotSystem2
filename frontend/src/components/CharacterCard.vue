@@ -2,7 +2,7 @@
 import type { CharacterCard } from '@/types'
 
 defineProps<{ character: CharacterCard; selected?: boolean }>()
-defineEmits<{ (e: 'select', id: string): void }>()
+defineEmits<{ (e: 'select', id: string): void; (e: 'inspect', id: string): void }>()
 </script>
 
 <template>
@@ -13,6 +13,7 @@ defineEmits<{ (e: 'select', id: string): void }>()
         <div class="char-name">{{ character.name }}</div>
         <div class="char-emotion dim">{{ character.current_emotion }} · {{ character.current_goal || '无明确目标' }}</div>
       </div>
+      <button class="ghost inspect" title="导演视角：查看内部状态" @click.stop="$emit('inspect', character.character_id)">🔍</button>
     </div>
     <p class="char-persona">{{ character.persona || '（暂无设定）' }}</p>
     <div class="char-facts" v-if="character.known_facts.length">
@@ -42,6 +43,10 @@ defineEmits<{ (e: 'select', id: string): void }>()
   gap: 12px;
   align-items: center;
   margin-bottom: 10px;
+}
+.inspect {
+  margin-left: auto;
+  padding: 2px 8px;
 }
 .avatar {
   width: 42px;

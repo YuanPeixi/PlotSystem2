@@ -146,6 +146,7 @@ backend/
 ├── services/           ★★ 编排层：找业务逻辑先看这里
 │   ├── orchestrator.py   唯一跨模块编排点（构建/规划/运行/决策/输出/对账）
 │   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON）
+│   ├── inspection.py     ★ 角色内部状态的唯一只读查询层（面板/导演/总结共用）
 │   └── events.py         SSE 内存事件总线（asyncio.Queue）
 │
 ├── api/                路由层：只做参数校验 → 调 services → to_dict
@@ -221,6 +222,7 @@ frontend/src/
 | `Project` | 推演项目 | SQLite `projects` |
 | `CharacterCard` | 角色卡（persona + 信息不对称 + 关系 + 当前状态） | **文件** `characters/{cid}.json` |
 | `CharacterState` | 角色在某时刻的快照态（含短期缓冲 / 事件摘要） | 快照目录 JSON |
+| `CharacterInspection` | Inspection 层的只读组装结果（**不落库**） | 运行时 |
 | `LoreEntry` | 世界观条目（keywords 触发、scope 控制可见范围、priority 排序） | 内嵌于角色卡 |
 | `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
@@ -375,6 +377,23 @@ graph TD
 `main.py` 的 lifespan 中调用：扫描所有 `build_status.json`，把进度在 (0,1) 且既非完成
 也非失败的状态标记为失败，避免前端无限轮询卡死。
 
+### 6.5 Inspection（角色内部状态查询）
+
+`services/inspection.py` 是**读角色内部状态的唯一路径**，用户面板 / 导演 / 总结智能体共用：
+
+- `resolve_scene_states(scene, sm)`：契约4 四级快照继承的**唯一实现**，
+  `orchestrator._load_inherited_states` 只是它的薄封装；
+- `load_character_state(...)`：时点解析优先级 `snapshot_id` > `scene_id`（走上面四级链）
+  > 该角色最近一次出现的快照（可用 `branch_id` 限定）；一个快照都没有时退回角色卡当前值，
+  此时返回的来源 id 为空；
+- `inspect_character(...)`：在上者基础上叠加角色卡人设与长期记忆检索，产出 `CharacterInspection`。
+  `include_private=False` 会抹掉 `unknown_facts`——结果若可能进入角色可见上下文必须传 False（契约1）。
+  长期记忆**只在显式给出检索词时**才查（避免面板每次打开都触发 embedding 调用）。
+
+短期缓冲与事件摘要是纯内存态，只存在于快照里；这正是旧接口每次新建 `MemoryManager`
+因而恒返回空的根因。注意后置快照是在 `consolidate` 之后打的（见 6.2），
+所以已完成场景的快照里 `short_term_buffer` 为空是**正常**的，内容已进长期记忆。
+
 ---
 
 ## 7. 【契约】九条承重墙
@@ -487,7 +506,8 @@ graph TD
 | GET | `/projects/{project_id}/graph` | 图谱可视化数据 |
 | GET | `/projects/{project_id}/characters` | 角色列表 |
 | GET / PATCH | `/projects/{project_id}/characters/{char_id}` | 角色详情 / 人工编辑 |
-| GET | `/projects/{project_id}/characters/{char_id}/memory` | ⚠️ 当前恒返回空，见第 12 节 |
+| GET | `/projects/{project_id}/characters/{char_id}/memory` | 运行时记忆（短期缓冲 + 事件摘要），读自快照 |
+| GET | `/projects/{project_id}/characters/{char_id}/inspect` | 角色内部视图（人设 + 时点状态 + 三层记忆） |
 | POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**） |
 | POST | `/projects/{project_id}/scenes` | 创建场景 |
 | GET | `/projects/{project_id}/scenes/{scene_id}` | 场景详情 |
@@ -592,16 +612,15 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 | 缺陷 | 现象 | 备注 |
 |------|------|------|
 | **图谱快照失效** | `GraphManager.checkpoint_to()` 用 `copytree` 复制 `kuzu_db`，但当前 Kuzu 版本下它是**单个文件** → 抛 `NotADirectoryError`，被 `create_snapshot` 的 `except → logger.debug` 静默吞掉。结果：`Snapshot.graph_checkpoint` 恒为空，回滚不恢复图谱 | **当前无实际影响**：图谱只在构建时写一次，之后只读，回滚不恢复也等价。等工单 `06-dynamic-graph-writeback.md`（动态图谱写回）落地时会变成真数据丢失，**应作为该工单的前置任务**，不是独立 P0。修法：按 `Path.is_dir()` 分支选 `copytree`/`copy2`，并把吞异常的日志提到 `warning` |
-| **`GET /characters/{id}/memory` 恒空** | 每次新建 `MemoryManager`，而短期/事件记忆是纯内存态 | 修法：复用 `_load_inherited_states` 的快照读取；否则下线该接口 |
 | **前端未消费 `GET /decision`** | 后端幂等查询接口已实现但无调用方，超时/409 后的状态恢复能力为空 | — |
 
 ### 12.2 Dead code（存在但零调用）
 
 - `knowledge_graph/queries.py` —— 全仓库零 import。
 - `agents/base_agent.py` 的 AutoGen 封装 + `CharacterAgent.get_autogen_agent()` —— 无调用方。
-- `DirectorAgent.query_graph()` / `query_character_state()` —— 零调用；后者返回空壳，
-  且传入的 `GraphManager` 从未 `connect()`，真调用会报错。
-  **导演目前不读图谱、不读角色内部状态**，只吃角色卡与对白文本。
+- `DirectorAgent.query_graph()` —— 零调用；且传入的 `GraphManager` 从未 `connect()`，
+  真调用会报错。**导演目前仍不读图谱**，只吃角色卡与对白文本
+  （`query_character_state()` 已在工单17 落地到 Inspection 层，不再是死代码）。
 - `MemoryManager.snapshot()` / `restore()` —— 零调用。真实快照路径是
   `SceneEngine._collect_states()` 直接读 `short_term.dump()` / `episodic.dump()`，
   恢复路径是 `_load_inherited_states()` + `MemoryManager.prime()`。
@@ -621,9 +640,8 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 |------|-----------|------------|
 | **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen** | `11-...`；会改动 SceneEngine 对话循环本身，建议作为独立大提案最后做 |
 | **世界状态 / 事件变量** | 跨场次的信息传递通道。信息不对称保证"角色不该知道的不知道"，世界状态负责"该传播的能传播"（含环境层跨场景广播） | `07-world-state.md` |
-| **统一 Inspection API 层** | 用户 / 导演 / 总结智能体共享同一套"查角色情绪·记忆·位置·内心"的地基，并支持微调 | 建议**先于** `04` / `05` / 导演分镜稿立项 |
 | **私有内心 OS** | 角色输出前的自适应思考，**不入档**——与现在会落档的 `inner_thought` 是两回事 | 未立项 |
-| **分镜稿（storyboard）** | 导演当前只有提示词 + 压缩后的既往剧情，长线维持能力弱。设想给导演一份可读写的持久化文件（类似 AI 的记忆文件），随快照一起版本化；分支时需向导演说明差异。配套需要 `DirectorAgent.query_character_state`（现为空壳）真正落地 | 未立项 |
+| **分镜稿（storyboard）** | 导演当前只有提示词 + 压缩后的既往剧情，长线维持能力弱。设想给导演一份可读写的持久化文件（类似 AI 的记忆文件），随快照一起版本化；分支时需向导演说明差异 | 未立项 |
 | **AutoPilot 模式** | 自动采纳导演建议的决策，无人值守连跑多场 | `12-auto-pilot-director.md`（依赖工单 13，已完成） |
 | **MCTS / 多结局** | 当前"每次只生成一场 + 采纳导演建议" ≈ 已默认剪枝的单条路径；多结局靠人工从快照分叉。待场景评价与分镜稿都持久化后，可在其上做真正的搜索 | 未立项 |
 
@@ -665,4 +683,11 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 <!-- 2026-08-02: PR review 修复。rollback 重演场景补传 speaker_mode；
      speaker_mode 增加取值校验（API 422 / 配置启动即失败 / 引擎兜底 warning）；
      新增 DialogueTurn.selector_notice，selector 降级时前端在角色名后灰字提示。
+-->
+<!-- 2026-08-04: 工单17（统一 Inspection 层）落地。新增 services/inspection.py
+     与 CharacterInspection 模型、GET /characters/{id}/inspect；修掉
+     GET /characters/{id}/memory 恒空（改读快照）；DirectorAgent.query_character_state
+     由空壳落地到该层；orchestrator._load_inherited_states 改为薄封装。
+     对应删除 12.1 的 memory 恒空条目、12.2 的 query_character_state、
+     13 的「统一 Inspection API 层」设想；新增 6.5 节。
 -->

@@ -7,6 +7,7 @@ import type { SceneConfig } from '@/types'
 import SceneTree from '@/components/SceneTree.vue'
 import DialogLog from '@/components/DialogLog.vue'
 import DirectorPanel from '@/components/DirectorPanel.vue'
+import CharacterInspector from '@/components/CharacterInspector.vue'
 
 const props = defineProps<{ projectId: string }>()
 
@@ -18,6 +19,7 @@ const goal = ref('')
 const planning = ref(false)
 const draft = ref<SceneConfig | null>(null)
 const branchId = ref('')
+const inspectingId = ref('')
 
 onMounted(async () => {
   await charStore.load(props.projectId)
@@ -80,6 +82,16 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
           <SceneTree :tree="directorStore.branchTree" @select="branchId = $event" />
         </div>
         <div class="card">
+          <h3>角色内部状态</h3>
+          <ul class="char-list">
+            <li v-for="c in charStore.characters" :key="c.character_id">
+              <span>{{ c.name }}<span class="dim"> · {{ c.current_emotion }}</span></span>
+              <button class="ghost" @click="inspectingId = c.character_id">🔍</button>
+            </li>
+            <li v-if="!charStore.characters.length" class="dim">尚未生成角色</li>
+          </ul>
+        </div>
+        <div class="card">
           <h3>规划场景</h3>
           <div class="field" style="margin-top: 10px">
             <label>叙事目标</label>
@@ -139,6 +151,14 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
         />
       </section>
     </div>
+
+    <CharacterInspector
+      v-if="inspectingId"
+      :project-id="props.projectId"
+      :character-id="inspectingId"
+      :scene-id="sceneStore.currentScene?.scene_id || ''"
+      @close="inspectingId = ''"
+    />
   </div>
 </template>
 
@@ -172,5 +192,18 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.char-list {
+  list-style: none;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.char-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
 }
 </style>
