@@ -156,6 +156,34 @@ class CharacterState:
     short_term_buffer: list[str] = field(default_factory=list)
 
 
+@dataclass
+class CharacterInspection:
+    """角色内部视图的统一读取结果（Inspection 层）。
+
+    用户面板、导演智能体、总结智能体三方看的是同一份东西，共用本结构以免口径分叉。
+    `unknown_facts` 仅在 include_private=True 时填充，绝不可进入角色可见上下文（契约1）。
+    """
+
+    character_id: str = ""
+    name: str = ""
+    persona: str = ""
+    appearance: str = ""
+    speech_style: str = ""
+    current_emotion: str = "平静"
+    current_goal: str = ""
+    current_location: str = ""
+    relationships: dict[str, RelationshipState] = field(default_factory=dict)
+    known_facts: list[str] = field(default_factory=list)
+    unknown_facts: list[str] = field(default_factory=list)
+    world_lore_entries: list[LoreEntry] = field(default_factory=list)
+    short_term_buffer: list[str] = field(default_factory=list)
+    episodic_summary: str = ""
+    long_term_hits: list[MemoryChunk] = field(default_factory=list)
+    # 状态取自哪个快照；为空表示无快照可用、已退回角色卡当前值
+    source_snapshot_id: str = ""
+    state_source: str = "card"  # "snapshot" | "card"
+
+
 # ---------------------------------------------------------------------------
 # 项目
 # ---------------------------------------------------------------------------

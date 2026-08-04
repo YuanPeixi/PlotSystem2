@@ -7,11 +7,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from backend.api.schemas import ApiResponse, UpdateCharacterRequest
-from backend.memory import MemoryManager
-from backend.services import repository
+from backend.services import inspection, repository
 from backend.utils.serializer import to_dict
 
 router = APIRouter(prefix="/projects/{project_id}/characters", tags=["characters"])
@@ -42,12 +41,49 @@ async def update_character(
 
 
 @router.get("/{char_id}/memory")
-async def get_character_memory(project_id: str, char_id: str) -> ApiResponse:
-    mem = MemoryManager(char_id, project_id)
-    await mem.connect()
+async def get_character_memory(
+    project_id: str,
+    char_id: str,
+    scene_id: str = Query("", description="指定场景时点；留空则取该角色最近一次快照"),
+    snapshot_id: str = Query("", description="直接指定快照，优先级最高"),
+) -> ApiResponse:
+    """角色的运行时记忆（短期缓冲 + 事件摘要）。
+
+    这两层是纯内存态，只存在于快照里；旧实现每次新建 MemoryManager，
+    因而恒返回空数据（工单17 修复）。
+    """
+    state, source = await inspection.load_character_state(
+        project_id, char_id, scene_id=scene_id, snapshot_id=snapshot_id
+    )
     return ApiResponse.ok(
         {
-            "short_term": mem.short_term.dump(),
-            "episodic_summary": mem.episodic.dump(),
+            "short_term": state.short_term_buffer,
+            "episodic_summary": state.episodic_summary,
+            "source_snapshot_id": source,
         }
     )
+
+
+@router.get("/{char_id}/inspect")
+async def inspect_character(
+    project_id: str,
+    char_id: str,
+    scene_id: str = Query("", description="指定场景时点；留空则取该角色最近一次快照"),
+    snapshot_id: str = Query("", description="直接指定快照，优先级最高"),
+    branch_id: str = Query("", description="限定分支后再取最近快照"),
+    query: str = Query("", description="给出时附带长期记忆检索结果（会触发 embedding）"),
+    top_k: int | None = Query(None, ge=1, le=50),
+    include_private: bool = Query(True, description="False 时抹掉 unknown_facts"),
+) -> ApiResponse:
+    """导演视角的角色内部视图：人设 + 时点状态 + 三层记忆。"""
+    result = await inspection.inspect_character(
+        project_id,
+        char_id,
+        scene_id=scene_id,
+        snapshot_id=snapshot_id,
+        branch_id=branch_id,
+        memory_query=query,
+        top_k=top_k,
+        include_private=include_private,
+    )
+    return ApiResponse.ok(to_dict(result))

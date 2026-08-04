@@ -98,9 +98,9 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
-| 17 | **【新】** 统一 Inspection API 层（角色情绪/记忆/位置/内心的查询与微调） | **P1** | 14 | 待建单 |
-| [04](./04-director-context.md) | 补全导演评估上下文 + `query_character_state` 落地 | P1 | 17 | 待处理 |
-| [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17、04 | 待处理 |
+| 17 | **【新】** 统一 Inspection API 层（角色情绪/记忆/位置/内心的查询与微调） | **P1** | 14 | **⏳ 等待 PR（分支 `feat/inspection-api`）** |
+| [04](./04-director-context.md) | 补全导演评估上下文 + `query_character_state` 落地 | P1 | 17 ✅ | 待处理（`query_character_state` 已随 17 落地，本单只剩评估上下文） |
+| [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整的展示） |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | **16（硬前置）** | 待处理 |
 | [08](./08-fork-branch-conditions.md) | `fork_branch` / `new_initial_conditions` 真正生效 | P2 | 01 ✅ | 待处理 |
@@ -109,9 +109,14 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 （角色的情绪、记忆、位置、内心）。若各做各的，会出现三套口径不一致的读取路径。
 17 建一层地基，04/05 及后续「总结智能体的角色内部视角」都复用它。
 
-17 顺带修掉一个既有缺陷：`GET /characters/{id}/memory` 每次新建 `MemoryManager`，
-而短期/事件记忆是纯内存态 → **恒返回空**。修法是复用工单 14 的 `_load_inherited_states` + `prime()` 读快照。
-`DirectorAgent.query_character_state()` 现在也是返回空壳的死代码，同样在这一层落地。
+**17 已落地内容**（分支 `feat/inspection-api`）：新增 `backend/services/inspection.py`
+（`resolve_scene_states` / `load_character_state` / `inspect_character`）与
+`CharacterInspection` 模型；新增 `GET /projects/{id}/characters/{cid}/inspect`；
+`GET .../memory` 改为读快照（此前每次新建 `MemoryManager` → **恒返回空**）；
+`DirectorAgent.query_character_state()` 从空壳落地到该层；
+`orchestrator._load_inherited_states` 改为委托 `resolve_scene_states`，
+契约4 的四级快照继承从此只有一份实现。前端新增只读的 `CharacterInspector.vue`
+（工作台与导演页均可打开）。
 
 ---
 

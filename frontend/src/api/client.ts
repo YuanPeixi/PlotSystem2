@@ -4,6 +4,7 @@ import type {
   BranchTree,
   BuildStatus,
   CharacterCard,
+  CharacterInspection,
   GraphData,
   Project,
   Scene,
@@ -61,6 +62,15 @@ export const api = {
     unwrap<CharacterCard>(http.get(`/projects/${id}/characters/${cid}`)),
   updateCharacter: (id: string, cid: string, patch: Partial<CharacterCard>) =>
     unwrap<CharacterCard>(http.patch(`/projects/${id}/characters/${cid}`, patch)),
+  /** 导演视角：角色内部状态 + 三层记忆。query 非空时额外检索长期记忆。 */
+  inspectCharacter: (
+    id: string,
+    cid: string,
+    params: { scene_id?: string; snapshot_id?: string; branch_id?: string; query?: string } = {},
+  ) =>
+    unwrap<CharacterInspection>(
+      http.get(`/projects/${id}/characters/${cid}/inspect`, { params }),
+    ),
 
   // 场景
   planScene: (id: string, branch_id: string, narrative_goal: string) =>

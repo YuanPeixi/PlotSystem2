@@ -29,7 +29,7 @@ from backend.models import (
     new_id,
 )
 from backend.scene_engine import SceneEngine
-from backend.services import events, repository
+from backend.services import events, inspection, repository
 from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_dict
@@ -226,39 +226,13 @@ async def build_character_agents(
 async def _load_inherited_states(
     scene: Scene, sm: SnapshotManager
 ) -> dict[str, CharacterState]:
-    """取出本场景应继承的运行时记忆状态（工单14）。
+    """取出本场景应继承的运行时记忆状态（工单14 的四级优先级，契约4）。
 
-    按优先级依次尝试：
-    1. `snapshot_id_after`：本场景已跑过一次（continue 续跑）→ 承接上次结束态；
-    2. `restore_snapshot_id`：回滚重演场景 → 承接回滚目标快照；
-    3. `snapshot_id_before`：本场景已打过前置快照但未跑完（异常恢复）；
-    4. 父场景的 `snapshot_id_after`：next_scene → 承接上一场的结束态。
-    全部取不到时返回空字典（全新场景，记忆从长期库检索即可）。
+    实现已下沉到 `services/inspection.py`：Inspection 面板与导演查询走的是同一套
+    快照解析，两份实现分叉过一次就再也对不齐（工单17）。
     """
-    candidates = [
-        scene.snapshot_id_after,
-        scene.restore_snapshot_id,
-        scene.snapshot_id_before,
-    ]
-    if scene.parent_scene_id:
-        try:
-            parent = await repository.get_scene(scene.parent_scene_id)
-            candidates.append(parent.snapshot_id_after)
-        except Exception:  # noqa: BLE001
-            logger.debug("父场景 %s 不可用，跳过记忆继承", scene.parent_scene_id)
-
-    for snapshot_id in candidates:
-        if not snapshot_id:
-            continue
-        try:
-            snap = await sm.get_snapshot(snapshot_id)
-        except Exception:  # noqa: BLE001
-            logger.warning("读取快照 %s 失败，跳过记忆继承", snapshot_id, exc_info=True)
-            continue
-        if snap and snap.character_states:
-            logger.info("场景 %s 从快照 %s 继承运行时记忆", scene.scene_id, snapshot_id)
-            return dict(snap.character_states)
-    return {}
+    states, _ = await inspection.resolve_scene_states(scene, sm)
+    return states
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,33 @@ export interface CharacterCard {
   current_location: string
 }
 
+export interface MemoryChunk {
+  text: string
+  score: number
+  metadata: Record<string, unknown>
+}
+
+/** Inspection 层返回的角色内部视图（导演视角）。 */
+export interface CharacterInspection {
+  character_id: string
+  name: string
+  persona: string
+  appearance: string
+  speech_style: string
+  current_emotion: string
+  current_goal: string
+  current_location: string
+  relationships: Record<string, RelationshipState>
+  known_facts: string[]
+  unknown_facts: string[]
+  world_lore_entries: LoreEntry[]
+  short_term_buffer: string[]
+  episodic_summary: string
+  long_term_hits: MemoryChunk[]
+  source_snapshot_id: string
+  state_source: 'snapshot' | 'card'
+}
+
 export interface DialogueTurn {
   turn_id: string
   scene_id: string
