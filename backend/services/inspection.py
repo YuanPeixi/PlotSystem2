@@ -171,7 +171,7 @@ async def inspect_character(
         current_emotion=state.current_emotion,
         current_goal=state.current_goal,
         current_location=state.current_location,
-        relationships=state.relationships or card.relationships,
+        relationships=state.relationships,
         known_facts=list(card.known_facts),
         unknown_facts=list(card.unknown_facts) if include_private else [],
         world_lore_entries=list(card.world_lore_entries),
