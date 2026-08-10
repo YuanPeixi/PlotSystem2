@@ -40,7 +40,11 @@ async function load(query = '') {
   }
 }
 
-watch(() => props.characterId, () => load(), { immediate: true })
+watch(
+  () => [props.characterId, props.sceneId],
+  () => load(),
+  { immediate: true },
+)
 
 function relationEntries(d: CharacterInspection) {
   return Object.entries(d.relationships || {})

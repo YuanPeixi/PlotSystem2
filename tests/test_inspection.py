@@ -94,6 +94,33 @@ async def test_inspect_reads_latest_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_inspect_preserves_empty_snapshot_relationships():
+    """历史快照的空关系是有效状态，不应回退到角色卡的最新关系。"""
+    project_id = "proj-inspect-empty-relations"
+    character_id = "char-inspect-empty-relations"
+    card = await _setup(project_id, character_id)
+    card.relationships = {
+        "future": RelationshipState(target_character_id="future"),
+    }
+    await repository.save_character(card)
+
+    state = _state(character_id, emotion="平静", buffer=[], summary="")
+    state.relationships = {}
+    sm = SnapshotManager(project_id)
+    snap = await sm.create_snapshot(
+        "scene-before-relationship",
+        "branch-main",
+        {character_id: state},
+        label="before relationship",
+    )
+
+    view = await inspection.inspect_character(
+        project_id, character_id, snapshot_id=snap.snapshot_id
+    )
+    assert view.relationships == {}
+
+
+@pytest.mark.asyncio
 async def test_inspect_can_hide_private_facts():
     """unknown_facts 不得进入任何角色可见上下文（契约1）。"""
     project_id = "proj-inspect-private"
