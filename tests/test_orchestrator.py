@@ -551,6 +551,66 @@ async def test_build_character_agents_primes_runtime_memory(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_character_state_snapshot_restoration(monkeypatch):
+    """Issue #13：场景智能体应使用快照状态，而不是角色卡的最新值。"""
+    from backend.memory.memory_manager import MemoryManager
+
+    async def _skip_connect(self):
+        return None
+
+    monkeypatch.setattr(MemoryManager, "connect", _skip_connect)
+
+    project_id = "proj-character-state-inherit"
+    character_id = "char-character-state-inherit"
+    await repository.save_project(Project(project_id=project_id, name="角色状态继承测试项目"))
+    await repository.save_character(
+        CharacterCard(
+            character_id=character_id,
+            project_id=project_id,
+            name="测试角色",
+            current_emotion="沉着",
+            current_goal="继续调查",
+            current_location="工作台地点",
+            relationships={
+                "other": RelationshipState(
+                    target_character_id="other", relation_type="友善", strength=0.6
+                )
+            },
+        )
+    )
+    state = CharacterState(
+        character_id=character_id,
+        current_emotion="恐惧",
+        current_goal="逃离现场",
+        current_location="快照地点",
+        relationships={
+            "other": RelationshipState(
+                target_character_id="other", relation_type="敌对", strength=-0.8
+            )
+        },
+    )
+
+    agents = await orchestrator.build_character_agents(
+        project_id, [character_id], {character_id: state}
+    )
+    agent = agents[0]
+    prompt = agent.build_system_prompt({"location": "场景默认地点"})
+
+    assert agent.card.current_emotion == "恐惧"
+    assert agent.card.current_goal == "逃离现场"
+    assert agent.card.current_location == "快照地点"
+    assert agent.card.relationships == state.relationships
+    assert agent.card.relationships is not state.relationships
+    assert "情绪：恐惧" in prompt
+    assert "目标：逃离现场" in prompt
+    assert "位置：快照地点" in prompt
+    assert "对 other：敌对" in prompt
+    assert "沉着" not in prompt
+    assert "继续调查" not in prompt
+    assert "工作台地点" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_load_inherited_states_prefers_rollback_source_snapshot():
     """回滚重演场景：snapshot_id_before 必须为空（工单01），
     因此运行时记忆要靠 restore_snapshot_id 找回来源快照（工单14）。"""

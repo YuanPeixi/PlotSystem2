@@ -207,9 +207,9 @@ async def build_character_agents(
 ) -> list[CharacterAgent]:
     """构建参演角色的智能体。
 
-    character_states 给出时（续跑/回滚/下一场），用其中的短期缓冲与事件摘要
-    回填新建的 MemoryManager —— 这两层记忆是纯内存态，不回填就会每次从零开始
-    （工单14）。
+    character_states 给出时（续跑/回滚/下一场），同时回填角色的时点状态和
+    MemoryManager。角色卡文件保存的是最新值，不能代表历史场景应继承的状态；
+    短期缓冲与事件摘要则是纯内存态，不回填就会每次从零开始（工单14、Issue #13）。
     """
     agents: list[CharacterAgent] = []
     for cid in character_ids:
@@ -218,6 +218,10 @@ async def build_character_agents(
         await mem.connect()
         state = (character_states or {}).get(cid)
         if state is not None:
+            card.current_emotion = state.current_emotion
+            card.current_goal = state.current_goal
+            card.current_location = state.current_location
+            card.relationships = dict(state.relationships)
             mem.prime(state.short_term_buffer, state.episodic_summary)
         agents.append(CharacterAgent(card, mem))
     return agents
@@ -290,7 +294,7 @@ async def run_scene(scene_id: str) -> None:
 
     scene = await repository.get_scene(scene_id)
     sm = SnapshotManager(scene.project_id)
-    # 续跑/回滚/下一场：把上一次快照里的短期缓冲与事件摘要回填给新建的记忆管理器
+    # 续跑/回滚/下一场：把上一次快照里的角色状态与运行时记忆回填给新建的智能体
     inherited = await _load_inherited_states(scene, sm)
     agents = await build_character_agents(
         scene.project_id, scene.participating_characters, inherited
