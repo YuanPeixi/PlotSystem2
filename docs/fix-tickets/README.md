@@ -45,7 +45,7 @@
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
-| [11](./11-selector-and-world-interaction.md) | **（已瘦身）** 打通 Selector 发言模式 | **P1** | 无 | **🔍 审核中（PR #10）** |
+| [11](./11-selector-and-world-interaction.md) | **（已瘦身）** 打通 Selector 发言模式 | **P1** | 无 | **✅ PR #10（`8f93fa5`到`fd2f59`）** |
 | 16 | **【新】** 修复 Kuzu 快照持久化（单文件 vs `copytree`） | **P1** | 无 | 待建单 |
 | [03](./03-branch-switch-frontend.md) | 前端分支切换无联动 | P1 | 无 | 待处理 |
 | 19 | **【新】** 前端消费 `GET /scenes/{id}/decision` | P2 | 13 ✅ | 待建单 |
@@ -98,7 +98,7 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
-| 17 | **【新】** 统一 Inspection API 层（角色情绪/记忆/位置/内心的查询与微调） | **P1** | 14 | **⏳ 等待 PR（分支 `feat/inspection-api`）** |
+| 17 | **【新】** 统一 Inspection API 层（角色情绪/记忆/位置/内心的查询与微调） | **P1** | 14 | **✅ PR #12 (`75a737f`到`e57206f`)** |
 | [04](./04-director-context.md) | 补全导演评估上下文 + `query_character_state` 落地 | P1 | 17 ✅ | 待处理（`query_character_state` 已随 17 落地，本单只剩评估上下文） |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整的展示） |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 |
