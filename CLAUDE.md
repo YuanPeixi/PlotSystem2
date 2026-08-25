@@ -255,6 +255,11 @@ frontend/src/
 8. **`SceneStatus.PAUSED` = “跑一半断了”**：运行异常、服务重启对账（见 6.4）都会落到这个状态。
    它不可提交决策（CAS 只接 completed），但可以再次 `POST /scenes/{id}/start` 续跑
    （`snapshot_id_before` 已存在→不重打快照，`dialogue_log` 已逐轮落盘→注入历史续接）。
+9. **`Scene.turns_consolidated` 是记忆固化的水位线**，与 `turns_completed` 不同：
+   对话逐轮落盘，但固化（`consolidate`）只在场景正常结束时发生一次。崩溃/异常中断后
+   续跑时，`SceneEngine.run()` 会把 `dialogue_log[turns_consolidated:]` 重新写回各角色记忆，
+   否则就是“对话恢复了，但角色忘了这些对话”。**新增写入记忆的路径时必须跟上这个水位线**，
+   否则会造成长期记忆重复写入（长期记忆按角色+项目共享，不随分支回滚，重复只会累积）。
 
 ---
 
@@ -535,15 +540,16 @@ graph TD
 | GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
 | GET | `/projects/{project_id}/branches` | 分支树 |
 | GET | `/projects/{project_id}/snapshots` | 快照列表（只返回元信息，不带角色状态明细） |
-| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**） |
-| DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**） |
+| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。只登记来源快照，**不**恢复当前项目运行态 |
+| DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**，且按项目约束） |
 | POST | `/projects/{project_id}/output` | 生成输出 |
 | GET | `/output/{output_id}` | 取回生成结果 |
 
 **SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`error`。
-订阅建立时后端会**先回放一帧 `status`**（带 `initial: true`）告知当前状态，
-让重连的客户端（以及“刚好在订阅前跑完”的竞态）不会挂死在“模拟中”；
-`completed` / `paused` 两个终态会结束流。
+订阅建立时后端会**先回放一帧 `status`**（带 `initial: true`）告知当前状态；
+若首帧已是 `completed` / `paused`，服务端**直接结束流**，不留只会 ping 的连接。
+逐轮落盘先于 SSE 推送，因此铺底用的 GET 与随后的 `turn` 事件**可能撞上同一轮**，
+客户端必须按 `turn_id` 去重，并在终态时无条件以持久化日志为准。
 
 ---
 
@@ -563,6 +569,11 @@ graph TD
 - **`attachScene` 与 `joinScene` 不可混用**：前者用于“打开/重连已存在的场景”（刷新恢复、
   点选历史场景），**绝不调 `/start`**；后者用于决策产生的新场景/续跑，会调 `/start`。
   对已完成场景误调 `/start` 会白烧一整场 LLM 并覆盖快照/评估（后端已加拦截，但前端不该依赖它）。
+- **SSE 句柄必须捕获自己的连接**：`openStream` 把 `EventSource` 存为局部变量，每个事件
+  处理器先比对它是否仍是当前连接。否则快速切场景时，旧流的终态会关掉新流、
+  旧流的 `turn` 会串进新场景的日志。
+- **切分支要连当前场景一起切**：`watch(branchId)` 刷新场景列表后会 attach 该分支最后一场，
+  没有场景则 `clearScene()`。只刷新列表不切场景，日志与决策面板会跨分支残留。
 - **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
   否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
 - `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。

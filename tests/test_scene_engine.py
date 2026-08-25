@@ -139,6 +139,90 @@ async def test_scene_run_strips_inner_thought_for_other_agents():
 
 
 @pytest.mark.asyncio
+async def test_resume_after_crash_replays_unconsolidated_turns_into_memory():
+    """中断续跑：已落盘但未固化的轮次必须补写回记忆，否则"对话还在，角色忘了"。"""
+    agent_a = _make_agent("c1", "甲")
+    agent_b = _make_agent("c2", "乙")
+    crashed = [
+        DialogueTurn(
+            scene_id="s-resume",
+            turn_number=i + 1,
+            character_id="c1" if i % 2 == 0 else "c2",
+            character_name="甲" if i % 2 == 0 else "乙",
+            dialogue=f"中断前第{i + 1}句",
+        )
+        for i in range(3)
+    ]
+    scene = Scene(
+        scene_id="s-resume",
+        project_id="proj-se",
+        branch_id="b-resume",
+        status="paused",
+        snapshot_id_before="snap-before-resume",  # 已打过前置快照，续跑不重打
+        dialogue_log=crashed,
+        turns_completed=3,
+        turns_consolidated=0,  # 崩溃时还没来得及固化
+    )
+    config = SceneConfig(
+        name="续跑", participating_characters=["c1", "c2"], location="客栈", max_turns=4
+    )
+    engine = SceneEngine(scene, config, [agent_a, agent_b], SnapshotManager("proj-se"))
+    engine.inject_history(crashed)
+
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="*点头* 续上的第四句。")),
+        patch("backend.memory.memory_manager.MemoryManager.consolidate", new=AsyncMock()),
+    ):
+        result = await engine.run()
+
+    texts_a = agent_a.memory.short_term.dump()
+    assert len(result.dialogue_log) == 4
+    # 中断前的 3 轮 + 续跑产生的 1 轮都应进入记忆，且不重复
+    assert len(texts_a) == 4
+    assert len(texts_a) == len(set(texts_a))
+    assert any("中断前第1句" in t for t in texts_a)
+    assert scene.turns_consolidated == 4
+
+
+@pytest.mark.asyncio
+async def test_consolidated_turns_are_not_replayed_into_memory():
+    """continue 续跑（上一轮已固化）不得把历史轮次二次写入记忆。"""
+    agent_a = _make_agent("c1", "甲")
+    done = [
+        DialogueTurn(
+            scene_id="s-cont",
+            turn_number=i + 1,
+            character_id="c1",
+            character_name="甲",
+            dialogue=f"已固化第{i + 1}句",
+        )
+        for i in range(2)
+    ]
+    scene = Scene(
+        scene_id="s-cont",
+        project_id="proj-se",
+        branch_id="b-cont",
+        snapshot_id_before="snap-before-cont",
+        dialogue_log=done,
+        turns_completed=2,
+        turns_consolidated=2,  # 上一轮生命周期结束时已固化
+    )
+    config = SceneConfig(name="续跑", participating_characters=["c1"], max_turns=3)
+    engine = SceneEngine(scene, config, [agent_a], SnapshotManager("proj-se"))
+    engine.inject_history(done)
+
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="新的一句。")),
+        patch("backend.memory.memory_manager.MemoryManager.consolidate", new=AsyncMock()),
+    ):
+        await engine.run()
+
+    texts = agent_a.memory.short_term.dump()
+    assert len(texts) == 1
+    assert not any("已固化" in t for t in texts)
+
+
+@pytest.mark.asyncio
 async def test_scene_run_after_snapshot_has_empty_short_term_buffer():
     """固化必须先于后置快照，否则 continue/rollback/next_scene 的记忆回填
     （prime()）会让已经写入长期记忆的台词随下一场的 consolidate 被二次写入

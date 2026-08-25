@@ -311,43 +311,46 @@ async def run_scene(scene_id: str) -> None:
         return
     _active_scenes.add(scene_id)
 
-    scene = await repository.get_scene(scene_id)
-    sm = SnapshotManager(scene.project_id)
-    # 续跑/回滚/下一场：把上一次快照里的角色状态与运行时记忆回填给新建的智能体
-    inherited = await _load_inherited_states(scene, sm)
-    agents = await build_character_agents(
-        scene.project_id, scene.participating_characters, inherited
-    )
-
-    config = SceneConfig(
-        name=scene.name,
-        description=scene.description,
-        participating_characters=scene.participating_characters,
-        location=scene.location,
-        initial_conditions=scene.initial_conditions,
-        max_turns=scene.max_turns,
-        speaker_mode=scene.speaker_mode,
-        opening_narration=scene.initial_conditions.get("opening_narration", ""),
-    )
-    engine = SceneEngine(scene, config, agents, sm)
-    # continue 续跑：注入历史 transcript，让角色知道之前说了什么
-    if scene.dialogue_log:
-        engine.inject_history(scene.dialogue_log)
-    _running_engines[scene_id] = engine
-
-    # 先把"运行中"落库：否则数据库里始终是 pending，刷新后的前端无从判断
-    # 这一场是不是还在跑，只能要么空等要么误触发第二次模拟（工单23）。
-    scene.status = SceneStatus.RUNNING.value
-    await repository.save_scene(scene)
-    await events.publish(scene_id, "status", {"status": "running"})
-
-    async def _on_turn(turn: DialogueTurn) -> None:
-        # 逐轮落盘：引擎已把本轮写进 scene.dialogue_log，这里持久化后
-        # 中途刷新/断线/进程退出都能从 GET /scenes/{id} 拿回已产生的轮次。
-        await repository.save_scene(scene)
-        await events.publish(scene_id, "turn", to_dict(turn))
-
+    # 初始化（读场景/加载快照/建智能体）必须一并纳入 try：这些步骤抛异常时若不释放
+    # 运行锁，该场景在进程重启前都无法再启动。
+    scene: Scene | None = None
     try:
+        scene = await repository.get_scene(scene_id)
+        sm = SnapshotManager(scene.project_id)
+        # 续跑/回滚/下一场：把上一次快照里的角色状态与运行时记忆回填给新建的智能体
+        inherited = await _load_inherited_states(scene, sm)
+        agents = await build_character_agents(
+            scene.project_id, scene.participating_characters, inherited
+        )
+
+        config = SceneConfig(
+            name=scene.name,
+            description=scene.description,
+            participating_characters=scene.participating_characters,
+            location=scene.location,
+            initial_conditions=scene.initial_conditions,
+            max_turns=scene.max_turns,
+            speaker_mode=scene.speaker_mode,
+            opening_narration=scene.initial_conditions.get("opening_narration", ""),
+        )
+        engine = SceneEngine(scene, config, agents, sm)
+        # continue 续跑：注入历史 transcript，让角色知道之前说了什么
+        if scene.dialogue_log:
+            engine.inject_history(scene.dialogue_log)
+        _running_engines[scene_id] = engine
+
+        # 先把"运行中"落库：否则数据库里始终是 pending，刷新后的前端无从判断
+        # 这一场是不是还在跑，只能要么空等要么误触发第二次模拟（工单23）。
+        scene.status = SceneStatus.RUNNING.value
+        await repository.save_scene(scene)
+        await events.publish(scene_id, "status", {"status": "running"})
+
+        async def _on_turn(turn: DialogueTurn) -> None:
+            # 逐轮落盘：引擎已把本轮写进 scene.dialogue_log，这里持久化后
+            # 中途刷新/断线/进程退出都能从 GET /scenes/{id} 拿回已产生的轮次。
+            await repository.save_scene(scene)
+            await events.publish(scene_id, "turn", to_dict(turn))
+
         result = await engine.run(on_turn=_on_turn)
         # 持久化角色状态变更（情绪/目标/位置）
         await _persist_character_states(agents)
@@ -367,11 +370,12 @@ async def run_scene(scene_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("场景运行失败")
         # 失败也要落库：否则场景永远停在 running，前端既显示"模拟中"又收不到任何进展
-        try:
-            scene.status = SceneStatus.PAUSED.value
-            await repository.save_scene(scene)
-        except Exception:  # noqa: BLE001
-            logger.warning("场景失败状态落库失败：%s", scene_id, exc_info=True)
+        if scene is not None:
+            try:
+                scene.status = SceneStatus.PAUSED.value
+                await repository.save_scene(scene)
+            except Exception:  # noqa: BLE001
+                logger.warning("场景失败状态落库失败：%s", scene_id, exc_info=True)
         await events.publish(scene_id, "error", {"message": str(exc)})
         await events.publish(scene_id, "status", {"status": "paused", "reason": str(exc)})
     finally:

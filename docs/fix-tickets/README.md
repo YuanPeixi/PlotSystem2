@@ -90,6 +90,10 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 
 **留下的尾巴**：工单 03 的可选目标 6（创建场景时把 `scene_id` 写回 `Branch.scenes`）
 未做，该字段仍恒为空数组；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它。
+另外 PR #15 的 review 把 `fork_branch()` 里的 `restore_snapshot()` 拿掉了 —— 分叉本是
+"开一条新 IF 线"，不该当场把主线的图谱与 Chroma 长期记忆就地回滚掉（这两者按项目共享、
+不随分支隔离）。**因此分叉目前只登记来源快照**，新分支首场如何承接该快照、
+`fork_conditions` 如何生效，仍归工单 08。
 
 ---
 

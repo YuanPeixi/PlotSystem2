@@ -109,6 +109,13 @@ class SceneEngine:
         # turn_number 从历史轮次末尾续接（continue 时不从 0 开始）
         turn_number = len(turns)
         new_turns: list[DialogueTurn] = []  # 本次新增轮次（用于记忆固化）
+
+        # 崩溃/异常中断后的续跑：这段轮次已逐轮落盘，但固化只在场景正常结束时
+        # 发生，它们还没进过任何一层记忆。不补回去就是“对话还在，但角色忘了”。
+        for past in turns[self.scene.turns_consolidated :]:
+            await self._remember(past)
+            new_turns.append(past)
+
         terminated_reason = ""
         while True:
             stop, reason = check_termination(
@@ -126,13 +133,7 @@ class SceneEngine:
             turns.append(turn)
             new_turns.append(turn)
             transcript.append(self._turn_line(turn))
-
-            # 在场即记忆（工单15）：本场全部参演角色都感知到这一轮，而不只是发言者；
-            # 对非发言者剥离内心独白，避免私有内心泄露给旁观角色（契约1）。
-            for participant in self.agents:
-                await participant.memory.add_experience(
-                    turn, from_self=(participant.character_id == turn.character_id)
-                )
+            await self._remember(turn)
 
             # 先把进度写回 scene 再回调：编排层的 on_turn 会据此逐轮落盘，
             # 中途刷新/断线/进程退出时已产生的轮次才不会丢（工单23）。
@@ -150,6 +151,7 @@ class SceneEngine:
         # 角色+项目共享、不随分支回滚，重复只会累积不会自愈）。
         for agent in self.agents:
             await agent.update_state_after_scene(new_turns)
+        self.scene.turns_consolidated = len(turns)
 
         # 5. 模拟后快照（此时短期缓冲已清空，快照记录的是"已落库"的干净状态，
         # 供下一场 prime() 回填也不会重新引入已固化过的内容）
@@ -175,6 +177,17 @@ class SceneEngine:
             turns_completed=turn_number,
             terminated_reason=terminated_reason,
         )
+
+    # ---- 记忆写入 ----
+    async def _remember(self, turn: DialogueTurn) -> None:
+        """在场即记忆（工单15）：本场全部参演角色都感知这一轮，不只是发言者。
+
+        对非发言者剥离内心独白，避免私有内心泄露给旁观角色（契约1）。
+        """
+        for participant in self.agents:
+            await participant.memory.add_experience(
+                turn, from_self=(participant.character_id == turn.character_id)
+            )
 
     # ---- 发言者选择 ----
     async def _select_speaker(

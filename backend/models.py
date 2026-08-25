@@ -247,6 +247,9 @@ class Scene:
     # "运行时记忆（短期缓冲/事件摘要）应从哪个快照回填"。
     restore_snapshot_id: str = ""
     turns_completed: int = 0
+    # 已固化进长期记忆的轮次数（水位线）。固化只发生在场景正常结束时，
+    # 崩溃/异常中断后续跑要靠它区分“哪些已落盘的轮次还没进过记忆”。
+    turns_consolidated: int = 0
     speaker_mode: str = SpeakerMode.ROUND_ROBIN.value
     dialogue_log: list[DialogueTurn] = field(default_factory=list)
     created_at: datetime = field(default_factory=now)

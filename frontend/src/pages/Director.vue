@@ -27,6 +27,8 @@ const inspectingId = ref('')
 const scenes = ref<Scene[]>([])
 const forkingId = ref('')
 const forkName = ref('')
+// 首次加载期间不让 branchId 的 watcher 推翻刚从 URL 恢复出来的场景
+let bootstrapped = false
 
 const STATUS_LABEL: Record<string, string> = {
   pending: '未开始',
@@ -63,16 +65,31 @@ onMounted(async () => {
     const last = scenes.value[scenes.value.length - 1]
     if (last) await attach(last.scene_id)
   }
+  bootstrapped = true
 })
 
 onBeforeUnmount(() => sceneStore.stopStream())
 
-watch(branchId, () => {
-  void refreshBranchData()
+watch(branchId, async () => {
+  if (!bootstrapped) return
+  await refreshBranchData()
+  // 切分支必须连当前场景一起切，否则中间的日志与右侧的决策面板还停在上一条线上
+  const last = scenes.value[scenes.value.length - 1]
+  if (last) {
+    await attach(last.scene_id)
+  } else {
+    sceneStore.clearScene()
+    const q = { ...route.query }
+    delete q.scene
+    void router.replace({ query: q })
+  }
 })
 
 async function refreshBranchData() {
-  if (!branchId.value) return
+  if (!branchId.value) {
+    scenes.value = []
+    return
+  }
   const [list] = await Promise.all([
     api.listScenes(props.projectId, branchId.value),
     directorStore.loadSnapshots(props.projectId),
@@ -281,6 +298,9 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
               </div>
               <div v-if="forkingId === s.snapshot_id" class="fork-form">
                 <input v-model="forkName" placeholder="新分支名称，如：IF线·公主提前知情" />
+                <span class="dim" style="font-size: 12px">
+                  分叉只登记来源快照，不会改动当前项目的运行态；新分支首场承接该快照的能力见工单 08。
+                </span>
                 <div class="row" style="gap: 6px">
                   <button @click="confirmFork">创建分支</button>
                   <button class="ghost" @click="forkingId = ''">取消</button>

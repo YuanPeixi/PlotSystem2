@@ -40,18 +40,27 @@ export const useSceneStore = defineStore('scenes', () => {
     statusMsg.value = '准备中...'
 
     es?.close()
-    es = openSceneStream(sceneId)
-    es.addEventListener('turn', (e) => {
-      turns.value.push(JSON.parse((e as MessageEvent).data))
+    const source = openSceneStream(sceneId)
+    es = source
+    // 事件处理器一律先校验 source 仍是当前连接：快速切换场景时旧流的终态事件
+    // 会关掉新流，旧流的 turn 也会串到新场景的日志里。
+    const stale = () => es !== source
+    source.addEventListener('turn', (e) => {
+      if (stale()) return
+      const turn: DialogueTurn = JSON.parse((e as MessageEvent).data)
+      // 逐轮落盘先于 SSE 推送，铺底用的 GET 可能已经包含这一轮，按 turn_id 去重
+      if (turns.value.some((t) => t.turn_id === turn.turn_id)) return
+      turns.value.push(turn)
     })
-    es.addEventListener('status', (e) => {
+    source.addEventListener('status', (e) => {
+      if (stale()) return
       const d = JSON.parse((e as MessageEvent).data)
       if (TERMINAL.includes(d.status)) {
         // 后端在订阅建立时会回放一帧当前状态：若这一场早已结束（刷新重连、
         // 或“刚好在订阅前跑完”的竞态），这里直接收敛，不会一直挂在“模拟中”。
         statusMsg.value = d.status === 'completed' ? '场景完成' : '已中断（可重新开始）'
         running.value = false
-        es?.close()
+        source.close()
         // 以后端持久化的完整日志为准做一次对账：SSE 订阅建立之前
         // （如决策触发续跑后才连上流）产生的轮次不会被推送，这里补齐。
         void reconcileLog(sceneId)
@@ -61,10 +70,12 @@ export const useSceneStore = defineStore('scenes', () => {
         running.value = true
       }
     })
-    es.addEventListener('evaluation', (e) => {
+    source.addEventListener('evaluation', (e) => {
+      if (stale()) return
       evaluation.value = JSON.parse((e as MessageEvent).data)
     })
-    es.addEventListener('error', () => {
+    source.addEventListener('error', () => {
+      if (stale()) return
       statusMsg.value = '连接中断'
       running.value = false
     })
@@ -76,15 +87,15 @@ export const useSceneStore = defineStore('scenes', () => {
     return api.startScene(sceneId)
   }
 
-  /** 用后端持久化的 dialogue_log 覆盖本地日志，修补 SSE 期间可能遗漏的轮次。 */
+  /** 用后端持久化的 dialogue_log 覆盖本地日志，修补 SSE 期间可能遗漏或重复的轮次。 */
   async function reconcileLog(sceneId: string) {
     try {
       const scene = await api.getSceneById(sceneId)
       if (currentScene.value?.scene_id !== sceneId) return
       currentScene.value = scene
-      if ((scene.dialogue_log?.length ?? 0) >= turns.value.length) {
-        turns.value = scene.dialogue_log ?? []
-      }
+      // 终态时后端日志已经是完整的真相源，无条件以它为准（早先按数组长度
+      // 比较会在本地多出重复轮次时拒绝修正）。
+      turns.value = scene.dialogue_log ?? []
     } catch {
       // 对账失败不影响已展示的内容，保持现状即可
     }
@@ -115,6 +126,17 @@ export const useSceneStore = defineStore('scenes', () => {
   function stopStream() {
     es?.close()
     es = null
+  }
+
+  /** 清空当前场景（切换到没有场景的分支时用，避免日志/决策跨分支残留）。 */
+  function clearScene() {
+    stopStream()
+    currentScene.value = null
+    turns.value = []
+    evaluation.value = null
+    appliedDecision.value = null
+    running.value = false
+    statusMsg.value = ''
   }
 
   async function submitDecision(sceneId: string, payload: Record<string, unknown>) {
@@ -206,6 +228,7 @@ export const useSceneStore = defineStore('scenes', () => {
     resumeScene,
     pause,
     stopStream,
+    clearScene,
     submitDecision,
   }
 })
