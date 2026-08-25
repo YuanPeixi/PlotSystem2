@@ -206,6 +206,7 @@ def _deserialize_scene(data: dict) -> Scene:
         snapshot_id_after=data.get("snapshot_id_after"),
         restore_snapshot_id=data.get("restore_snapshot_id", ""),
         turns_completed=data.get("turns_completed", 0),
+        turns_consolidated=data.get("turns_consolidated", 0),
         speaker_mode=data.get("speaker_mode", SpeakerMode.ROUND_ROBIN.value),
         dialogue_log=log,
     )

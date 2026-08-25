@@ -10,6 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from backend.api.schemas import ApiResponse, CreateSceneRequest, PlanSceneRequest
 from backend.config import settings
+from backend.exceptions import SceneNotFoundError
 from backend.models import Scene, SceneStatus, new_id
 from backend.services import events, orchestrator, repository
 from backend.utils.serializer import to_dict
@@ -29,6 +30,14 @@ def _scene_response(scene: Scene) -> dict:
     if orchestrator.is_scene_active(scene.scene_id):
         data["status"] = SceneStatus.RUNNING.value
     return data
+
+
+async def _get_project_scene(project_id: str, scene_id: str) -> Scene:
+    """取场景并校验它确实属于路径里的项目（否则跨项目 ID 也能读到）。"""
+    scene = await repository.get_scene(scene_id)
+    if scene.project_id != project_id:
+        raise SceneNotFoundError(f"场景 {scene_id} 不属于项目 {project_id}")
+    return scene
 
 
 @project_router.post("/plan")
@@ -70,7 +79,7 @@ async def list_scenes(project_id: str, branch_id: str | None = None) -> ApiRespo
 
 @project_router.get("/{scene_id}")
 async def get_scene(project_id: str, scene_id: str) -> ApiResponse:
-    scene = await repository.get_scene(scene_id)
+    scene = await _get_project_scene(project_id, scene_id)
     return ApiResponse.ok(_scene_response(scene))
 
 
@@ -114,13 +123,14 @@ async def scene_log(scene_id: str) -> ApiResponse:
 @scene_router.get("/{scene_id}/stream")
 async def scene_stream(scene_id: str) -> EventSourceResponse:
     """SSE 实时流。事件类型：turn / status / snapshot / evaluation / error。"""
+    # 场景不存在要在建流之前报错：响应头一旦发出就没法再返回 404 了
+    scene = await repository.get_scene(scene_id)
 
     async def event_gen():
         q = events.subscribe(scene_id)
         try:
             # 首帧回放当前状态：重连的客户端（以及"刚好在订阅前跑完"的竞态）
             # 据此立刻知道该继续等还是该去拉完整日志，而不是干等 ping。
-            scene = await repository.get_scene(scene_id)
             initial = (
                 SceneStatus.RUNNING.value
                 if orchestrator.is_scene_active(scene_id)
@@ -130,6 +140,9 @@ async def scene_stream(scene_id: str) -> EventSourceResponse:
                 "event": "status",
                 "data": json.dumps({"status": initial, "initial": True}, ensure_ascii=False),
             }
+            # 已经是终态就没什么可等了，直接收流，不要留一个只会 ping 的连接
+            if initial in (SceneStatus.COMPLETED.value, SceneStatus.PAUSED.value):
+                return
             while True:
                 try:
                     item = await asyncio.wait_for(q.get(), timeout=30.0)

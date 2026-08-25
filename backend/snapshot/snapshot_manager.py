@@ -194,13 +194,19 @@ class SnapshotManager:
         import shutil
 
         snap_dir = _snapshots_dir(self.project_id) / snapshot_id
-        if snap_dir.exists():
-            shutil.rmtree(snap_dir)
         async with db.connect() as conn:
-            await conn.execute(
-                "DELETE FROM snapshots WHERE snapshot_id = ?", (snapshot_id,)
+            # 必须同时约束 project_id：文件删除本就按项目目录走，只按 snapshot_id 删索引
+            # 会让传错 project_id 的请求抹掉别的项目的记录并留下孤儿文件。
+            cur = await conn.execute(
+                "DELETE FROM snapshots WHERE snapshot_id = ? AND project_id = ?",
+                (snapshot_id, self.project_id),
             )
             await conn.commit()
+            indexed = cur.rowcount > 0
+        if not indexed and not snap_dir.exists():
+            raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
+        if snap_dir.exists():
+            shutil.rmtree(snap_dir)
 
     # ---- 分支 ----
     async def fork_branch(
@@ -213,8 +219,9 @@ class SnapshotManager:
         snap = await self.get_snapshot(from_snapshot_id)
         if snap is None:
             raise SnapshotNotFoundError(f"快照不存在: {from_snapshot_id}")
-        # 恢复状态（应用初始条件覆盖在使用时进行）
-        await self.restore_snapshot(from_snapshot_id)
+        # 只登记来源快照，**不**在这里 restore：恢复会就地覆盖整个项目的图谱与
+        # Chroma 长期记忆（两者按项目共享、不随分支隔离），“开一条新 IF 线”不应该当场
+        # 把主线的运行态回滚掉。分支首场如何承接该快照归工单 08。
 
         branch = Branch(
             branch_id=new_id(),

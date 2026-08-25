@@ -821,3 +821,49 @@ async def test_reconcile_stale_scenes_marks_running_as_paused():
     assert (await repository.get_scene(stale.scene_id)).status == "paused"
     assert (await repository.get_scene(done.scene_id)).status == "completed"
 
+
+@pytest.mark.asyncio
+async def test_run_scene_releases_lock_when_setup_fails(monkeypatch):
+    """初始化阶段抛异常也必须释放运行锁，否则该场景到进程重启前都启动不了。"""
+    project_id = "proj-setup-fail"
+    await repository.save_project(Project(project_id=project_id, name="初始化失败测试"))
+    scene = Scene(
+        scene_id="scene-setup-fail",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="初始化失败场景",
+    )
+    await repository.save_scene(scene)
+
+    async def boom_build_agents(pid, cids, states=None):
+        raise RuntimeError("向量库连不上")
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", boom_build_agents)
+
+    await orchestrator.run_scene(scene.scene_id)
+
+    assert orchestrator.is_scene_active(scene.scene_id) is False
+    assert (await repository.get_scene(scene.scene_id)).status == "paused"
+
+
+@pytest.mark.asyncio
+async def test_delete_snapshot_is_scoped_to_project():
+    """删除快照必须同时约束 project_id，否则传错项目会删掉别人的索引。"""
+    from backend.exceptions import SnapshotNotFoundError
+
+    owner_id = "proj-snap-owner"
+    other_id = "proj-snap-other"
+    await repository.save_project(Project(project_id=owner_id, name="快照归属测试"))
+    await repository.save_project(Project(project_id=other_id, name="另一个项目"))
+
+    sm = SnapshotManager(owner_id)
+    snap = await sm.create_snapshot("scene-x", "branch-x", {}, label="before")
+
+    with pytest.raises(SnapshotNotFoundError):
+        await SnapshotManager(other_id).delete_snapshot(snap.snapshot_id)
+    # 用错项目删除后，原项目的快照必须仍然存在
+    assert await sm.get_snapshot(snap.snapshot_id) is not None
+
+    await sm.delete_snapshot(snap.snapshot_id)
+    assert await sm.get_snapshot(snap.snapshot_id) is None
+
