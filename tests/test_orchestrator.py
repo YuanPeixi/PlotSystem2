@@ -22,6 +22,7 @@ from backend.exceptions import ConflictError
 from backend.models import (
     CharacterCard,
     CharacterState,
+    DialogueTurn,
     DirectorDecision,
     Project,
     RelationshipState,
@@ -688,3 +689,135 @@ async def test_memory_snapshot_keeps_short_term_buffer():
 
     snap = await mem.snapshot()
     assert snap.short_term_buffer == ["甲: 第一句", "甲: 第二句"]
+
+
+@pytest.mark.asyncio
+async def test_run_scene_persists_each_turn(monkeypatch):
+    """工单23：轮次必须逐轮落盘，中途刷新/断线才能从场景详情拿回已产生的对话。"""
+    project_id = "proj-incremental-test"
+    await repository.save_project(Project(project_id=project_id, name="逐轮落盘测试"))
+    scene = Scene(
+        scene_id="scene-incremental-test",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="逐轮落盘场景",
+        max_turns=2,
+    )
+    await repository.save_scene(scene)
+
+    # 引擎跑到一半时数据库里应该已经能看到"运行中 + 第一轮"
+    mid_state: dict = {}
+
+    class FakeEngine:
+        def __init__(self, scene_obj, *args, **kwargs):
+            self.scene = scene_obj
+
+        def inject_history(self, *args, **kwargs):
+            pass
+
+        async def run(self, on_turn=None):
+            turn = DialogueTurn(
+                scene_id=self.scene.scene_id,
+                turn_number=1,
+                character_name="甲",
+                dialogue="第一句",
+            )
+            self.scene.dialogue_log = [turn]
+            self.scene.turns_completed = 1
+            if on_turn:
+                await on_turn(turn)
+            stored = await repository.get_scene(self.scene.scene_id)
+            mid_state["status"] = stored.status
+            mid_state["turns"] = len(stored.dialogue_log)
+            self.scene.status = "completed"
+            return SceneResult(
+                scene_id=self.scene.scene_id,
+                dialogue_log=[turn],
+                snapshot_id_before="",
+                snapshot_id_after="snap-fake",
+                turns_completed=1,
+                terminated_reason="max_turns",
+            )
+
+    class FakeDirector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def evaluate_scene(self, *args, **kwargs):
+            return SceneEvaluation(scene_id=scene.scene_id)
+
+    async def fake_build_agents(pid, cids, states=None):
+        return []
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
+    monkeypatch.setattr(orchestrator, "SceneEngine", FakeEngine)
+    monkeypatch.setattr(orchestrator, "DirectorAgent", FakeDirector)
+
+    await orchestrator.run_scene(scene.scene_id)
+
+    assert mid_state == {"status": "running", "turns": 1}
+
+
+@pytest.mark.asyncio
+async def test_run_scene_failure_marks_scene_paused(monkeypatch):
+    """运行失败必须落库，否则场景永远停在 running，前端既等不到也重启不了。"""
+    project_id = "proj-failure-test"
+    await repository.save_project(Project(project_id=project_id, name="失败落库测试"))
+    scene = Scene(
+        scene_id="scene-failure-test",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="失败场景",
+    )
+    await repository.save_scene(scene)
+
+    class BoomEngine:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def inject_history(self, *args, **kwargs):
+            pass
+
+        async def run(self, on_turn=None):
+            raise RuntimeError("LLM 挂了")
+
+    async def fake_build_agents(pid, cids, states=None):
+        return []
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
+    monkeypatch.setattr(orchestrator, "SceneEngine", BoomEngine)
+
+    await orchestrator.run_scene(scene.scene_id)
+
+    stored = await repository.get_scene(scene.scene_id)
+    assert stored.status == "paused"
+    assert orchestrator.is_scene_active(scene.scene_id) is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_scenes_marks_running_as_paused():
+    """服务重启后遗留的 running 场景应被对账为 paused，否则前端永远显示模拟中。"""
+    project_id = "proj-reconcile-test"
+    await repository.save_project(Project(project_id=project_id, name="对账测试"))
+    stale = Scene(
+        scene_id="scene-stale-test",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="遗留运行场景",
+        status="running",
+    )
+    done = Scene(
+        scene_id="scene-done-test",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="已完成场景",
+        status="completed",
+    )
+    await repository.save_scene(stale)
+    await repository.save_scene(done)
+
+    await orchestrator.reconcile_stale_scenes()
+
+    assert (await repository.get_scene(stale.scene_id)).status == "paused"
+    assert (await repository.get_scene(done.scene_id)).status == "completed"
+

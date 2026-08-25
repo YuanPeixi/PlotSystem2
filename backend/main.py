@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     # 清理上次异常退出遗留的"进行中"构建状态，避免前端误判为仍在构建而卡死轮询
     await orchestrator.reconcile_stale_builds()
+    # 同理清理遗留的 running 场景：后台任务随进程退出而消失，状态却留在库里
+    await orchestrator.reconcile_stale_scenes()
     logger.info("PlotSystem 后端启动，数据目录：%s", settings.data_path)
     yield
     logger.info("PlotSystem 后端关闭")
