@@ -132,6 +132,25 @@ async def reconcile_stale_builds() -> None:
             )
 
 
+async def reconcile_stale_scenes() -> None:
+    """服务启动时对账：把上次进程遗留的 running 场景改为 paused。
+
+    场景由后台任务驱动，进程一退出任务就没了，但数据库里的 running 状态还在
+    （【契约9】单进程假设下，启动瞬间不可能有任何场景真的在跑）。不做对账的话
+    前端会永远显示"模拟中"且无法再次启动。这里只改状态、不自动重跑 LLM，
+    已产生的轮次都已逐轮落盘，用户可以显式续跑。
+    """
+    stale = await repository.list_scenes_by_status(SceneStatus.RUNNING.value)
+    for scene in stale:
+        scene.status = SceneStatus.PAUSED.value
+        await repository.save_scene(scene)
+        logger.warning(
+            "场景 %s 上次运行被服务重启中断，已标记为暂停（已完成 %d 轮）",
+            scene.scene_id,
+            scene.turns_completed,
+        )
+
+
 async def run_graphrag(project_id: str) -> None:
     """后台任务：运行 GraphRAG 管线并持久化结果。"""
     project = await repository.get_project(project_id)
@@ -316,9 +335,16 @@ async def run_scene(scene_id: str) -> None:
         engine.inject_history(scene.dialogue_log)
     _running_engines[scene_id] = engine
 
+    # 先把"运行中"落库：否则数据库里始终是 pending，刷新后的前端无从判断
+    # 这一场是不是还在跑，只能要么空等要么误触发第二次模拟（工单23）。
+    scene.status = SceneStatus.RUNNING.value
+    await repository.save_scene(scene)
     await events.publish(scene_id, "status", {"status": "running"})
 
     async def _on_turn(turn: DialogueTurn) -> None:
+        # 逐轮落盘：引擎已把本轮写进 scene.dialogue_log，这里持久化后
+        # 中途刷新/断线/进程退出都能从 GET /scenes/{id} 拿回已产生的轮次。
+        await repository.save_scene(scene)
         await events.publish(scene_id, "turn", to_dict(turn))
 
     try:
@@ -340,7 +366,14 @@ async def run_scene(scene_id: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("场景运行失败")
+        # 失败也要落库：否则场景永远停在 running，前端既显示"模拟中"又收不到任何进展
+        try:
+            scene.status = SceneStatus.PAUSED.value
+            await repository.save_scene(scene)
+        except Exception:  # noqa: BLE001
+            logger.warning("场景失败状态落库失败：%s", scene_id, exc_info=True)
         await events.publish(scene_id, "error", {"message": str(exc)})
+        await events.publish(scene_id, "status", {"status": "paused", "reason": str(exc)})
     finally:
         _running_engines.pop(scene_id, None)
         _active_scenes.discard(scene_id)

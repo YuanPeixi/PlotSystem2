@@ -255,6 +255,16 @@ async def list_scenes(project_id: str, branch_id: str | None = None) -> list[Sce
     return [_deserialize_scene(json.loads(r[0])) for r in rows]
 
 
+async def list_scenes_by_status(status: str) -> list[Scene]:
+    """按状态列跨项目查询场景（服务启动时对账遗留的 running 场景用）。"""
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "SELECT data_json FROM scenes WHERE status = ?", (status,)
+        )
+        rows = await cur.fetchall()
+    return [_deserialize_scene(json.loads(r[0])) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------

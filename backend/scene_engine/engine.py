@@ -134,6 +134,10 @@ class SceneEngine:
                     turn, from_self=(participant.character_id == turn.character_id)
                 )
 
+            # 先把进度写回 scene 再回调：编排层的 on_turn 会据此逐轮落盘，
+            # 中途刷新/断线/进程退出时已产生的轮次才不会丢（工单23）。
+            self.scene.dialogue_log = list(turns)
+            self.scene.turns_completed = turn_number
             if on_turn:
                 await on_turn(turn)
 
