@@ -56,9 +56,10 @@ main 上此时还没有对应提交，填了也是错的，这个粒度已经足
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
 | [11](./11-selector-and-world-interaction.md) | **（已瘦身）** 打通 Selector 发言模式 | **P1** | 无 | **✅ PR #10（合入 main：`56c97c1`到`c95f2c9`）** |
-| 16 | **【新】** 修复 Kuzu 快照持久化（单文件 vs `copytree`） | **P1** | 无 | 待建单 |
-| [03](./03-branch-switch-frontend.md) | 前端分支切换无联动 | P1 | 无 | 待处理 |
-| 19 | **【新】** 前端消费 `GET /scenes/{id}/decision` | P2 | 13 ✅ | 待建单 |
+| 16 | **【新】** 修复 Kuzu 快照持久化（单文件 vs `copytree`） | **P1** | 无 | 🔍 审核中（PR #15） |
+| [23](./23-running-scene-recovery.md) | **【新】** 运行中场景持久化与断线恢复 | **P1** | 10 ✅、13 ✅、14 ✅ | 🔍 审核中（PR #15） |
+| [03](./03-branch-switch-frontend.md) | 前端分支切换无联动 | P1 | 无 | 🔍 审核中（PR #15）——可选项 2.5 `Branch.scenes` 回写未做 |
+| 19 | **【新】** 前端消费 `GET /scenes/{id}/decision` | P2 | 13 ✅ | 🔍 审核中（PR #15） |
 
 **工单 11 的拆分**：原 11 同时包含「Selector 发言模式」与「动作/环境交互裁决」，二者体量与风险完全不同。
 现拆为：**11 = Selector 打通（纯修复，已完成）**，**20 = 环境智能体（大提案，见阶段 D）**。
@@ -80,11 +81,21 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 未做（有意留下）：让角色先生成一句草稿再竞价——需要 N 次角色模型调用/轮，
 成本约等于场景本身翻 N 倍，收益不确定，待 selector 跑出实测数据后再评估。
 
+**23 / 03 / 19 / 16 为什么合在一个 PR（#15）**：四者是同一个用户可见故障的不同切面
+——“刷新一下推演数据就没了、快照功能几乎没用”。拆开后任一个单独合入都不能
+让该场景可用：23 让后端真的有东西可恢复（逐轮落盘 + 状态对账），03 让前端能找到
+并重连那些场景，19 让刷新后的决策状态不会退化成重复提交（16 则是快照面板上线后
+立刻暴露的真实缺陷）。审核时建议按“后端可恢复性 → API 新增/语义变化 → 前端重连与
+快照面板”三段看。
+
+**留下的尾巴**：工单 03 的可选目标 6（创建场景时把 `scene_id` 写回 `Branch.scenes`）
+未做，该字段仍恒为空数组；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它。
+
 ---
 
-## ⚠️ 2. 必须先看：动态图谱目前**没有持久化**
+## ⚠️ 2. 已修复：动态图谱的快照持久化（工单 16）
 
-这是排期里最容易被漏掉的坑，直接决定工单 06 能不能做：
+这曾是排期里最容易被漏掉的坑，直接决定工单 06 能不能做：
 
 - `GraphManager.checkpoint_to()` 用 `shutil.copytree()` 复制 `kuzu_db`，
   但当前 Kuzu 版本下 `kuzu_db` 是**单个文件**（实测 19–21 MB），不是目录 → 必抛 `NotADirectoryError`；
@@ -92,15 +103,13 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 - 结果：`Snapshot.graph_checkpoint` 恒为空字符串，`restore_snapshot` 因找不到 checkpoint 而跳过，
   **快照从不包含知识图谱，回滚也不恢复图谱**。
 
-**当前为什么不是 P0**：图谱只在 GraphRAG 构建阶段写入一次，之后全程只读。
-既然内容不变，"回滚不恢复图谱"与"恢复了图谱"在效果上等价，因此现在**无实际影响**。
+**为什么当时不是 P0**：图谱只在 GraphRAG 构建阶段写入一次，之后全程只读。
+既然内容不变，"回滚不恢复图谱"与"恢复了图谱"在效果上等价，因此当时**无实际影响**。
 
-**什么时候变成真 bug**：工单 06（场景结束后动态回写图谱）一旦落地，图谱就成为随场次演进的可变状态，
-届时"快照不含图谱"= **回滚丢数据**、分支之间图谱互相污染。
-
-**结论**：工单 16 是工单 06 的**硬前置**，不是独立 P0。修法两步：
-1. `checkpoint_to` / `restore_from` 按 `Path.is_dir()` 分支选择 `copytree` / `copy2`；
-2. 把 `create_snapshot` 里吞异常的 `logger.debug` 提升为 `logger.warning` —— 这个 bug 正是被日志级别藏起来的。
+**修复状态（PR #15）**：`checkpoint_to` / `restore_from` 已按 `Path.is_dir()` 分支选择
+`copytree` / `copy2`（新增模块级 `_remove_path` 处理删除），`create_snapshot` /
+`restore_snapshot` 两处吞异常的 `logger.debug` 已提升为 `logger.warning` ——
+这个 bug 正是被日志级别藏起来的。工单 06（动态图谱写回）的硬前置已解除。
 
 ---
 
@@ -112,7 +121,7 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 | [04](./04-director-context.md) | 补全导演评估上下文 + `query_character_state` 落地 | P1 | 17 ✅ | 待处理（`query_character_state` 已随 17 落地，本单只剩评估上下文） |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整的展示） |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 |
-| [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | **16（硬前置）** | 待处理 |
+| [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16（硬前置，已随 PR #15 修复） | 待处理 |
 | [08](./08-fork-branch-conditions.md) | `fork_branch` / `new_initial_conditions` 真正生效 | P2 | 01 ✅ | 待处理 |
 
 **为什么把 17 提到 04/05 之前**：用户面板、导演评估、最终总结智能体这三方要看的其实是同一份东西
@@ -175,7 +184,8 @@ graph LR
   T14[14 记忆续跑 ✅已合并] --> T15[15 在场感知记忆 ✅已实现待合并]
   T14 --> T17[17 Inspection 地基]
   T15 --> T09[09 记忆检索质量]
-  T16[16 Kuzu 快照修复] --> T06[06 动态图谱写回]
+  T16[16 Kuzu 快照修复 🔍PR #15] --> T06[06 动态图谱写回]
+  T23[23 运行中场景恢复 🔍PR #15] --> T03[03 分支切换联动 🔍PR #15]
   T17 --> T04[04 导演上下文]
   T17 --> T05[05 角色 Inspect 前端]
   T17 --> T18[18 分镜稿]
