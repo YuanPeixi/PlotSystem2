@@ -252,6 +252,9 @@ frontend/src/
    不要用空字符串/空列表当默认值。
 7. **四维评分语义**：`narrative_goal` / `dramatic_tension` / `character_consistency` 越高越好；
    `plot_deviation` **越低越好**（0 = 完全贴合主线）。
+8. **`SceneStatus.PAUSED` = “跑一半断了”**：运行异常、服务重启对账（见 6.4）都会落到这个状态。
+   它不可提交决策（CAS 只接 completed），但可以再次 `POST /scenes/{id}/start` 续跑
+   （`snapshot_id_before` 已存在→不重打快照，`dialogue_log` 已逐轮落盘→注入历史续接）。
 
 ---
 
@@ -358,6 +361,12 @@ graph TD
 
 6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库 → 推 evaluation 与 completed。
 
+**运行中的可恢复性（工单23）**：开跑前先把 `status=running` 落库；引擎每产生一轮就先把
+`dialogue_log` / `turns_completed` 写回 `scene` 对象，再回调 `on_turn`，由 orchestrator **逐轮
+`save_scene`** 后才推 SSE。因此中途刷新/断线/进程退出都能从 `GET /scenes/{id}` 拿回已产生的
+轮次；运行失败时将场景置为 `paused` 并落库（否则永远卡在 running）。
+**不要为了“减少写入”把逐轮落盘改回结束时一次性保存。**
+
 **注意**：`SceneEngine` 不碰 SQLite，它把结果写回传入的 `Scene` 对象，由 orchestrator 负责落盘。
 
 ### 6.3 决策（`apply_decision`）
@@ -372,10 +381,15 @@ graph TD
   → 新建"（回滚重演）"场景，`snapshot_id_before=""`、`restore_snapshot_id=target`
   → 写 decisions 表。目标快照缺失时**不持久化决策**，允许用户补 ID 重试。
 
-### 6.4 启动对账（`reconcile_stale_builds`）
+### 6.4 启动对账
 
-`main.py` 的 lifespan 中调用：扫描所有 `build_status.json`，把进度在 (0,1) 且既非完成
-也非失败的状态标记为失败，避免前端无限轮询卡死。
+`main.py` 的 lifespan 中调用两个对账函数：
+
+- `reconcile_stale_builds()`：扫描所有 `build_status.json`，把进度在 (0,1) 且既非完成
+  也非失败的状态标记为失败，避免前端无限轮询卡死；
+- `reconcile_stale_scenes()`：把数据库里残留的 `running` 场景改为 `paused`。场景由后台
+  任务驱动，进程一退出任务就没了（【契约9】单进程假设下，启动瞬间不可能有场景真在跑）。
+  **只改状态，不自动重跑 LLM**——已产生的轮次都已逐轮落盘，由用户显式决定是否续跑。
 
 ### 6.5 Inspection（角色内部状态查询）
 
@@ -510,22 +524,26 @@ graph TD
 | GET | `/projects/{project_id}/characters/{char_id}/inspect` | 角色内部视图（人设 + 时点状态 + 三层记忆） |
 | POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**） |
 | POST | `/projects/{project_id}/scenes` | 创建场景 |
+| GET | `/projects/{project_id}/scenes` | 列出场景（`?branch_id=` 可选），前端刷新后恢复导航用 |
 | GET | `/projects/{project_id}/scenes/{scene_id}` | 场景详情 |
 | GET | `/scenes/{scene_id}` | 场景详情（无需 project_id） |
-| POST | `/scenes/{scene_id}/start` | 开始模拟（后台任务） |
+| POST | `/scenes/{scene_id}/start` | 开始模拟（后台任务）。已在跑→`already_running`；已完成→`already_completed`（不重跑） |
 | POST | `/scenes/{scene_id}/pause` | 中断运行中的引擎 |
 | GET | `/scenes/{scene_id}/log` | 完整对话日志 |
 | GET | `/scenes/{scene_id}/stream` | **SSE** 实时流 |
 | GET | `/scenes/{scene_id}/evaluation` | 导演评估 |
 | GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
 | GET | `/projects/{project_id}/branches` | 分支树 |
-| GET | `/projects/{project_id}/snapshots` | 快照列表 |
+| GET | `/projects/{project_id}/snapshots` | 快照列表（只返回元信息，不带角色状态明细） |
 | POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**） |
 | DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**） |
 | POST | `/projects/{project_id}/output` | 生成输出 |
 | GET | `/output/{output_id}` | 取回生成结果 |
 
 **SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`error`。
+订阅建立时后端会**先回放一帧 `status`**（带 `initial: true`）告知当前状态，
+让重连的客户端（以及“刚好在订阅前跑完”的竞态）不会挂死在“模拟中”；
+`completed` / `paused` 两个终态会结束流。
 
 ---
 
@@ -534,7 +552,7 @@ graph TD
 | 页面 | 路由 | 功能 |
 |------|------|------|
 | `Workspace.vue` | `/` | 项目管理、种子上传、构建进度轮询、G6 图谱 |
-| `Director.vue` | `/director/:projectId` | 分支树、场景配置、SSE 实时日志、决策面板 |
+| `Director.vue` | `/director/:projectId` | 分支树、本分支场景列表、场景配置、SSE 实时日志、决策面板、快照面板 |
 | `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 预览导出 |
 
 要点：
@@ -542,6 +560,11 @@ graph TD
 - **SSE 双保险**：`joinScene` 先用已持久化的 `dialogue_log` 铺底，
   `startSimulation({keepLog})` 保留续跑日志，场景完成后 `reconcileLog()` 补齐
   SSE 建立前遗漏的轮次。改动实时日志逻辑时别破坏这个对账。
+- **`attachScene` 与 `joinScene` 不可混用**：前者用于“打开/重连已存在的场景”（刷新恢复、
+  点选历史场景），**绝不调 `/start`**；后者用于决策产生的新场景/续跑，会调 `/start`。
+  对已完成场景误调 `/start` 会白烧一整场 LLM 并覆盖快照/评估（后端已加拦截，但前端不该依赖它）。
+- **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
+  否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
 - `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。
 - `SceneTree.vue` 是纯 `h()` 渲染的嵌套列表（**不是 G6**），节点是 **Branch** 不是 Scene，
   仅 emit 选中的 `branch_id`。
@@ -611,8 +634,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 
 | 缺陷 | 现象 | 备注 |
 |------|------|------|
-| **图谱快照失效** | `GraphManager.checkpoint_to()` 用 `copytree` 复制 `kuzu_db`，但当前 Kuzu 版本下它是**单个文件** → 抛 `NotADirectoryError`，被 `create_snapshot` 的 `except → logger.debug` 静默吞掉。结果：`Snapshot.graph_checkpoint` 恒为空，回滚不恢复图谱 | **当前无实际影响**：图谱只在构建时写一次，之后只读，回滚不恢复也等价。等工单 `06-dynamic-graph-writeback.md`（动态图谱写回）落地时会变成真数据丢失，**应作为该工单的前置任务**，不是独立 P0。修法：按 `Path.is_dir()` 分支选 `copytree`/`copy2`，并把吞异常的日志提到 `warning` |
-| **前端未消费 `GET /decision`** | 后端幂等查询接口已实现但无调用方，超时/409 后的状态恢复能力为空 | — |
+| —— | 暂无 | 图谱快照 `copytree` 与前端未消费 `GET /decision` 两项已修复 |
 
 ### 12.2 Dead code（存在但零调用）
 
@@ -690,4 +712,14 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      由空壳落地到该层；orchestrator._load_inherited_states 改为薄封装。
      对应删除 12.1 的 memory 恒空条目、12.2 的 query_character_state、
      13 的「统一 Inspection API 层」设想；新增 6.5 节。
+-->
+<!-- 2026-08-25: 运行中场景可恢复 + 快照可用化。
+     后端：engine 每轮先写回 scene 再回调 → orchestrator 逐轮 save_scene；
+     开跑即落库 running、失败落库 paused；新增 reconcile_stale_scenes（lifespan 调用）；
+     新增 GET /projects/{id}/scenes；start 拒绝已完成场景；SSE 订阅首帧回放状态；
+     快照列表瘦身为元信息；修复 GraphManager.checkpoint_to/restore_from 对单文件
+     kuzu_db 必炸的问题（12.1 原第一条）。
+     前端：scenes store 拆出 attachScene（只重连不 start）/resumeScene，消费
+     GET /decision；Director.vue 增加本分支场景列表、快照面板（分叉/删除）、
+     ?scene= 刷新恢复；DirectorPanel 支持选择回滚目标快照并在已决策时锁定按钮。
 -->

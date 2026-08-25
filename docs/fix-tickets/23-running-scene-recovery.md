@@ -2,7 +2,8 @@
 
 **优先级**：P1  
 **依赖**：10、13、14 已完成  
-**建议模型**：Claude Opus 5
+**建议模型**：Claude Opus 5  
+**状态**：🔍 审核中（PR #15，分支 `fix/scene-recovery-and-snapshots`）
 
 ## 1. 问题
 
