@@ -30,6 +30,14 @@ except Exception:  # noqa: BLE001
     _KUZU_AVAILABLE = False
 
 
+def _remove_path(path: Path) -> None:
+    """删除文件或目录（kuzu_db 在不同版本下形态不同）。"""
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
 class GraphManager:
     """每个项目持有一个 GraphManager，对应一个 Kuzu 数据库目录。"""
 
@@ -257,19 +265,26 @@ class GraphManager:
 
     # ---- 快照支持 ----
     def checkpoint_to(self, dest_dir: Path) -> str:
-        """将整个 Kuzu 数据库目录复制到 dest_dir（用于快照）。返回目标路径。"""
+        """将 Kuzu 数据库复制到 dest_dir（用于快照）。返回目标路径。"""
         dest_dir = Path(dest_dir)
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
+        _remove_path(dest_dir)
         if self.db_dir.exists():
-            shutil.copytree(self.db_dir, dest_dir)
+            # 当前 Kuzu 版本下 db_dir 是单个文件而非目录，两种形态都要能复制
+            if self.db_dir.is_dir():
+                shutil.copytree(self.db_dir, dest_dir)
+            else:
+                dest_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.db_dir, dest_dir)
         return str(dest_dir)
 
     def restore_from(self, src_dir: Path) -> None:
-        """从快照目录恢复 Kuzu 数据库（覆盖当前）。需先 close。"""
+        """从快照恢复 Kuzu 数据库（覆盖当前）。需先 close。"""
         src_dir = Path(src_dir)
         if not src_dir.exists():
-            raise PlotSystemError(f"快照图谱目录不存在: {src_dir}")
-        if self.db_dir.exists():
-            shutil.rmtree(self.db_dir)
-        shutil.copytree(src_dir, self.db_dir)
+            raise PlotSystemError(f"快照图谱不存在: {src_dir}")
+        _remove_path(self.db_dir)
+        if src_dir.is_dir():
+            shutil.copytree(src_dir, self.db_dir)
+        else:
+            self.db_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_dir, self.db_dir)

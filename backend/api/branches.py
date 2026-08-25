@@ -33,8 +33,22 @@ async def get_branches(project_id: str) -> ApiResponse:
 
 @project_router.get("/snapshots")
 async def list_snapshots(project_id: str) -> ApiResponse:
+    """列出快照元信息（不含角色状态明细，避免列表接口返回整份快照数据）。"""
     sm = SnapshotManager(project_id)
-    return ApiResponse.ok(await sm.list_snapshots())
+    snaps = await sm.list_snapshots()
+    return ApiResponse.ok(
+        [
+            {
+                "snapshot_id": s.get("snapshot_id", ""),
+                "scene_id": s.get("scene_id", ""),
+                "branch_id": s.get("branch_id", ""),
+                "label": s.get("label", ""),
+                "created_at": s.get("created_at", ""),
+                "character_count": len(s.get("character_states") or {}),
+            }
+            for s in snaps
+        ]
+    )
 
 
 @snapshot_router.post("/{snapshot_id}/fork")

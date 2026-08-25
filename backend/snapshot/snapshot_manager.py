@@ -88,7 +88,8 @@ class SnapshotManager:
             graph_ckpt = graph.checkpoint_to(snap_dir / "kuzu_checkpoint")
             snap.graph_checkpoint = graph_ckpt
         except Exception as exc:  # noqa: BLE001
-            logger.debug("图谱快照跳过：%s", exc)
+            # 不能降级为 debug：图谱进不了快照意味着回滚时图谱不会被恢复
+            logger.warning("图谱快照失败，本次快照不含知识图谱：%s", exc)
 
         # ChromaDB 集合
         chroma_src = settings.project_dir(self.project_id) / "chroma_db"
@@ -138,7 +139,7 @@ class SnapshotManager:
             try:
                 graph.restore_from(kuzu_ckpt)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("图谱恢复跳过：%s", exc)
+                logger.warning("图谱恢复失败，图谱保持当前状态：%s", exc)
 
         # 恢复 ChromaDB
         chroma_ckpt = snap_dir / "chroma_collections"
