@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { BranchTree } from '@/types'
 
-defineProps<{ tree: BranchTree }>()
+defineProps<{ tree: BranchTree; selectedBranchId?: string }>()
 defineEmits<{ (e: 'select', branchId: string): void }>()
 </script>
 
@@ -10,7 +10,11 @@ defineEmits<{ (e: 'select', branchId: string): void }>()
     <div v-if="!tree.roots.length" class="dim" style="padding: 20px">暂无分支。构建项目后将自动创建主线。</div>
     <ul v-else class="tree-root">
       <li v-for="node in tree.roots" :key="node.branch.branch_id">
-        <BranchNode :node="node" @select="$emit('select', $event)" />
+        <BranchNode
+          :node="node"
+          :selected-branch-id="selectedBranchId"
+          @select="$emit('select', $event)"
+        />
       </li>
     </ul>
   </div>
@@ -22,7 +26,10 @@ import type { BranchTreeNode } from '@/types'
 
 const BranchNode = defineComponent({
   name: 'BranchNode',
-  props: { node: { type: Object as () => BranchTreeNode, required: true } },
+  props: {
+    node: { type: Object as () => BranchTreeNode, required: true },
+    selectedBranchId: { type: String, default: '' },
+  },
   emits: ['select'],
   setup(props, { emit }) {
     const render = (node: BranchTreeNode): any =>
@@ -30,7 +37,10 @@ const BranchNode = defineComponent({
         h(
           'div',
           {
-            class: 'branch-pill',
+            class: [
+              'branch-pill',
+              node.branch.branch_id === props.selectedBranchId ? 'active' : '',
+            ],
             onClick: () => emit('select', node.branch.branch_id),
           },
           `🌿 ${node.branch.name || '未命名分支'}`,
@@ -66,5 +76,9 @@ export default { components: { BranchNode } }
 }
 :deep(.branch-pill:hover) {
   border-color: var(--highlight);
+}
+:deep(.branch-pill.active) {
+  border-color: var(--highlight);
+  box-shadow: 0 0 0 1px var(--highlight) inset;
 }
 </style>

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { CharacterCard, SceneEvaluation } from '@/types'
+import type { CharacterCard, SceneEvaluation, SnapshotMeta } from '@/types'
 
 const props = defineProps<{
   evaluation: SceneEvaluation | null
   sceneId: string
   characters?: CharacterCard[]
+  snapshots?: SnapshotMeta[]
+  appliedDecision?: Record<string, unknown> | null
   pending?: boolean
 }>()
 const emit = defineEmits<{
@@ -15,6 +17,7 @@ const emit = defineEmits<{
 }>()
 
 const rollbackConditions = ref('')
+const rollbackSnapshotId = ref('')
 const showRollback = ref(false)
 const nextSceneGoal = ref('')
 const showNextScene = ref(false)
@@ -22,6 +25,16 @@ const showNextScene = ref(false)
 const nextChars = ref<string[]>([])
 const nextLocation = ref('')
 const nextConditions = ref('')
+
+const DECISION_LABEL: Record<string, string> = {
+  continue: '继续本场',
+  next_scene: '下一场',
+  rollback: '回滚',
+}
+
+// 已生效的决策不可再提交（后端会 409）；刷新后从 GET /decision 恢复出来。
+const decided = computed(() => (props.appliedDecision?.decision_type as string) || '')
+const locked = computed(() => !!props.pending || !!decided.value)
 
 const scores = computed(() => {
   const e = props.evaluation
@@ -35,7 +48,7 @@ const scores = computed(() => {
 })
 
 function decide(type: string) {
-  if (props.pending) return
+  if (locked.value) return
   if (type === 'rollback') {
     showRollback.value = false
     showNextScene.value = false
@@ -86,11 +99,21 @@ function confirmRollback() {
   } catch {
     conditions = { note: rollbackConditions.value }
   }
-  emit('decision', { decision_type: 'rollback', new_initial_conditions: conditions }, (ok) => {
-    if (!ok) return // 提交失败：保留表单内容
-    showRollback.value = false
-    rollbackConditions.value = ''
-  })
+  emit(
+    'decision',
+    {
+      decision_type: 'rollback',
+      // 留空时后端回退到本场的模拟前快照（scene.snapshot_id_before）
+      rollback_snapshot_id: rollbackSnapshotId.value || null,
+      new_initial_conditions: conditions,
+    },
+    (ok) => {
+      if (!ok) return // 提交失败：保留表单内容
+      showRollback.value = false
+      rollbackConditions.value = ''
+      rollbackSnapshotId.value = ''
+    },
+  )
 }
 </script>
 
@@ -115,9 +138,12 @@ function confirmRollback() {
     </template>
 
     <div class="actions">
-      <button :disabled="pending" @click="decide('continue')">▶ 继续</button>
-      <button :disabled="pending" @click="decide('next_scene')">⏭ 下一场</button>
-      <button class="danger" :disabled="pending" @click="decide('rollback')">↩ 回滚</button>
+      <button :disabled="locked" @click="decide('continue')">▶ 继续</button>
+      <button :disabled="locked" @click="decide('next_scene')">⏭ 下一场</button>
+      <button class="danger" :disabled="locked" @click="decide('rollback')">↩ 回滚</button>
+    </div>
+    <div v-if="decided" class="dim" style="margin-top: 8px; font-size: 12px">
+      本场已做出决策：{{ DECISION_LABEL[decided] || decided }}。请在左侧场景列表选择后续场次。
     </div>
     <div v-if="pending" class="dim" style="margin-top: 8px; font-size: 12px">
       决策正在处理中，请勿重复提交...
@@ -144,7 +170,14 @@ function confirmRollback() {
     </div>
 
     <div v-if="showRollback" class="rollback-box">
-      <label>新初始条件（JSON 或文本）</label>
+      <label>回滚到哪份快照（留空 = 本场开始前）</label>
+      <select v-model="rollbackSnapshotId">
+        <option value="">本场开始前的快照</option>
+        <option v-for="s in props.snapshots || []" :key="s.snapshot_id" :value="s.snapshot_id">
+          {{ s.label || s.snapshot_id.slice(0, 8) }}
+        </option>
+      </select>
+      <label style="margin-top: 8px">新初始条件（JSON 或文本）</label>
       <textarea v-model="rollbackConditions" placeholder='{"tension": "高", "note": "让对话更激烈"}'></textarea>
       <div class="row" style="margin-top: 8px">
         <button class="danger" :disabled="pending" @click="confirmRollback">确认回滚</button>

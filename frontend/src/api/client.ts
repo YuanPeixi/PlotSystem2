@@ -10,6 +10,7 @@ import type {
   Scene,
   SceneConfig,
   SceneEvaluation,
+  SnapshotMeta,
 } from '@/types'
 
 const API_BASE = '/api/v1'
@@ -77,6 +78,10 @@ export const api = {
     unwrap<SceneConfig>(http.post(`/projects/${id}/scenes/plan`, { branch_id, narrative_goal })),
   createScene: (id: string, payload: Record<string, unknown>) =>
     unwrap<Scene>(http.post(`/projects/${id}/scenes`, payload)),
+  listScenes: (id: string, branchId?: string) =>
+    unwrap<Scene[]>(
+      http.get(`/projects/${id}/scenes`, { params: branchId ? { branch_id: branchId } : {} }),
+    ),
   getScene: (id: string, sid: string) =>
     unwrap<Scene>(http.get(`/projects/${id}/scenes/${sid}`)),
   getSceneById: (sid: string) => unwrap<Scene>(http.get(`/scenes/${sid}`)),
@@ -87,14 +92,18 @@ export const api = {
   // 导演
   getEvaluation: (sid: string) =>
     unwrap<SceneEvaluation | null>(http.get(`/scenes/${sid}/evaluation`)),
+  getDecision: (sid: string) =>
+    unwrap<Record<string, unknown> | null>(http.get(`/scenes/${sid}/decision`)),
   submitDecision: (sid: string, payload: Record<string, unknown>) =>
     unwrap(http.post(`/scenes/${sid}/decision`, payload)),
 
   // 分支/快照
   getBranches: (id: string) => unwrap<BranchTree>(http.get(`/projects/${id}/branches`)),
-  listSnapshots: (id: string) => unwrap<unknown[]>(http.get(`/projects/${id}/snapshots`)),
+  listSnapshots: (id: string) => unwrap<SnapshotMeta[]>(http.get(`/projects/${id}/snapshots`)),
   forkBranch: (id: string, snapshotId: string, payload: Record<string, unknown>) =>
     unwrap(http.post(`/snapshots/${snapshotId}/fork?project_id=${id}`, payload)),
+  deleteSnapshot: (id: string, snapshotId: string) =>
+    unwrap(http.delete(`/snapshots/${snapshotId}?project_id=${id}`)),
 
   // 输出
   generateOutput: (id: string, payload: Record<string, unknown>) =>

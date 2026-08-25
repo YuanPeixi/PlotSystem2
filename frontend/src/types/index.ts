@@ -89,6 +89,7 @@ export interface Scene {
   scene_id: string
   project_id: string
   branch_id: string
+  parent_scene_id: string | null
   name: string
   description: string
   participating_characters: string[]
@@ -98,9 +99,21 @@ export interface Scene {
   status: string
   snapshot_id_before: string
   snapshot_id_after: string | null
+  restore_snapshot_id: string
   turns_completed: number
   speaker_mode: string
   dialogue_log: DialogueTurn[]
+  created_at?: string
+}
+
+/** 快照元信息（GET /projects/{id}/snapshots 的列表项，不含角色状态明细）。 */
+export interface SnapshotMeta {
+  snapshot_id: string
+  scene_id: string
+  branch_id: string
+  label: string
+  created_at: string
+  character_count: number
 }
 
 export interface SceneConfig {
