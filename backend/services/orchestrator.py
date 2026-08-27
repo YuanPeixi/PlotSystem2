@@ -10,7 +10,7 @@ from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
 from backend.config import settings
-from backend.exceptions import ConflictError
+from backend.exceptions import ConflictError, SnapshotNotFoundError
 from backend.graphrag_pipeline import GraphRAGPipeline
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
@@ -357,13 +357,23 @@ async def run_scene(scene_id: str) -> None:
         await repository.save_scene(scene)
         await events.publish(scene_id, "snapshot", {"snapshot_id": result.snapshot_id_after})
 
-        # 自动评估
-        director = DirectorAgent(
-            scene.project_id, GraphManager(scene.project_id), sm
-        )
-        evaluation = await director.evaluate_scene(scene, result.dialogue_log)
-        await repository.save_evaluation(evaluation)
-        await events.publish(scene_id, "evaluation", to_dict(evaluation))
+        # 自动评估独占一个 try：这一场已经跑完并打了后置快照，评估用的 LLM 失败
+        # 不能把状态打回 paused —— 决策的 CAS 只接 completed，一旦退回用户就再也
+        # 无法对这场提交决策，只能重跑一遍空转并覆盖 snapshot_id_after。
+        try:
+            director = DirectorAgent(
+                scene.project_id, GraphManager(scene.project_id), sm
+            )
+            evaluation = await director.evaluate_scene(scene, result.dialogue_log)
+            await repository.save_evaluation(evaluation)
+            await events.publish(scene_id, "evaluation", to_dict(evaluation))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
+            await events.publish(
+                scene_id,
+                "scene_error",
+                {"message": f"自动评估失败：{exc}", "fatal": False},
+            )
         await events.publish(
             scene_id, "status", {"status": "completed", "reason": result.terminated_reason}
         )
@@ -376,7 +386,9 @@ async def run_scene(scene_id: str) -> None:
                 await repository.save_scene(scene)
             except Exception:  # noqa: BLE001
                 logger.warning("场景失败状态落库失败：%s", scene_id, exc_info=True)
-        await events.publish(scene_id, "error", {"message": str(exc)})
+        # 事件名不能叫 "error"：EventSource 的原生连接错误就叫这个名字，同名会让
+        # 前端把业务失败原因当成断线处理并丢掉 message。
+        await events.publish(scene_id, "scene_error", {"message": str(exc), "fatal": True})
         await events.publish(scene_id, "status", {"status": "paused", "reason": str(exc)})
     finally:
         _running_engines.pop(scene_id, None)
@@ -493,9 +505,17 @@ async def apply_decision(
             target = decision.rollback_to_snapshot_id or scene.snapshot_id_before
             if target:
                 sm = SnapshotManager(scene.project_id)
-                restored_states = await sm.restore_snapshot(target)
-                # 将恢复的角色状态写回角色卡，保证 API/前端读到的与图谱/记忆一致
-                await _apply_character_states(scene.project_id, restored_states)
+                # 只读快照，不调 restore_snapshot()：后者会 rmtree 并覆盖项目级的
+                # chroma_db 与 kuzu_db（两者按项目共享、不随分支隔离），等于抹掉
+                # 回滚点之后所有分支已积累的长期记忆，且不可逆。重演场景需要的
+                # 运行时记忆由 restore_snapshot_id 懒承接（契约4）。
+                snap = await sm.get_snapshot(target)
+                if snap is None:
+                    raise SnapshotNotFoundError(f"快照不存在: {target}")
+                # 角色卡是项目级单值，只作展示缓存：写回快照态保证前端读到的与重演起点一致
+                await _apply_character_states(
+                    scene.project_id, dict(snap.character_states)
+                )
 
                 new_conditions = decision.new_initial_conditions or scene.initial_conditions
                 new_scene = Scene(

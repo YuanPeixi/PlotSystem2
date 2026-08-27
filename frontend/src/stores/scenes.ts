@@ -14,6 +14,8 @@ export const useSceneStore = defineStore('scenes', () => {
   const appliedDecision = ref<Record<string, unknown> | null>(null)
   const running = ref(false)
   const statusMsg = ref('')
+  // 后端推送的最近一条业务失败原因（scene_error），供界面展示
+  const lastError = ref('')
   const decisionPending = ref(false)
   let es: EventSource | null = null
 
@@ -74,6 +76,14 @@ export const useSceneStore = defineStore('scenes', () => {
       if (stale()) return
       evaluation.value = JSON.parse((e as MessageEvent).data)
     })
+    // 后端的业务失败走 scene_error；同名的 'error' 是 EventSource 原生的连接错误，
+    // 两者合并处理会把失败原因吞掉（紧跟着的 status 还会把提示覆盖）。
+    source.addEventListener('scene_error', (e) => {
+      if (stale()) return
+      const d = JSON.parse((e as MessageEvent).data)
+      lastError.value = d.message || '场景运行出错'
+      if (d.fatal) statusMsg.value = `已中断：${lastError.value}`
+    })
     source.addEventListener('error', () => {
       if (stale()) return
       statusMsg.value = '连接中断'
@@ -83,6 +93,7 @@ export const useSceneStore = defineStore('scenes', () => {
 
   function startSimulation(sceneId: string, opts: { keepLog?: boolean } = {}) {
     evaluation.value = null
+    lastError.value = ''
     openStream(sceneId, opts)
     return api.startScene(sceneId)
   }
@@ -137,6 +148,7 @@ export const useSceneStore = defineStore('scenes', () => {
     appliedDecision.value = null
     running.value = false
     statusMsg.value = ''
+    lastError.value = ''
   }
 
   async function submitDecision(sceneId: string, payload: Record<string, unknown>) {
@@ -182,6 +194,7 @@ export const useSceneStore = defineStore('scenes', () => {
     turns.value = scene.dialogue_log ?? []
     evaluation.value = null
     appliedDecision.value = null
+    lastError.value = ''
     void loadEvaluation(sceneId)
     void loadDecision(sceneId)
 
@@ -219,6 +232,7 @@ export const useSceneStore = defineStore('scenes', () => {
     appliedDecision,
     running,
     statusMsg,
+    lastError,
     decisionPending,
     plan,
     createScene,

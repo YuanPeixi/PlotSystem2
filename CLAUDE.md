@@ -260,6 +260,19 @@ frontend/src/
    续跑时，`SceneEngine.run()` 会把 `dialogue_log[turns_consolidated:]` 重新写回各角色记忆，
    否则就是“对话恢复了，但角色忘了这些对话”。**新增写入记忆的路径时必须跟上这个水位线**，
    否则会造成长期记忆重复写入（长期记忆按角色+项目共享，不随分支回滚，重复只会累积）。
+10. **状态的作用域不是统一的**，这是 fork/rollback 语义分歧的根源：
+
+    | 状态 | 实际作用域 | 分支隔离 |
+    |------|-----------|---------|
+    | 快照里的 `CharacterState` | 分支/时点级 | ✅ |
+    | 角色卡 `current_*` | 项目级单值（只当**展示缓存**） | ❌ |
+    | Chroma 长期记忆（collection = `char_{cid}`） | 角色+项目级 | ❌ |
+    | Kuzu 图谱 | 项目级单文件 | ❌ |
+
+    因此 **`SnapshotManager.restore_snapshot()` 是破坏性操作**：它 `rmtree` 后拷回旧副本，
+    等于抹掉快照之后**所有分支**已积累的长期记忆与图谱，不可逆。
+    要让某一场从快照接上运行时记忆，**唯一正道是契约4 的懒承接**
+    （`Scene.restore_snapshot_id` + `inspection.resolve_scene_states`）。
 
 ---
 
@@ -365,6 +378,8 @@ graph TD
    这批已写入长期记忆的台词会在新场景的下一次 consolidate 时被二次写入；
 
 6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库 → 推 evaluation 与 completed。
+   **自动评估包在自己的 `try` 里**：这一场已经跑完并打了后置快照，评估的 LLM 失败
+   不得把状态打回 `paused`——决策 CAS 只接 `completed`，退回了用户就再也无法对这场决策。
 
 **运行中的可恢复性（工单23）**：开跑前先把 `status=running` 落库；引擎每产生一轮就先把
 `dialogue_log` / `turns_completed` 写回 `scene` 对象，再回调 `on_turn`，由 orchestrator **逐轮
@@ -382,9 +397,11 @@ graph TD
   `asyncio.create_task(run_scene)` 重跑。**不写 decisions 表**（开启新一轮生命周期）。
 - **next_scene**：调 `plan_scene` 生成配置 → 应用人工覆盖（角色/地点/初始条件）
   → 建新场景并记录 `parent_scene_id` → 写 decisions 表。
-- **rollback**：`restore_snapshot` → `_apply_character_states` 写回角色卡
+- **rollback**：`get_snapshot` 读目标快照 → `_apply_character_states` 写回角色卡
   → 新建"（回滚重演）"场景，`snapshot_id_before=""`、`restore_snapshot_id=target`
   → 写 decisions 表。目标快照缺失时**不持久化决策**，允许用户补 ID 重试。
+  **不调 `restore_snapshot()`**（见 4.2 陷阱 10）：重演需要的运行时记忆由 `restore_snapshot_id`
+  懒承接，而就地覆盖 chroma/kuzu 会抹掉其他分支的长期记忆。
 
 ### 6.4 启动对账
 
@@ -545,7 +562,10 @@ graph TD
 | POST | `/projects/{project_id}/output` | 生成输出 |
 | GET | `/output/{output_id}` | 取回生成结果 |
 
-**SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`error`。
+**SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`scene_error`。
+业务失败事件**必须叫 `scene_error` 而不是 `error`**：`error` 是 EventSource 的原生连接
+错误事件名，同名会让前端把两者混在一个处理器里、丢掉 `message`（`fatal` 字段区分
+“整场挂了”与“仅自动评估失败”）。
 订阅建立时后端会**先回放一帧 `status`**（带 `initial: true`）告知当前状态；
 若首帧已是 `completed` / `paused`，服务端**直接结束流**，不留只会 ping 的连接。
 逐轮落盘先于 SSE 推送，因此铺底用的 GET 与随后的 `turn` 事件**可能撞上同一轮**，
@@ -572,6 +592,9 @@ graph TD
 - **SSE 句柄必须捕获自己的连接**：`openStream` 把 `EventSource` 存为局部变量，每个事件
   处理器先比对它是否仍是当前连接。否则快速切场景时，旧流的终态会关掉新流、
   旧流的 `turn` 会串进新场景的日志。
+- **业务失败走 `scene_error`，连接错误走 `error`**：两者在 `openStream` 里是两个独立
+  处理器，前者把 `message` 存进 `sceneStore.lastError` 并在日志区上方展示。合并处理会
+  让失败原因被紧随其后的 `status` 覆盖掉。
 - **切分支要连当前场景一起切**：`watch(branchId)` 刷新场景列表后会 attach 该分支最后一场，
   没有场景则 `clearScene()`。只刷新列表不切场景，日志与决策面板会跨分支残留。
 - **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
@@ -645,7 +668,11 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 
 | 缺陷 | 现象 | 备注 |
 |------|------|------|
-| —— | 暂无 | 图谱快照 `copytree` 与前端未消费 `GET /decision` 两项已修复 |
+| **fork 语义空转** | `fork_branch()` 只建一条 `Branch` 记录，不建场景；`fork_from_snapshot_id` / `fork_conditions` **写入但全仓库零读取**；用户分叉后只得到一个空分支 | 工单 08 |
+| **rollback 不建新分支** | 回滚重演场景落在**同一个 `branch_id`** 下，分支树因此不反映真实的剧情分叉结构 | 归工单 08（fork/rollback 语义统一） |
+| **长期记忆/图谱/角色卡无分支隔离** | 见 4.2 陷阱 10 的作用域表；两条分支交替推进会互相污染 | 需单独立项，是工单 08 的前置 |
+| `Branch.scenes` 恒为空数组 | 无写入方；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它 | 工单 03 可选目标 6 |
+| `pause` 的语义与 `SceneStatus.PAUSED` 无关 | `engine.interrupt()` 走的是正常终止路径，场景最终是 `completed`，但前端提示“已中断” | 待排期 |
 
 ### 12.2 Dead code（存在但零调用）
 
@@ -657,6 +684,8 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 - `MemoryManager.snapshot()` / `restore()` —— 零调用。真实快照路径是
   `SceneEngine._collect_states()` 直接读 `short_term.dump()` / `episodic.dump()`，
   恢复路径是 `_load_inherited_states()` + `MemoryManager.prime()`。
+- `SnapshotManager.restore_snapshot()` —— 自 rollback 改走 `get_snapshot` 后已无生产调用方
+  （仅剩 `tests/test_snapshot_manager.py`）。**不要把它接回任何写路径**，它是破坏性的（见 4.2 陷阱 10）。
 - `CharacterState.long_term_memory_snapshot` —— 恒为空字符串。
 - `settings.GRAPHRAG_LLM_MODEL` —— 从不读取。
 - `scene_engine/scene_config.py`、`snapshot/models.py` —— 仅从 `models.py` 再导出，
@@ -733,4 +762,15 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      前端：scenes store 拆出 attachScene（只重连不 start）/resumeScene，消费
      GET /decision；Director.vue 增加本分支场景列表、快照面板（分叉/删除）、
      ?scene= 刷新恢复；DirectorPanel 支持选择回滚目标快照并在已决策时锁定按钮。
+-->
+<!-- 2026-08-27: PR #15 二轮 review 修复（真 bug + 上一轮改一半的改动）：
+     - 自动评估改为独立 try：评估 LLM 失败不再把已完成场景打回 paused（否则 CAS 只接
+       completed，用户再也无法提交决策）；
+     - SSE 业务失败事件 `error` → `scene_error`（与 EventSource 原生 error 同名会吞掉原因），
+       前端分开处理并在日志区展示；
+     - rollback 改为 `get_snapshot` 只读，不再调破坏性的 `restore_snapshot()`
+       （把上一轮只在 fork 里摩掉 restore 的那一刀切完整）；
+     - 快照的 chroma 拷贝补上与图谱一致的失败保护；Director.vue 建场景前校验 branchId；
+     - 新增 4.2 陷阱 10（状态作用域表 + restore_snapshot 是破坏性操作），
+       12.1 重新登记 fork 语义空转 / rollback 不建新分支 / 无分支隔离三项缺口。
 -->
