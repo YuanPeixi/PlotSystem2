@@ -33,6 +33,8 @@ from backend.utils.logger import get_logger
 logger = get_logger("scene_engine")
 
 TurnCallback = Callable[[DialogueTurn], Awaitable[None]] | None
+# 把当前 scene 落库（不推 SSE），用于固化水位线这类不伴随新轮次的进展。
+PersistCallback = Callable[[], Awaitable[None]] | None
 
 # 解析格式：*动作*、[内心独白]、其余为对白
 _ACTION_RE = re.compile(r"\*(.+?)\*", re.DOTALL)
@@ -77,7 +79,9 @@ class SceneEngine:
         """将历史对话轮次注入引擎，供 continue 续跑时使用。"""
         self._history_transcript = [self._turn_line(t) for t in history_log]
 
-    async def run(self, on_turn: TurnCallback = None) -> SceneResult:
+    async def run(
+        self, on_turn: TurnCallback = None, on_persist: PersistCallback = None
+    ) -> SceneResult:
         """场景执行主流程。"""
         if not self.agents:
             raise ValueError("场景至少需要一个角色")
@@ -152,6 +156,11 @@ class SceneEngine:
         for agent in self.agents:
             await agent.update_state_after_scene(new_turns)
         self.scene.turns_consolidated = len(turns)
+        # 水位线必须与固化写入在同一次落盘内推进：下一步的后置快照要拷贝整个
+        # kuzu/chroma（十几到二十多兆），进程若在这段窗口里被硬杀（非异常，走不到
+        # orchestrator 的 except），库里仍是旧水位线，续跑会把整场对话二次写入长期记忆。
+        if on_persist:
+            await on_persist()
 
         # 5. 模拟后快照（此时短期缓冲已清空，快照记录的是"已落库"的干净状态，
         # 供下一场 prime() 回填也不会重新引入已固化过的内容）

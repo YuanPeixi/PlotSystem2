@@ -223,6 +223,45 @@ async def test_consolidated_turns_are_not_replayed_into_memory():
 
 
 @pytest.mark.asyncio
+async def test_consolidation_watermark_persisted_before_after_snapshot():
+    """固化完成后必须立刻落盘水位线，且早于后置快照。
+
+    后置快照要拷贝整个 kuzu/chroma，进程若在这段窗口里被硬杀（走不到
+    orchestrator 的 except），库里仍是旧水位线，续跑会把整场对话二次写入长期记忆。
+    """
+    agent = _make_agent("c1", "甲")
+    scene = Scene(
+        scene_id="s-watermark",
+        project_id="proj-se",
+        branch_id="b-watermark",
+        snapshot_id_before="snap-before-watermark",  # 已有前置快照，只会打后置这一份
+    )
+    config = SceneConfig(name="水位线", participating_characters=["c1"], max_turns=2)
+    sm = SnapshotManager("proj-se")
+    engine = SceneEngine(scene, config, [agent], sm)
+
+    seen: list[tuple[str, int]] = []
+
+    async def _persist() -> None:
+        seen.append(("persist", scene.turns_consolidated))
+
+    original_create = SnapshotManager.create_snapshot
+
+    async def _tracked_create(self, *args, **kwargs):
+        seen.append(("snapshot", scene.turns_consolidated))
+        return await original_create(self, *args, **kwargs)
+
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="一句话。")),
+        patch.object(SnapshotManager, "create_snapshot", new=_tracked_create),
+    ):
+        await engine.run(on_persist=_persist)
+
+    assert [name for name, _ in seen] == ["persist", "snapshot"]
+    assert seen[0][1] == len(scene.dialogue_log) == 2
+
+
+@pytest.mark.asyncio
 async def test_scene_run_after_snapshot_has_empty_short_term_buffer():
     """固化必须先于后置快照，否则 continue/rollback/next_scene 的记忆回填
     （prime()）会让已经写入长期记忆的台词随下一场的 consolidate 被二次写入
