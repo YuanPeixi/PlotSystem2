@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -172,6 +173,102 @@ class SnapshotManager:
                 states[data["character_id"]] = _deserialize_character_state(data)
         logger.info("恢复快照 %s，角色数 %d", snapshot_id, len(states))
         return states
+
+    async def clone_collections_for_branch(
+        self, snapshot_id: str, new_branch_id: str
+    ) -> int:
+        """把快照时点的长期记忆复制到新分支的集合（工单08 I1 + I3）。
+
+        新分支必须继承来源分支在该时点之前的记忆，否则角色一分叉就失忆；又不能
+        直接共用集合，否则两条线互相污染。返回成功复制的集合数。
+
+        契约6：Chroma 不可用或快照不含向量库时只 warning 并跳过，不打断 fork。
+        """
+        snap = await self.get_snapshot(snapshot_id)
+        if snap is None:
+            raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
+        ckpt = Path(snap.chroma_checkpoint) if snap.chroma_checkpoint else None
+        # 认 chroma.sqlite3：快照可能是在 Chroma 不可用时打的，此时目录里没有真正的库，
+        # 强行 PersistentClient 会往快照目录里写出一个空库（违反 I2 的只读要求）。
+        if ckpt is None or not (ckpt / "chroma.sqlite3").exists():
+            logger.warning(
+                "快照 %s 不含向量库副本，分支 %s 将从空长期记忆开始",
+                snapshot_id,
+                new_branch_id,
+            )
+            return 0
+        return await asyncio.to_thread(
+            self._clone_collections_sync,
+            ckpt,
+            list(snap.character_states.keys()),
+            snap.branch_id,
+            new_branch_id,
+        )
+
+    def _clone_collections_sync(
+        self,
+        checkpoint_dir: Path,
+        character_ids: list[str],
+        src_branch_id: str,
+        new_branch_id: str,
+    ) -> int:
+        try:
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+
+            from backend.memory.embeddings import RemoteEmbeddingFunction
+            from backend.memory.long_term import collection_name_for
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Chroma 不可用，跳过分支记忆复制：%s", exc)
+            return 0
+
+        chroma_settings = ChromaSettings(anonymized_telemetry=False, allow_reset=True)
+        live_dir = settings.project_dir(self.project_id) / "chroma_db"
+        live_dir.mkdir(parents=True, exist_ok=True)
+        copied = 0
+        try:
+            src_client = chromadb.PersistentClient(
+                path=str(checkpoint_dir), settings=chroma_settings
+            )
+            dst_client = chromadb.PersistentClient(
+                path=str(live_dir), settings=chroma_settings
+            )
+            available = {c.name for c in src_client.list_collections()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("打开向量库失败，跳过分支记忆复制：%s", exc)
+            return 0
+
+        embed_fn = RemoteEmbeddingFunction()
+        for cid in character_ids:
+            # 老项目的记忆还躺在项目级集合里（本次改造之前没有分支后缀），要一并兜底
+            candidates = [
+                collection_name_for(cid, src_branch_id),
+                collection_name_for(cid, ""),
+            ]
+            src_name = next((n for n in candidates if n in available), "")
+            if not src_name:
+                continue
+            try:
+                src_col = src_client.get_collection(src_name, embedding_function=embed_fn)
+                data = src_col.get(include=["documents", "metadatas", "embeddings"])
+                ids = list(data.get("ids") or [])
+                if not ids:
+                    continue
+                dst_col = dst_client.get_or_create_collection(
+                    collection_name_for(cid, new_branch_id), embedding_function=embed_fn
+                )
+                # 带着原向量一起搬，避免为历史记忆重新调用 embedding 服务
+                dst_col.upsert(
+                    ids=ids,
+                    documents=list(data.get("documents") or []),
+                    metadatas=list(data.get("metadatas") or []),
+                    embeddings=data.get("embeddings"),
+                )
+                copied += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("角色 %s 的长期记忆复制到分支 %s 失败：%s", cid, new_branch_id, exc)
+        logger.info("分支 %s 继承了 %d 个角色的长期记忆", new_branch_id, copied)
+        return copied
 
     async def get_snapshot(self, snapshot_id: str) -> Snapshot | None:
         meta = _snapshots_dir(self.project_id) / snapshot_id / "meta.json"

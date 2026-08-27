@@ -1,4 +1,4 @@
-"""orchestrator.apply_decision 的回滚（rollback）分支测试。
+﻿"""orchestrator.apply_decision 的回滚（rollback）分支测试。
 
 验证工单 01：回滚后角色卡应写回快照状态，且应创建一个新场景并设置
 decision.next_scene_id，新场景的 initial_conditions 与传入的
@@ -20,6 +20,7 @@ import pytest
 
 from backend.config import settings
 from backend.exceptions import ConflictError
+from backend.memory import MemoryManager
 from backend.models import (
     CharacterCard,
     CharacterState,
@@ -35,6 +36,7 @@ from backend.models import (
 )
 from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
+from backend.utils import db
 
 
 async def _setup_project_scene_and_snapshot(suffix: str = ""):
@@ -173,7 +175,7 @@ async def test_run_scene_rejects_concurrent_duplicate_start(monkeypatch):
 
     call_count = {"agents": 0, "engine_run": 0}
 
-    async def fake_build_agents(pid, cids, states=None):
+    async def fake_build_agents(pid, cids, states=None, branch_id=""):
         call_count["agents"] += 1
         # 制造并发窗口：让第二次调用有机会在第一次完成前发起
         await asyncio.sleep(0.05)
@@ -747,7 +749,7 @@ async def test_run_scene_persists_each_turn(monkeypatch):
         async def evaluate_scene(self, *args, **kwargs):
             return SceneEvaluation(scene_id=scene.scene_id)
 
-    async def fake_build_agents(pid, cids, states=None):
+    async def fake_build_agents(pid, cids, states=None, branch_id=""):
         return []
 
     monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
@@ -782,7 +784,7 @@ async def test_run_scene_failure_marks_scene_paused(monkeypatch):
         async def run(self, on_turn=None, on_persist=None):
             raise RuntimeError("LLM 挂了")
 
-    async def fake_build_agents(pid, cids, states=None):
+    async def fake_build_agents(pid, cids, states=None, branch_id=""):
         return []
 
     monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
@@ -838,7 +840,7 @@ async def test_run_scene_keeps_completed_when_evaluation_fails(monkeypatch):
         async def evaluate_scene(self, *args, **kwargs):
             raise RuntimeError("评估模型挂了")
 
-    async def fake_build_agents(pid, cids, states=None):
+    async def fake_build_agents(pid, cids, states=None, branch_id=""):
         return []
 
     monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
@@ -953,4 +955,166 @@ async def test_delete_snapshot_is_scoped_to_project():
 
     await sm.delete_snapshot(snap.snapshot_id)
     assert await sm.get_snapshot(snap.snapshot_id) is None
+
+
+# ---------------------------------------------------------------------------
+# 工单08：分叉（fork）语义收敛。验收只认 I1~I5 五条不变量。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fork_creates_branch_and_pending_scene():
+    """I4 可追溯 + 不自动开跑。"""
+    _, _, scene, snap = await _setup_project_scene_and_snapshot("-fork-basic")
+
+    branch, new_scene = await orchestrator.fork_from_snapshot(
+        scene.project_id, snap.snapshot_id, "IF线·测试"
+    )
+
+    assert branch.branch_id != scene.branch_id
+    assert branch.parent_branch_id == scene.branch_id
+    assert new_scene.branch_id == branch.branch_id
+    assert new_scene.parent_scene_id == snap.scene_id
+    assert new_scene.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_fork_merges_conditions():
+    """I5 条件生效：同名键被覆盖，来源场景原有的键保留。"""
+    _, _, scene, snap = await _setup_project_scene_and_snapshot("-fork-cond")
+
+    _, new_scene = await orchestrator.fork_from_snapshot(
+        scene.project_id, snap.snapshot_id, "IF线", conditions={"tension": "高"}
+    )
+
+    assert new_scene.initial_conditions["tension"] == "高"
+    assert new_scene.initial_conditions["weather"] == "sunny"
+
+
+@pytest.mark.asyncio
+async def test_fork_sets_lazy_inheritance():
+    """I1 的必要条件：起点靠懒承接，不靠 restore_snapshot()。"""
+    _, _, scene, snap = await _setup_project_scene_and_snapshot("-fork-lazy")
+
+    _, new_scene = await orchestrator.fork_from_snapshot(
+        scene.project_id, snap.snapshot_id, "IF线"
+    )
+
+    assert new_scene.snapshot_id_before == ""
+    assert new_scene.restore_snapshot_id == snap.snapshot_id
+
+
+@pytest.mark.asyncio
+async def test_fork_inherits_speaker_mode():
+    """CLAUDE.md §4.2 陷阱 3：漏传会让 selector 场景静默退回轮询。"""
+    _, _, scene, snap = await _setup_project_scene_and_snapshot("-fork-speaker")
+    scene.speaker_mode = SpeakerMode.SELECTOR.value
+    await repository.save_scene(scene)
+
+    _, new_scene = await orchestrator.fork_from_snapshot(
+        scene.project_id, snap.snapshot_id, "IF线"
+    )
+
+    assert new_scene.speaker_mode == SpeakerMode.SELECTOR.value
+
+
+@pytest.mark.asyncio
+async def test_fork_does_not_touch_source_branch():
+    """I2 无副作用：来源场景逐字节不变，来源分支的向量库文件不被删。"""
+    project_id = "proj-rollback-test-fork-i2"
+    chroma_dir = settings.project_dir(project_id) / "chroma_db"
+    chroma_dir.mkdir(parents=True, exist_ok=True)
+    (chroma_dir / "before_snapshot.txt").write_text("分叉点之前的记忆", encoding="utf-8")
+
+    _, _, scene, snap = await _setup_project_scene_and_snapshot("-fork-i2")
+    assert snap.chroma_checkpoint, "前置条件：快照应包含向量库副本"
+
+    async def _raw_scene(scene_id: str) -> str:
+        # 直接比 data_json：get_scene 反序列化时不还原 created_at，两次读取必然不同
+        async with db.connect() as conn:
+            cur = await conn.execute(
+                "SELECT data_json FROM scenes WHERE scene_id = ?", (scene_id,)
+            )
+            return (await cur.fetchone())[0]
+
+    before = await _raw_scene(scene.scene_id)
+    await orchestrator.fork_from_snapshot(project_id, snap.snapshot_id, "IF线")
+    after = await _raw_scene(scene.scene_id)
+
+    assert after == before
+    assert (chroma_dir / "before_snapshot.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_fork_survives_missing_source_scene():
+    """快照可以比场景活得久：来源场景被删后仍应能分叉。"""
+    _, character_id, scene, snap = await _setup_project_scene_and_snapshot("-fork-orphan")
+    async with db.connect() as conn:
+        await conn.execute("DELETE FROM scenes WHERE scene_id = ?", (scene.scene_id,))
+        await conn.commit()
+
+    _, new_scene = await orchestrator.fork_from_snapshot(
+        scene.project_id, snap.snapshot_id, "IF线"
+    )
+
+    assert new_scene.participating_characters == [character_id]
+
+
+@pytest.mark.asyncio
+async def test_rollback_creates_new_branch():
+    """I4：回滚重演必须落在新分支上，否则分支树看不出这次分叉。"""
+    _, _, scene, snap = await _setup_project_scene_and_snapshot("-rollback-branch")
+
+    decision = await orchestrator.apply_decision(
+        scene.scene_id,
+        DirectorDecision(decision_type="rollback", rollback_to_snapshot_id=snap.snapshot_id),
+    )
+
+    assert decision.next_scene_id
+    new_scene = await repository.get_scene(decision.next_scene_id)
+    assert new_scene.branch_id != scene.branch_id
+
+
+@pytest.mark.asyncio
+async def test_long_term_memory_is_isolated_per_branch(monkeypatch):
+    """I3：同角色不同分支的长期记忆集合互不可见。"""
+    pytest.importorskip("chromadb")
+    from chromadb.api.types import Documents, EmbeddingFunction
+
+    class _FakeEmbedding(EmbeddingFunction[Documents]):
+        """确定性假向量：让本用例只验证隔离性，不依赖远程 embedding 服务。"""
+
+        def __init__(self) -> None:
+            pass
+
+        def __call__(self, input: Documents):
+            return [[float(len(t)), float(sum(map(ord, t)) % 997)] for t in input]
+
+        @staticmethod
+        def name() -> str:
+            return "fake_test_embedding"
+
+        def get_config(self) -> dict:
+            return {}
+
+        @staticmethod
+        def build_from_config(config: dict) -> _FakeEmbedding:
+            return _FakeEmbedding()
+
+    monkeypatch.setattr("backend.memory.long_term.RemoteEmbeddingFunction", _FakeEmbedding)
+
+    mem_a = MemoryManager("char-iso", "proj-iso", "branch-a")
+    mem_b = MemoryManager("char-iso", "proj-iso", "branch-b")
+    assert mem_a.long_term.collection_name != mem_b.long_term.collection_name
+
+    await mem_a.connect()
+    await mem_b.connect()
+    assert mem_a.long_term._collection is not None, "前置条件：Chroma 必须真的连上"
+    await mem_a.long_term.add("主线：国王驾崩了")
+    await mem_b.long_term.add("IF线：国王活了下来")
+
+    hits_a = [c.text for c in await mem_a.long_term.retrieve("国王", top_k=5)]
+    hits_b = [c.text for c in await mem_b.long_term.retrieve("国王", top_k=5)]
+    assert "IF线：国王活了下来" not in hits_a
+    assert "主线：国王驾崩了" not in hits_b
 

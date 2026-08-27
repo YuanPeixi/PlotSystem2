@@ -29,14 +29,23 @@ except Exception:  # noqa: BLE001
     _CHROMA_AVAILABLE = False
 
 
+def collection_name_for(character_id: str, branch_id: str = "") -> str:
+    """角色在某条分支上的 Chroma 集合名。branch_id 为空表示项目级共享集合。"""
+    suffix = f"__{branch_id.replace('-', '')}" if branch_id else ""
+    return f"char_{character_id.replace('-', '')}{suffix}"
+
+
 class LongTermMemory:
     """单个角色的长期记忆库。"""
 
-    def __init__(self, character_id: str, project_id: str):
+    def __init__(self, character_id: str, project_id: str, branch_id: str = ""):
         self.character_id = character_id
         self.project_id = project_id
+        self.branch_id = branch_id
         self.db_dir: Path = settings.project_dir(project_id) / "chroma_db"
-        self.collection_name = f"char_{character_id.replace('-', '')}"
+        # 分支后缀让 IF 线与主线各自持有独立向量集合（工单08 不变量 I3）。
+        # 留空 = 项目级共享集合，兼容既有数据，无需迁移。
+        self.collection_name = collection_name_for(character_id, branch_id)
         self._client = None
         self._collection = None
         # 降级时的内存存储

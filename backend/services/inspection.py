@@ -157,7 +157,12 @@ async def inspect_character(
     hits: list[MemoryChunk] = []
     if memory_query:
         try:
-            mem = MemoryManager(character_id, project_id)
+            # 长期记忆按分支隔离（工单08 I3）：调用方只给了 scene_id 时补解析出分支，
+            # 否则会退回项目级共享集合、查到别的分支的内容。
+            resolved_branch = branch_id
+            if not resolved_branch and scene_id:
+                resolved_branch = (await repository.get_scene(scene_id)).branch_id
+            mem = MemoryManager(character_id, project_id, resolved_branch)
             hits = await mem.retrieve(memory_query, top_k)
         except Exception:  # noqa: BLE001
             logger.warning("角色 %s 长期记忆检索失败", character_id, exc_info=True)

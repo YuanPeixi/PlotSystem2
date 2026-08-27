@@ -158,6 +158,12 @@ export interface BranchTree {
   roots: BranchTreeNode[]
 }
 
+/** POST /snapshots/{id}/fork 的返回体：新分支及其首场 pending 场景（不自动开跑）。 */
+export interface ForkResult {
+  branch: Branch
+  scene: Scene
+}
+
 export interface GraphNode {
   id: string
   label: string

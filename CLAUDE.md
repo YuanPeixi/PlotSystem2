@@ -177,7 +177,7 @@ backend/
 │   └── queries.py        ⚠️ dead code，零 import
 │
 ├── snapshot/
-│   ├── snapshot_manager.py 快照创建/恢复/删除 + 分支 fork + 分支树
+│   ├── snapshot_manager.py 快照创建/恢复/删除 + 分支 fork + 分支记忆复制 + 分支树
 │   ├── branch_tree.py      树结构组装
 │   └── models.py           仅从 models.py 再导出
 │
@@ -269,13 +269,17 @@ frontend/src/
     |------|-----------|---------|
     | 快照里的 `CharacterState` | 分支/时点级 | ✅ |
     | 角色卡 `current_*` | 项目级单值（只当**展示缓存**） | ❌ |
-    | Chroma 长期记忆（collection = `char_{cid}`） | 角色+项目级 | ❌ |
-    | Kuzu 图谱 | 项目级单文件 | ❌ |
+    | Chroma 长期记忆（collection = `char_{cid}__{branch_id}`） | 角色+分支级（工单08） | ✅ |
+    | Kuzu 图谱 | 项目级单文件 | ❌（只读，暂无影响；工单06 落地前必须先解决） |
 
     因此 **`SnapshotManager.restore_snapshot()` 是破坏性操作**：它 `rmtree` 后拷回旧副本，
     等于抹掉快照之后**所有分支**已积累的长期记忆与图谱，不可逆。
     要让某一场从快照接上运行时记忆，**唯一正道是契约4 的懒承接**
     （`Scene.restore_snapshot_id` + `inspection.resolve_scene_states`）。
+
+11. **`branch_id` 是长期记忆的一部分寻址信息**：`MemoryManager(cid, pid, branch_id)` 留空
+    会退回项目级共享 collection。生产构造点（`orchestrator.build_character_agents`、
+    `inspection.inspect_character`）必须传对分支，否则 IF 线会检索到主线的台词。
 
 ---
 
@@ -401,11 +405,30 @@ graph TD
   `asyncio.create_task(run_scene)` 重跑。**不写 decisions 表**（开启新一轮生命周期）。
 - **next_scene**：调 `plan_scene` 生成配置 → 应用人工覆盖（角色/地点/初始条件）
   → 建新场景并记录 `parent_scene_id` → 写 decisions 表。
-- **rollback**：`get_snapshot` 读目标快照 → `_apply_character_states` 写回角色卡
-  → 新建"（回滚重演）"场景，`snapshot_id_before=""`、`restore_snapshot_id=target`
-  → 写 decisions 表。目标快照缺失时**不持久化决策**，允许用户补 ID 重试。
+- **rollback**：**回滚是条件为空的分叉**（工单08 结论1），走唯一原语
+  `orchestrator.fork_from_snapshot()`：只读目标快照 → 新建分支（`parent_branch_id`
+  指向来源分支）→ 复制该时点的长期记忆到新分支的 collection → 建一个 pending 的
+  "（回滚重演）"场景，`snapshot_id_before=""`、`restore_snapshot_id=target` → 写 decisions 表。
+  角色卡按快照态写回（仅展示缓存）。目标快照缺失时**不持久化决策**，允许用户补 ID 重试。
   **不调 `restore_snapshot()`**（见 4.2 陷阱 10）：重演需要的运行时记忆由 `restore_snapshot_id`
   懒承接，而就地覆盖 chroma/kuzu 会抹掉其他分支的长期记忆。
+
+### 6.3.1 分叉原语 `fork_from_snapshot`
+
+`fork(S, C, name) -> (Branch, Scene₀)` 是系统里**唯一**的分叉入口，`POST /snapshots/{id}/fork`
+与 rollback 决策都走它。两套实现分叉过一次，其中一套就会悄悄退化。五条不变量：
+
+| 编号 | 名称 | 实现 |
+|------|------|------|
+| I1 | 起点一致 | `Scene₀.restore_snapshot_id = S`，靠契约4 懒承接，**绝不 restore_snapshot()** |
+| I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景 |
+| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里的向量搬进 `char_{cid}__{新分支}` |
+| I4 | 可追溯 | `Branch.parent_branch_id = S.branch_id`；`Scene₀.parent_scene_id = S.scene_id` |
+| I5 | 条件生效 | `Scene₀.initial_conditions = {**来源场景条件, **C}` |
+
+`Scene₀` 状态恒为 `pending`，**不自动开跑**——分叉是探索性操作，不该隐含整场 LLM 成本。
+来源场景已被删时降级：参演角色取自 `S.character_states`。
+`Branch.fork_conditions` 仅为溯源元数据，权威值在 `Scene₀.initial_conditions`。
 
 ### 6.4 启动对账
 
@@ -561,7 +584,7 @@ graph TD
 | GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
 | GET | `/projects/{project_id}/branches` | 分支树 |
 | GET | `/projects/{project_id}/snapshots` | 快照列表（只返回元信息，不带角色状态明细） |
-| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。只登记来源快照，**不**恢复当前项目运行态 |
+| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}` |
 | DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**，且按项目约束） |
 | POST | `/projects/{project_id}/output` | 生成输出 |
 | GET | `/output/{output_id}` | 取回生成结果 |
@@ -601,6 +624,9 @@ graph TD
   让失败原因被紧随其后的 `status` 覆盖掉。
 - **切分支要连当前场景一起切**：`watch(branchId)` 刷新场景列表后会 attach 该分支最后一场，
   没有场景则 `clearScene()`。只刷新列表不切场景，日志与决策面板会跨分支残留。
+- **分叉后只 `attachScene`**：`confirmFork` 切到新分支并打开返回的首场，绝不调 `joinScene`
+  （它会 `/start`，用户点一下“分叉”就烧掉一整场 LLM）。IF 条件在分叉表单里按每行
+  `key=value` 填，解析后进 `new_conditions`。
 - **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
   否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
 - `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。
@@ -672,9 +698,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 
 | 缺陷 | 现象 | 备注 |
 |------|------|------|
-| **fork 语义空转** | `fork_branch()` 只建一条 `Branch` 记录，不建场景；`fork_from_snapshot_id` / `fork_conditions` **写入但全仓库零读取**；用户分叉后只得到一个空分支 | 工单 08 |
-| **rollback 不建新分支** | 回滚重演场景落在**同一个 `branch_id`** 下，分支树因此不反映真实的剧情分叉结构 | 归工单 08（fork/rollback 语义统一） |
-| **长期记忆/图谱/角色卡无分支隔离** | 见 4.2 陷阱 10 的作用域表；两条分支交替推进会互相污染 | 需单独立项，是工单 08 的前置 |
+| **Kuzu 图谱无分支隔离** | 图谱是项目级单文件。当前只在构建阶段写入一次、全程只读，所以“共享”与“隔离”等价，无实际影响 | 工单06（场景结束后动态回写图谱）的**前置约束**：它一落地图谱就变成可变状态，分支隔离立刻破 |
 | `Branch.scenes` 恒为空数组 | 无写入方；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它 | 工单 03 可选目标 6 |
 | **场景内自动固化绕过水位线** | `MemoryManager.add_experience` 在短期缓冲满（`SHORT_TERM_BUFFER_SIZE`，默认 40）时会自动 `consolidate()`，但不推进 `turns_consolidated`。单次 `run()` 跑满 40 轮后崩溃，续跑会把前 40 轮二次写入长期记忆。默认 `max_turns=20` 碰不到，但 `max_turns` 可由导演/用户设定且无上限校验 | 工单 26 |
 | `pause` 的语义与 `SceneStatus.PAUSED` 无关 | `engine.interrupt()` 走的是正常终止路径，场景最终是 `completed`，但前端提示“已中断” | 待排期 |
@@ -783,4 +807,13 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      `run()` 返回后才存，中间隔着拷贝几十兆 kuzu/chroma 的长窗口，进程被硬杀就会
      在续跑时把整场对话二次写入长期记忆。同步更新 4.2 陷阱 9 与 6.2；
      另登记“场景内自动固化绕过水位线”至 12.1（工单 26）。
+-->
+<!-- 2026-08-27: 工单08（分叉语义收敛）落地。长期记忆 collection 补分支维度
+     （`char_{cid}__{branch_id}`，留空仍是项目级共享，无需迁移）；新增
+     `SnapshotManager.clone_collections_for_branch`（带原向量搬运，不重新 embedding）；
+     `build_character_agents` / `inspect_character` 透传 branch_id；新增唯一分叉原语
+     `orchestrator.fork_from_snapshot`，rollback 与 `POST /snapshots/{id}/fork` 一并改走它
+     （rollback 从此产生新分支，fork 返回体变为 `{branch, scene}`）；前端分叉表单支持
+     每行 `key=value` 的 IF 条件并在成功后 attach 新分支首场。
+     同步更新 4.2 陷阱 10/11、6.3 与新增 6.3.1、8、9、12.1。
 -->

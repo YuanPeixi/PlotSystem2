@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.api.schemas import ApiResponse, ForkBranchRequest
+from backend.services import orchestrator
 from backend.snapshot import SnapshotManager
 from backend.utils.serializer import to_dict
 
@@ -53,11 +54,11 @@ async def list_snapshots(project_id: str) -> ApiResponse:
 
 @snapshot_router.post("/{snapshot_id}/fork")
 async def fork_branch(snapshot_id: str, project_id: str, req: ForkBranchRequest) -> ApiResponse:
-    sm = SnapshotManager(project_id)
-    branch = await sm.fork_branch(
-        snapshot_id, req.new_conditions, req.branch_name, req.director_notes
+    """从快照分叉：新建分支并在其上创建一个 pending 首场（不自动开跑）。"""
+    branch, scene = await orchestrator.fork_from_snapshot(
+        project_id, snapshot_id, req.branch_name, req.new_conditions, req.director_notes
     )
-    return ApiResponse.ok(to_dict(branch))
+    return ApiResponse.ok({"branch": to_dict(branch), "scene": to_dict(scene)})
 
 
 @snapshot_router.delete("/{snapshot_id}")

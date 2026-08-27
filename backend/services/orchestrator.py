@@ -10,11 +10,12 @@ from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
 from backend.config import settings
-from backend.exceptions import ConflictError, SnapshotNotFoundError
+from backend.exceptions import ConflictError, PlotSystemError, SnapshotNotFoundError
 from backend.graphrag_pipeline import GraphRAGPipeline
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
 from backend.models import (
+    Branch,
     CharacterCard,
     CharacterState,
     DecisionType,
@@ -223,17 +224,21 @@ async def build_character_agents(
     project_id: str,
     character_ids: list[str],
     character_states: dict[str, CharacterState] | None = None,
+    branch_id: str = "",
 ) -> list[CharacterAgent]:
     """构建参演角色的智能体。
 
     character_states 给出时（续跑/回滚/下一场），同时回填角色的时点状态和
     MemoryManager。角色卡文件保存的是最新值，不能代表历史场景应继承的状态；
     短期缓冲与事件摘要则是纯内存态，不回填就会每次从零开始（工单14、Issue #13）。
+
+    branch_id 决定长期记忆写进哪条分支的 Chroma 集合（工单08 I3）：不传就会
+    退回项目级共享集合，两条分支会互相污染。
     """
     agents: list[CharacterAgent] = []
     for cid in character_ids:
         card = await repository.get_character(project_id, cid)
-        mem = MemoryManager(cid, project_id)
+        mem = MemoryManager(cid, project_id, branch_id)
         await mem.connect()
         state = (character_states or {}).get(cid)
         if state is not None:
@@ -320,7 +325,7 @@ async def run_scene(scene_id: str) -> None:
         # 续跑/回滚/下一场：把上一次快照里的角色状态与运行时记忆回填给新建的智能体
         inherited = await _load_inherited_states(scene, sm)
         agents = await build_character_agents(
-            scene.project_id, scene.participating_characters, inherited
+            scene.project_id, scene.participating_characters, inherited, scene.branch_id
         )
 
         config = SceneConfig(
@@ -416,7 +421,13 @@ async def _persist_character_states(agents: list[CharacterAgent]) -> None:
 async def _apply_character_states(
     project_id: str, states: dict[str, CharacterState]
 ) -> None:
-    """将快照恢复得到的角色状态写回角色卡 JSON（回滚场景使用）。"""
+    """将快照里的角色状态写回角色卡 JSON（分叉/回滚使用）。
+
+    ⚠️ 角色卡的 `current_*` 是**项目级单值的展示缓存，不是权威数据源**
+    （CLAUDE.md §4.2 陷阱 10）：两条分支交替推进时会互相覆盖。权威值在快照里，
+    运行路径一律经 `inspection.resolve_scene_states` → `build_character_agents`
+    的 state 覆盖读取，这里写回只是让前端面板与重演起点看起来一致。
+    """
     for cid, state in states.items():
         try:
             card = await repository.get_character(project_id, cid)
@@ -427,6 +438,76 @@ async def _apply_character_states(
             await repository.save_character(card)
         except Exception:  # noqa: BLE001
             logger.warning("回滚写回角色状态失败：%s", cid)
+
+
+# ---------------------------------------------------------------------------
+# 分叉（工单08）
+# ---------------------------------------------------------------------------
+
+
+async def fork_from_snapshot(
+    project_id: str,
+    snapshot_id: str,
+    branch_name: str = "",
+    conditions: dict | None = None,
+    director_notes: str = "",
+) -> tuple[Branch, Scene]:
+    """从快照分叉出一条新时间线：新建分支 + 该分支上的首场 pending 场景。
+
+    这是系统里**唯一**的分叉原语，rollback 也走它 —— 两套实现分叉过一次，
+    其中一套就会悄悄丢掉可追溯性或隔离性（工单08）。五条不变量：
+
+    - I1 起点一致：靠 `restore_snapshot_id` 懒承接（契约4），**绝不 restore_snapshot()**；
+    - I2 无副作用：全程只读来源分支，只新增记录；
+    - I3 相互隔离：复制来源分支的长期记忆到新分支的 Chroma 集合；
+    - I4 可追溯：`parent_branch_id` / `parent_scene_id` 指回来源；
+    - I5 条件生效：`conditions` 覆盖同名的继承条件。
+
+    新场景不自动开跑：分叉是探索性操作，不该隐含一整场 LLM 成本。
+    """
+    sm = SnapshotManager(project_id)
+    snap = await sm.get_snapshot(snapshot_id)
+    if snap is None:
+        raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
+
+    src: Scene | None = None
+    try:
+        src = await repository.get_scene(snap.scene_id)
+    except PlotSystemError:
+        # 快照可以比场景活得久（场景可被删），降级为只用快照里的角色名单
+        logger.warning("快照 %s 的来源场景已不存在，分叉将使用快照内的角色名单", snapshot_id)
+
+    name = branch_name or f"分叉 · {snap.label or snapshot_id[:8]}"
+    branch = await sm.fork_branch(snapshot_id, dict(conditions or {}), name, director_notes)
+    await sm.clone_collections_for_branch(snapshot_id, branch.branch_id)
+
+    base_conditions = dict(src.initial_conditions) if src else {}
+    scene = Scene(
+        scene_id=new_id(),
+        project_id=project_id,
+        branch_id=branch.branch_id,
+        parent_scene_id=snap.scene_id or None,
+        name=f"{src.name}（{name}）" if src else name,
+        description=src.description if src else "",
+        participating_characters=(
+            list(src.participating_characters) if src else list(snap.character_states.keys())
+        ),
+        location=src.location if src else "",
+        initial_conditions={**base_conditions, **(conditions or {})},
+        max_turns=src.max_turns if src else 20,
+        # 漏传会让 selector 场景静默退回轮询（CLAUDE.md §4.2 陷阱 3）
+        speaker_mode=src.speaker_mode if src else settings.DEFAULT_SPEAKER_MODE,
+        status=SceneStatus.PENDING.value,
+        # 契约2 的例外：留空才能让引擎为这条新线重新打前置快照
+        snapshot_id_before="",
+        # 契约4：I1 的唯一正确实现
+        restore_snapshot_id=snapshot_id,
+    )
+    await repository.save_scene(scene)
+    logger.info(
+        "从快照 %s 分叉出分支 %s（%s），首场 %s", snapshot_id, branch.branch_id, name, scene.scene_id
+    )
+    return branch, scene
 
 
 def pause_scene(scene_id: str) -> bool:
@@ -509,9 +590,7 @@ async def apply_decision(
             if target:
                 sm = SnapshotManager(scene.project_id)
                 # 只读快照，不调 restore_snapshot()：后者会 rmtree 并覆盖项目级的
-                # chroma_db 与 kuzu_db（两者按项目共享、不随分支隔离），等于抹掉
-                # 回滚点之后所有分支已积累的长期记忆，且不可逆。重演场景需要的
-                # 运行时记忆由 restore_snapshot_id 懒承接（契约4）。
+                # chroma_db 与 kuzu_db，等于抹掉回滚点之后所有分支已积累的长期记忆。
                 snap = await sm.get_snapshot(target)
                 if snap is None:
                     raise SnapshotNotFoundError(f"快照不存在: {target}")
@@ -520,38 +599,23 @@ async def apply_decision(
                     scene.project_id, dict(snap.character_states)
                 )
 
-                new_conditions = decision.new_initial_conditions or scene.initial_conditions
-                new_scene = Scene(
-                    scene_id=new_id(),
-                    project_id=scene.project_id,
-                    branch_id=scene.branch_id,
-                    parent_scene_id=scene.scene_id,
-                    name=f"{scene.name}（回滚重演）",
-                    description=scene.description,
-                    participating_characters=list(scene.participating_characters),
-                    location=scene.location,
-                    initial_conditions=new_conditions,
-                    max_turns=scene.max_turns,
-                    # 重演必须沿用原场景的选人模式，否则 selector 场景一回滚就静默退回轮询
-                    speaker_mode=scene.speaker_mode,
-                    status=SceneStatus.PENDING.value,
-                    # 注意：此处不能填 target。SceneEngine.run() 只有在
-                    # scene.snapshot_id_before 为空时才会创建模拟前快照，
-                    # 若直接写入 target 会导致重演场景跳过快照创建，
-                    # 无法反映 new_initial_conditions 恢复后的最新状态。
-                    snapshot_id_before="",
-                    # 但仍需记住回滚来源，供 run_scene 回填角色的运行时记忆
-                    # （短期缓冲/事件摘要，工单14）。
-                    restore_snapshot_id=target,
+                # 回滚 = 条件为空的分叉（工单08 结论1）：必须与 fork 走同一原语，
+                # 否则重演场景会继续落在原分支下，分支树看不出这次分叉（I4）。
+                overrides = decision.new_initial_conditions or {}
+                branch, new_scene = await fork_from_snapshot(
+                    scene.project_id,
+                    target,
+                    branch_name=f"回滚重演 · {scene.name}",
+                    conditions=overrides,
                 )
-                await repository.save_scene(new_scene)
                 decision.next_scene_id = new_scene.scene_id
                 # 持久化决策结果，后续重试将幂等重放同一个 next_scene_id
                 await repository.save_decision(scene_id, decision)
                 logger.info(
-                    "回滚场景已创建：%s（%s），恢复自快照 %s",
+                    "回滚场景已创建：%s（%s），分支 %s，来源快照 %s",
                     new_scene.scene_id,
                     new_scene.name,
+                    branch.branch_id,
                     target,
                 )
             else:

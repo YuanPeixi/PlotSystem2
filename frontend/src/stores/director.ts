@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
-import type { BranchTree, SnapshotMeta } from '@/types'
+import type { BranchTree, ForkResult, SnapshotMeta } from '@/types'
 
 export const useDirectorStore = defineStore('director', () => {
   const branchTree = ref<BranchTree>({ project_id: '', roots: [] })
@@ -15,13 +15,14 @@ export const useDirectorStore = defineStore('director', () => {
     snapshots.value = await api.listSnapshots(projectId)
   }
 
-  async function fork(projectId: string, snapshotId: string, name: string, conditions: Record<string, unknown>, notes: string) {
-    await api.forkBranch(projectId, snapshotId, {
+  async function fork(projectId: string, snapshotId: string, name: string, conditions: Record<string, unknown>, notes: string): Promise<ForkResult> {
+    const result = await api.forkBranch(projectId, snapshotId, {
       branch_name: name,
       new_conditions: conditions,
       director_notes: notes,
     })
     await loadBranches(projectId)
+    return result
   }
 
   async function removeSnapshot(projectId: string, snapshotId: string) {
