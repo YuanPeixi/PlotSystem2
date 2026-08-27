@@ -95,6 +95,10 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 不随分支隔离）。**因此分叉目前只登记来源快照**，新分支首场如何承接该快照、
 `fork_conditions` 如何生效，仍归工单 08。
 
+工单 08 已按此重写：先给分叉下严格定义（五条不变量 I1–I5），再分两阶段落地 ——
+阶段 A 给长期记忆补分支维度（隔离性 I3 的架构前提），阶段 B 把 `fork` 与 `rollback`
+收敛成同一个原语。**只改 `fork_branch()` 修不了这个问题**，原因见该工单 §1.2。
+
 ---
 
 ## ⚠️ 2. 已修复：动态图谱的快照持久化（工单 16）
@@ -126,7 +130,7 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整的展示） |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16（硬前置，已随 PR #15 修复） | 待处理 |
-| [08](./08-fork-branch-conditions.md) | `fork_branch` / `new_initial_conditions` 真正生效 | P2 | 01 ✅ | 待处理 |
+| [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | 待处理（已重写，含严格定义 + 五条不变量，分两阶段） |
 
 **为什么把 17 提到 04/05 之前**：用户面板、导演评估、最终总结智能体这三方要看的其实是同一份东西
 （角色的情绪、记忆、位置、内心）。若各做各的，会出现三套口径不一致的读取路径。
