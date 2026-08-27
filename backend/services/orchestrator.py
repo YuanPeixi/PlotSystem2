@@ -345,13 +345,16 @@ async def run_scene(scene_id: str) -> None:
         await repository.save_scene(scene)
         await events.publish(scene_id, "status", {"status": "running"})
 
+        async def _persist_scene() -> None:
+            await repository.save_scene(scene)
+
         async def _on_turn(turn: DialogueTurn) -> None:
             # 逐轮落盘：引擎已把本轮写进 scene.dialogue_log，这里持久化后
             # 中途刷新/断线/进程退出都能从 GET /scenes/{id} 拿回已产生的轮次。
-            await repository.save_scene(scene)
+            await _persist_scene()
             await events.publish(scene_id, "turn", to_dict(turn))
 
-        result = await engine.run(on_turn=_on_turn)
+        result = await engine.run(on_turn=_on_turn, on_persist=_persist_scene)
         # 持久化角色状态变更（情绪/目标/位置）
         await _persist_character_states(agents)
         await repository.save_scene(scene)
