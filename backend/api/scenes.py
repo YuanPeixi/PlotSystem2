@@ -122,7 +122,11 @@ async def scene_log(scene_id: str) -> ApiResponse:
 
 @scene_router.get("/{scene_id}/stream")
 async def scene_stream(scene_id: str) -> EventSourceResponse:
-    """SSE 实时流。事件类型：turn / status / snapshot / evaluation / error。"""
+    """SSE 实时流。事件类型：turn / status / snapshot / evaluation / scene_error。
+
+    业务失败事件叫 `scene_error` 而不是 `error`：后者是 EventSource 原生的
+    连接错误事件名，同名会让前端把两者混在一个处理器里、丢掉失败原因。
+    """
     # 场景不存在要在建流之前报错：响应头一旦发出就没法再返回 404 了
     scene = await repository.get_scene(scene_id)
 

@@ -91,16 +91,20 @@ class SnapshotManager:
             # 不能降级为 debug：图谱进不了快照意味着回滚时图谱不会被恢复
             logger.warning("图谱快照失败，本次快照不含知识图谱：%s", exc)
 
-        # ChromaDB 集合
+        # ChromaDB 集合（全量目录拷贝）。拷贝发生在各 MemoryManager 正持有 chroma
+        # 连接时，失败不能往上抛：否则一次拷贝失败就会把整场推演拖成 paused。
         chroma_src = settings.project_dir(self.project_id) / "chroma_db"
         if chroma_src.exists():
             import shutil
 
-            dest = snap_dir / "chroma_collections"
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(chroma_src, dest)
-            snap.chroma_checkpoint = str(dest)
+            try:
+                dest = snap_dir / "chroma_collections"
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(chroma_src, dest)
+                snap.chroma_checkpoint = str(dest)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("长期记忆快照失败，本次快照不含向量库：%s", exc)
 
         # 写元数据
         (snap_dir / "meta.json").write_text(to_json(snap), encoding="utf-8")
@@ -128,6 +132,14 @@ class SnapshotManager:
 
     # ---- 恢复 ----
     async def restore_snapshot(self, snapshot_id: str) -> dict[str, CharacterState]:
+        """就地恢复项目级图谱与向量库，并返回快照里的角色状态。
+
+        ⚠️ **破坏性操作**：kuzu_db 与 chroma_db 按项目共享、不随分支隔离，
+        调用它等于抹掉快照之后所有分支已积累的长期记忆，不可逆。
+        只想让某一场从快照接上运行时记忆的，走 `Scene.restore_snapshot_id`
+        的懒承接（契约4，`inspection.resolve_scene_states`），不要调本方法。
+        目前无生产调用方。
+        """
         snap_dir = _snapshots_dir(self.project_id) / snapshot_id
         if not snap_dir.exists():
             raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")

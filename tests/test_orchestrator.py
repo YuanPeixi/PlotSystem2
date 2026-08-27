@@ -18,6 +18,7 @@ import asyncio
 
 import pytest
 
+from backend.config import settings
 from backend.exceptions import ConflictError
 from backend.models import (
     CharacterCard,
@@ -36,9 +37,9 @@ from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
 
 
-async def _setup_project_scene_and_snapshot():
-    project_id = "proj-rollback-test"
-    character_id = "char-rollback-test"
+async def _setup_project_scene_and_snapshot(suffix: str = ""):
+    project_id = f"proj-rollback-test{suffix}"
+    character_id = f"char-rollback-test{suffix}"
 
     project = Project(project_id=project_id, name="回滚测试项目")
     await repository.save_project(project)
@@ -54,7 +55,7 @@ async def _setup_project_scene_and_snapshot():
     await repository.save_character(card)
 
     scene = Scene(
-        scene_id="scene-rollback-test",
+        scene_id=f"scene-rollback-test{suffix}",
         project_id=project_id,
         branch_id="branch-main",
         name="第一场",
@@ -792,6 +793,92 @@ async def test_run_scene_failure_marks_scene_paused(monkeypatch):
     stored = await repository.get_scene(scene.scene_id)
     assert stored.status == "paused"
     assert orchestrator.is_scene_active(scene.scene_id) is False
+
+
+@pytest.mark.asyncio
+async def test_run_scene_keeps_completed_when_evaluation_fails(monkeypatch):
+    """评估用的 LLM 挂掉不得把已跑完的场景退回 paused。
+
+    决策的 CAS 只接 completed，一旦退回，用户就再也无法对这场提交决策，
+    只能重跑一遍空转并覆盖 snapshot_id_after。
+    """
+    project_id = "proj-eval-failure"
+    await repository.save_project(Project(project_id=project_id, name="评估失败测试"))
+    scene = Scene(
+        scene_id="scene-eval-failure",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="评估会失败的场景",
+    )
+    await repository.save_scene(scene)
+
+    class FakeEngine:
+        def __init__(self, scene_obj, *args, **kwargs):
+            self.scene = scene_obj
+
+        def inject_history(self, *args, **kwargs):
+            pass
+
+        async def run(self, on_turn=None):
+            self.scene.status = "completed"
+            self.scene.snapshot_id_after = "snap-fake"
+            return SceneResult(
+                scene_id=self.scene.scene_id,
+                dialogue_log=[],
+                snapshot_id_before="",
+                snapshot_id_after="snap-fake",
+                turns_completed=0,
+                terminated_reason="max_turns",
+            )
+
+    class BoomDirector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def evaluate_scene(self, *args, **kwargs):
+            raise RuntimeError("评估模型挂了")
+
+    async def fake_build_agents(pid, cids, states=None):
+        return []
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
+    monkeypatch.setattr(orchestrator, "SceneEngine", FakeEngine)
+    monkeypatch.setattr(orchestrator, "DirectorAgent", BoomDirector)
+
+    await orchestrator.run_scene(scene.scene_id)
+
+    stored = await repository.get_scene(scene.scene_id)
+    assert stored.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_rollback_does_not_wipe_shared_long_term_memory():
+    """回滚不得就地覆盖项目级 chroma_db / kuzu_db。
+
+    两者按项目共享、不随分支隔离，restore_snapshot() 会 rmtree 后拷回旧副本，
+    等于永久抹掉回滚点之后所有分支已积累的长期记忆。重演场景需要的运行时记忆
+    走 restore_snapshot_id 懒承接（契约4），不需要这个副作用。
+    """
+    project_id = "proj-rollback-test-nowipe"  # 与 _setup_project_scene_and_snapshot 的命名保持一致
+    # 快照必须在向量库已存在时创建，否则它不带 chroma_checkpoint，本用例会假通过
+    chroma_dir = settings.project_dir(project_id) / "chroma_db"
+    chroma_dir.mkdir(parents=True, exist_ok=True)
+    (chroma_dir / "before_snapshot.txt").write_text("回滚点之前的记忆", encoding="utf-8")
+
+    _, _, scene, snap = await _setup_project_scene_and_snapshot("-nowipe")
+    assert snap.chroma_checkpoint, "前置条件：快照应包含向量库副本"
+
+    # 回滚点之后新积累的长期记忆（可能属于其他分支）
+    marker = chroma_dir / "after_snapshot.txt"
+    marker.write_text("回滚点之后写入的记忆", encoding="utf-8")
+
+    decision = await orchestrator.apply_decision(
+        scene.scene_id,
+        DirectorDecision(decision_type="rollback", rollback_to_snapshot_id=snap.snapshot_id),
+    )
+
+    assert decision.next_scene_id
+    assert marker.exists()
 
 
 @pytest.mark.asyncio

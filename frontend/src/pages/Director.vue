@@ -125,6 +125,11 @@ async function plan() {
 
 async function startScene() {
   if (!draft.value) return
+  // branch_id 为空的场景会从所有按分支过滤的列表里消失，建之前先拦下
+  if (!branchId.value) {
+    alert('当前没有可用分支，请先完成项目构建或选中一条分支')
+    return
+  }
   const scene = await sceneStore.createScene(props.projectId, {
     branch_id: branchId.value,
     name: draft.value.name,
@@ -270,6 +275,7 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
             <span class="tag">{{ sceneStore.statusMsg || '空闲' }}</span>
           </div>
         </div>
+        <p v-if="sceneStore.lastError" class="scene-error">⚠ {{ sceneStore.lastError }}</p>
         <DialogLog :turns="sceneStore.turns" />
       </section>
 
@@ -349,6 +355,11 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.scene-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--highlight);
 }
 .draft {
   margin-top: 16px;
