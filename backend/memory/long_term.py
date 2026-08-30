@@ -39,6 +39,23 @@ def collection_name_for(character_id: str, branch_id: str = "") -> str:
     return f"char_{character_id.replace('-', '')}{branch_suffix(branch_id)}"
 
 
+# 集合元数据上的“不需要再从项目级老集合承接”标记。不能用“集合非空”代替：
+# 空集合可能是“尚未承接”，也可能是“分叉点本来就没记忆”，两者误判会把
+# 分叉点之后的共享记忆灌进历史分支；非空也可能是“承接到一半被杀”。
+LEGACY_ADOPTED_KEY = "legacy_adopted"
+
+
+def is_adopted(col) -> bool:
+    return bool((col.metadata or {}).get(LEGACY_ADOPTED_KEY))
+
+
+def mark_adopted(col) -> None:
+    """标记集合已完成初始化，不得再从项目级老集合补数据。"""
+    if is_adopted(col):
+        return
+    col.modify(metadata={**(col.metadata or {}), LEGACY_ADOPTED_KEY: True})
+
+
 def max_batch_size(client, default: int = 1000) -> int:
     """取 Chroma 客户端单次写入的条数上限（不同版本暴露方式不同）。"""
     getter = getattr(client, "get_max_batch_size", None)
@@ -131,6 +148,11 @@ class LongTermMemory:
 
         集合名加分支后缀（工单08 I3）之后，老项目的记忆全留在无后缀集合里，而生产
         路径一律传分支 ID —— 不承接就等于升级即失忆（数据还在，检索不到）。
+
+        是否需要承接只看 `LEGACY_ADOPTED_KEY` 标记：分叉出来的分支在复制时就已打上标记，
+        即使零条记忆也不能再从共享集合补数据（那些是分叉点之后的“未来记忆”）；
+        反过来，承接到一半被硬杀也不会因为集合非空而被当成“已完成”，下次连接会
+        用原 id 继续 upsert 补齐。
         """
         legacy_name = collection_name_for(self.character_id, "")
         if legacy_name == self.collection_name:
@@ -138,24 +160,18 @@ class LongTermMemory:
         existing = {c.name for c in self._client.list_collections()}
         if legacy_name not in existing:
             return
-        if self.collection_name in existing:
-            dst = self._client.get_collection(self.collection_name, embedding_function=embed_fn)
-            if dst.count() > 0:
-                return
-        else:
-            dst = self._client.get_or_create_collection(
-                self.collection_name, embedding_function=embed_fn
-            )
+        dst = self._client.get_or_create_collection(
+            self.collection_name, embedding_function=embed_fn
+        )
+        if is_adopted(dst):
+            return
         src = self._client.get_collection(legacy_name, embedding_function=embed_fn)
         try:
             moved = copy_collection(src, dst, max_batch_size(self._client))
+            mark_adopted(dst)
         except Exception as exc:  # noqa: BLE001
-            # 半截的集合会让下次连接误判为“已承接”，删掉让它自愈重来
-            logger.warning("角色 %s 承接项目级历史记忆失败：%s", self.character_id, exc)
-            try:
-                self._client.delete_collection(self.collection_name)
-            except Exception:  # noqa: BLE001
-                logger.warning("清理半成品集合 %s 失败", self.collection_name)
+            # 不删集合：没打标记就不算完成，下次连接会幂等地继续搬完
+            logger.warning("角色 %s 承接项目级历史记忆失败，下次连接重试：%s", self.character_id, exc)
             return
         if moved:
             logger.info(

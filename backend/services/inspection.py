@@ -129,21 +129,33 @@ async def load_character_state(
 
 
 async def _resolve_branch(
-    project_id: str, *, branch_id: str, source_snapshot_id: str, scene_id: str
+    project_id: str,
+    *,
+    branch_id: str,
+    snapshot_id: str,
+    scene_id: str,
+    source_snapshot_id: str,
 ) -> str:
-    """把状态来源解析成分支 id：显式分支 > 状态来源快照所属分支 > 场景所属分支。
+    """解析长期记忆该查哪条分支的集合，优先级与时点解析对齐：
+    显式分支 > 显式快照所属分支 > 场景自身分支 > 默认时点的来源快照所属分支。
 
-    必须与 `load_character_state` 的时点解析同源：只按 scene_id 补分支的话，
-    按 snapshot_id 或默认时点查询就会退回项目级共享集合。
+    场景查询**不能**用继承来的快照反推分支：新分支首场的 `restore_snapshot_id`
+    指向的是**来源分支**的快照（契约4 懒承接），按它取集合会把主线分叉后的
+    记忆查回来。该时点之前的记忆已在分叉时复制进本分支集合（I3），内容仍一致。
     """
     if branch_id:
         return branch_id
-    if source_snapshot_id:
-        snap = await SnapshotManager(project_id).get_snapshot(source_snapshot_id)
+    sm = SnapshotManager(project_id)
+    if snapshot_id:
+        snap = await sm.get_snapshot(snapshot_id)
         if snap is not None and snap.branch_id:
             return snap.branch_id
     if scene_id:
         return (await repository.get_scene(scene_id)).branch_id
+    if source_snapshot_id:
+        snap = await sm.get_snapshot(source_snapshot_id)
+        if snap is not None and snap.branch_id:
+            return snap.branch_id
     return ""
 
 
@@ -179,7 +191,11 @@ async def inspect_character(
             # 长期记忆按分支隔离（工单08 I3）：分支必须与状态来源同源解析，
             # 否则会出现"状态取自快照、记忆却查共享集合"的错配。
             resolved_branch = await _resolve_branch(
-                project_id, branch_id=branch_id, source_snapshot_id=source, scene_id=scene_id
+                project_id,
+                branch_id=branch_id,
+                snapshot_id=snapshot_id,
+                scene_id=scene_id,
+                source_snapshot_id=source,
             )
             mem = MemoryManager(character_id, project_id, resolved_branch)
             hits = await mem.retrieve(memory_query, top_k)

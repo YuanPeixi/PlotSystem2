@@ -221,6 +221,7 @@ class SnapshotManager:
             from backend.memory.long_term import (
                 branch_suffix,
                 copy_collection,
+                mark_adopted,
                 max_batch_size,
             )
         except Exception as exc:  # noqa: BLE001
@@ -257,6 +258,8 @@ class SnapshotManager:
                 )
                 # 带着原向量一起搬，避免为历史记忆重新调用 embedding 服务
                 copy_collection(src_col, dst_col, batch)
+                # 新分支的起点就是快照时点，即使零条也不得再从项目级老集合补数据
+                mark_adopted(dst_col)
                 copied += 1
             except Exception as exc:  # noqa: BLE001
                 logger.warning("集合 %s 复制到分支 %s 失败：%s", src_name, new_branch_id, exc)

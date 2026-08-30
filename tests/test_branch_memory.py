@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from backend.memory import MemoryManager
-from backend.models import CharacterState
-from backend.services import inspection
+from backend.memory import MemoryManager, long_term
+from backend.models import CharacterState, Scene
+from backend.services import inspection, repository
 from backend.snapshot import SnapshotManager
 
 
@@ -76,6 +76,85 @@ async def test_adoption_happens_only_once(fake_embedding):
     await again.connect()
 
     assert again.long_term._collection.count() == 2
+
+
+@pytest.mark.asyncio
+async def test_forked_branch_never_adopts_post_fork_memory(fake_embedding):
+    """分叉点之后写进共享集合的记忆，不能被新分支当成"待承接的历史"灌进来。"""
+    project_id, character_id = "proj-future", "char-future"
+    legacy = await _seed(project_id, character_id, "", "分叉前：国王仍在位")
+    sm = SnapshotManager(project_id)
+    snap = await sm.create_snapshot(
+        "scene-future", "branch-src", {character_id: CharacterState(character_id=character_id)}
+    )
+    await legacy.long_term.add("分叉后：国王驾崩")
+
+    await sm.clone_collections_for_branch(snap.snapshot_id, "branch-if")
+    mem = MemoryManager(character_id, project_id, "branch-if")
+    await mem.connect()
+    hits = [c.text for c in await mem.long_term.retrieve("国王", top_k=5)]
+
+    assert "分叉前：国王仍在位" in hits
+    assert "分叉后：国王驾崩" not in hits
+
+
+@pytest.mark.asyncio
+async def test_interrupted_adoption_resumes_on_next_connect(fake_embedding, monkeypatch):
+    """承接中断（半截 + 期间还写了新记忆）后，下次连接必须继续补齐。"""
+    project_id, character_id = "proj-resume", "char-resume"
+    legacy = await _seed(project_id, character_id, "", "老记忆一")
+    await legacy.long_term.add("老记忆二")
+
+    real_copy = long_term.copy_collection
+
+    def half_then_die(src_col, dst_col, _batch):
+        page = src_col.get(limit=1, include=["documents", "metadatas", "embeddings"])
+        dst_col.upsert(
+            ids=page["ids"],
+            documents=page["documents"],
+            metadatas=page["metadatas"],
+            embeddings=page["embeddings"],
+        )
+        raise RuntimeError("killed mid-copy")
+
+    monkeypatch.setattr(long_term, "copy_collection", half_then_die)
+    broken = MemoryManager(character_id, project_id, "branch-r")
+    await broken.connect()
+    await broken.long_term.add("承接期间产生的新记忆")
+    assert broken.long_term._collection.count() < 3, "前置条件：承接确实被打断"
+
+    monkeypatch.setattr(long_term, "copy_collection", real_copy)
+    healed = MemoryManager(character_id, project_id, "branch-r")
+    await healed.connect()
+
+    assert healed.long_term._collection.count() == 3
+
+
+@pytest.mark.asyncio
+async def test_scene_query_uses_scene_branch(fake_embedding):
+    """场景查询按场景自身分支取记忆：新分支首场的 restore_snapshot 属于来源分支。"""
+    project_id, character_id = "proj-scene-branch", "char-scene-branch"
+    sm = SnapshotManager(project_id)
+    snap = await sm.create_snapshot(
+        "scene-src", "branch-main", {character_id: CharacterState(character_id=character_id)}
+    )
+    scene = Scene(
+        scene_id="scene-if-first",
+        project_id=project_id,
+        branch_id="branch-if",
+        restore_snapshot_id=snap.snapshot_id,
+    )
+    await repository.save_scene(scene)
+
+    resolved = await inspection._resolve_branch(
+        project_id,
+        branch_id="",
+        snapshot_id="",
+        scene_id=scene.scene_id,
+        source_snapshot_id=snap.snapshot_id,
+    )
+
+    assert resolved == "branch-if"
 
 
 @pytest.mark.asyncio
@@ -149,8 +228,21 @@ async def test_resolve_branch_uses_snapshot_source(fake_embedding):
         "scene-resolve", "branch-resolve", {"char-r": CharacterState(character_id="char-r")}
     )
 
-    resolved = await inspection._resolve_branch(
-        project_id, branch_id="", source_snapshot_id=snap.snapshot_id, scene_id=""
+    explicit = await inspection._resolve_branch(
+        project_id,
+        branch_id="",
+        snapshot_id=snap.snapshot_id,
+        scene_id="",
+        source_snapshot_id="",
+    )
+    # 默认时点（既没给场景也没给快照）靠解析出的最近一个快照定分支
+    latest = await inspection._resolve_branch(
+        project_id,
+        branch_id="",
+        snapshot_id="",
+        scene_id="",
+        source_snapshot_id=snap.snapshot_id,
     )
 
-    assert resolved == "branch-resolve"
+    assert explicit == "branch-resolve"
+    assert latest == "branch-resolve"
