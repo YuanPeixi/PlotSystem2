@@ -478,8 +478,12 @@ async def fork_from_snapshot(
         logger.warning("快照 %s 的来源场景已不存在，分叉将使用快照内的角色名单", snapshot_id)
 
     name = branch_name or f"分叉 · {snap.label or snapshot_id[:8]}"
-    branch = await sm.fork_branch(snapshot_id, dict(conditions or {}), name, director_notes)
-    await sm.clone_collections_for_branch(snapshot_id, branch.branch_id)
+    # 先搬记忆再建分支：搬运失败会抛错，顺序反过来就会留下一条无记忆的孤儿分支
+    branch_id = new_id()
+    await sm.clone_collections_for_branch(snapshot_id, branch_id)
+    branch = await sm.fork_branch(
+        snapshot_id, dict(conditions or {}), name, director_notes, branch_id=branch_id
+    )
 
     base_conditions = dict(src.initial_conditions) if src else {}
     scene = Scene(

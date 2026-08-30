@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCharacterStore } from '@/stores/characters'
 import { useSceneStore } from '@/stores/scenes'
@@ -195,6 +195,15 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
   try {
     await sceneStore.submitDecision(sceneStore.currentScene.scene_id, payload)
     await directorStore.loadBranches(props.projectId)
+    // rollback 会把新场景建到一条新分支上，分支选择不跟着切，后续"让导演规划"
+    // 和场景列表还会落回旧分支（watcher 会改写当前场景，故先抑制再手工刷新）
+    const nextBranch = sceneStore.currentScene?.branch_id
+    if (nextBranch && nextBranch !== branchId.value) {
+      bootstrapped = false
+      branchId.value = nextBranch
+      await nextTick()
+      bootstrapped = true
+    }
     await refreshBranchData()
     const nowId = sceneStore.currentScene?.scene_id
     if (nowId && route.query.scene !== nowId) {

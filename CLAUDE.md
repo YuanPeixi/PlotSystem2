@@ -280,6 +280,14 @@ frontend/src/
 11. **`branch_id` 是长期记忆的一部分寻址信息**：`MemoryManager(cid, pid, branch_id)` 留空
     会退回项目级共享 collection。生产构造点（`orchestrator.build_character_agents`、
     `inspection.inspect_character`）必须传对分支，否则 IF 线会检索到主线的台词。
+    `inspect_character` 的分支解析必须与**状态来源同源**（`_resolve_branch`：显式分支 >
+    来源快照所属分支 > 场景所属分支），只按 `scene_id` 补分支会让按快照查询的请求
+    「状态取自快照、记忆却查共享集合」。
+
+12. **改造前的项目级集合靠首次连接一次性承接**：`LongTermMemory._connect_sync` 发现
+    本分支集合为空而无后缀的老集合存在时，会把老记录 upsert 过来（原 id、原向量）。
+    没有它，老项目升级后角色会读到空集合（数据还在，但检索不到）。承接失败会删掉
+    半成品集合让下次连接自愈。
 
 ---
 
@@ -422,13 +430,16 @@ graph TD
 |------|------|------|
 | I1 | 起点一致 | `Scene₀.restore_snapshot_id = S`，靠契约4 懒承接，**绝不 restore_snapshot()** |
 | I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景 |
-| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里的向量搬进 `char_{cid}__{新分支}` |
+| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进 `char_{cid}__{新分支}`，分页读 + 按客户端 `max_batch_size` 分批写 |
 | I4 | 可追溯 | `Branch.parent_branch_id = S.branch_id`；`Scene₀.parent_scene_id = S.scene_id` |
 | I5 | 条件生效 | `Scene₀.initial_conditions = {**来源场景条件, **C}` |
 
 `Scene₀` 状态恒为 `pending`，**不自动开跑**——分叉是探索性操作，不该隐含整场 LLM 成本。
 来源场景已被删时降级：参演角色取自 `S.character_states`。
 `Branch.fork_conditions` 仅为溯源元数据，权威值在 `Scene₀.initial_conditions`。
+**记忆先搬、分支后建**：复制用预生成的 `branch_id` 在 `fork_branch` 之前执行，失败
+（`MemoryError` → 500）就不会留下一条无记忆的孤儿分支。Chroma 不可用 / 快照不含向量库
+仍按契约6 只 warning 跳过，与「库可用但复制失败」区别对待。
 
 ### 6.4 启动对账
 
@@ -556,7 +567,8 @@ graph TD
 { "success": true, "data": {}, "error": null, "timestamp": "..." }
 ```
 
-异常映射：`ConflictError` → 409，其余 `PlotSystemError` → 404（`main.py` 全局处理器）。
+异常映射：`ConflictError` → 409，`MemoryError`（长期记忆继承失败）→ 500，
+其余 `PlotSystemError` → 404（`main.py` 全局处理器）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -627,6 +639,9 @@ graph TD
 - **分叉后只 `attachScene`**：`confirmFork` 切到新分支并打开返回的首场，绝不调 `joinScene`
   （它会 `/start`，用户点一下“分叉”就烧掉一整场 LLM）。IF 条件在分叉表单里按每行
   `key=value` 填，解析后进 `new_conditions`。
+- **决策后要把分支选择一起切**：rollback 会把新场景建到新分支上，`onDecision` 必须按
+  `currentScene.branch_id` 同步 `branchId`（切时先抑制 watcher，否则它会把当前场景改写成
+  新分支的最后一场）。不同步的话，后续“让导演规划”和场景列表仍按旧分支走。
 - **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
   否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
 - `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。
@@ -816,4 +831,17 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      （rollback 从此产生新分支，fork 返回体变为 `{branch, scene}`）；前端分叉表单支持
      每行 `key=value` 的 IF 条件并在成功后 attach 新分支首场。
      同步更新 4.2 陷阱 10/11、6.3 与新增 6.3.1、8、9、12.1。
+-->
+<!-- 2026-08-30: 工单08 的 PR review 修复（5 项）：
+     - 升级承接：`LongTermMemory._connect_sync` 首次以分支身份连接时，把无后缀的老集合
+       upsert 过来，否则已有项目升级后角色读到空集合（4.2 陷阱 12）；
+     - 分叉复制范围：`clone_collections_for_branch` 按集合名枚举来源分支的全部角色，
+       原先只取 `snap.character_states`（本场参演者），缺席角色一分叉即失忆；
+     - 分页分批搬运（`long_term.copy_collection` + `max_batch_size`），并区分「库不可用」
+       （warning 跳过）与「复制失败」（抛 `MemoryError` → 500）；记忆先搬、分支后建，
+       不再留下无记忆的孤儿分支；
+     - `inspection._resolve_branch`：分支解析与状态来源同源，修掉按 snapshot_id 查询时
+       「状态取自快照、记忆却查共享集合」；
+     - 前端 `onDecision` 按 `currentScene.branch_id` 同步分支选择（rollback 会换分支）。
+     新增 tests/test_branch_memory.py（真实 Chroma + 确定性假向量）。
 -->

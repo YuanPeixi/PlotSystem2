@@ -128,6 +128,25 @@ async def load_character_state(
     return fallback, ""
 
 
+async def _resolve_branch(
+    project_id: str, *, branch_id: str, source_snapshot_id: str, scene_id: str
+) -> str:
+    """把状态来源解析成分支 id：显式分支 > 状态来源快照所属分支 > 场景所属分支。
+
+    必须与 `load_character_state` 的时点解析同源：只按 scene_id 补分支的话，
+    按 snapshot_id 或默认时点查询就会退回项目级共享集合。
+    """
+    if branch_id:
+        return branch_id
+    if source_snapshot_id:
+        snap = await SnapshotManager(project_id).get_snapshot(source_snapshot_id)
+        if snap is not None and snap.branch_id:
+            return snap.branch_id
+    if scene_id:
+        return (await repository.get_scene(scene_id)).branch_id
+    return ""
+
+
 async def inspect_character(
     project_id: str,
     character_id: str,
@@ -157,11 +176,11 @@ async def inspect_character(
     hits: list[MemoryChunk] = []
     if memory_query:
         try:
-            # 长期记忆按分支隔离（工单08 I3）：调用方只给了 scene_id 时补解析出分支，
-            # 否则会退回项目级共享集合、查到别的分支的内容。
-            resolved_branch = branch_id
-            if not resolved_branch and scene_id:
-                resolved_branch = (await repository.get_scene(scene_id)).branch_id
+            # 长期记忆按分支隔离（工单08 I3）：分支必须与状态来源同源解析，
+            # 否则会出现"状态取自快照、记忆却查共享集合"的错配。
+            resolved_branch = await _resolve_branch(
+                project_id, branch_id=branch_id, source_snapshot_id=source, scene_id=scene_id
+            )
             mem = MemoryManager(character_id, project_id, resolved_branch)
             hits = await mem.retrieve(memory_query, top_k)
         except Exception:  # noqa: BLE001
