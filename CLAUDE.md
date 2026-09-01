@@ -435,7 +435,7 @@ graph TD
 | 编号 | 名称 | 实现 |
 |------|------|------|
 | I1 | 起点一致 | `Scene₀.restore_snapshot_id = S`，靠契约4 懒承接，**绝不 restore_snapshot()** |
-| I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景；Chroma `PersistentClient` 会在打开时维护文件，因此只能打开 checkpoint 的临时副本，不能直接打开权威快照目录 |
+| I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景；Chroma `PersistentClient` 会在打开时维护文件，因此只能打开 checkpoint 的临时副本，不能直接打开权威快照目录（代价：分叉期间向量库占用的磁盘峰值翻倍，用空间换快照不可变，向量库变大后可再优化） |
 | I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进 `char_{cid}__{新分支}`，分页读 + 按客户端 `max_batch_size` 分批写；另以分支级初始化文件封住快照中不存在 collection 的角色和空起点 |
 | I4 | 可追溯 | `Branch.parent_branch_id = S.branch_id`；`Scene₀.parent_scene_id = S.scene_id` |
 | I5 | 条件生效 | `Scene₀.initial_conditions = {**来源场景条件, **C}` |

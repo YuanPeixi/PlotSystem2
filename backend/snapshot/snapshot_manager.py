@@ -11,6 +11,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from backend.config import settings
 from backend.exceptions import MemoryError as MemoryCopyError
@@ -310,7 +311,7 @@ class SnapshotManager:
                 logger.warning("清理分叉用 Chroma 临时副本失败：%s", exc)
 
     @staticmethod
-    def _close_chroma_client(client, *, stop_fallback: bool = False) -> None:
+    def _close_chroma_client(client: Any, *, stop_fallback: bool = False) -> None:
         if client is None:
             return
         close = getattr(client, "close", None)

@@ -131,6 +131,9 @@ def test_fork_memory_initialization_has_no_hard_chromadb_dependency(tmp_path):
         cwd=repo_root,
         env=env,
         text=True,
+        # 不显式指定就按 Windows 的 GBK 解码，中文 traceback 会让读取线程直接崩掉
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=30,
         check=False,
