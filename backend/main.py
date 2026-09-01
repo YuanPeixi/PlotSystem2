@@ -15,6 +15,7 @@ from backend.api import branches, characters, director, graph, output, projects,
 from backend.api.schemas import ApiResponse
 from backend.config import settings
 from backend.exceptions import ConflictError, PlotSystemError
+from backend.exceptions import MemoryError as MemoryStoreError
 from backend.services import orchestrator
 from backend.utils.db import init_db
 from backend.utils.logger import get_logger
@@ -56,6 +57,12 @@ app.add_middleware(
 @app.exception_handler(ConflictError)
 async def handle_conflict_error(_: Request, exc: ConflictError) -> JSONResponse:
     return JSONResponse(status_code=409, content=ApiResponse.fail(str(exc)).model_dump())
+
+
+@app.exception_handler(MemoryStoreError)
+async def handle_memory_error(_: Request, exc: MemoryStoreError) -> JSONResponse:
+    # 记忆存储出错是服务端故障，不能跟着其他业务异常报 404
+    return JSONResponse(status_code=500, content=ApiResponse.fail(str(exc)).model_dump())
 
 
 @app.exception_handler(PlotSystemError)

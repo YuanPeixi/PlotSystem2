@@ -5,6 +5,7 @@ import type {
   BuildStatus,
   CharacterCard,
   CharacterInspection,
+  ForkResult,
   GraphData,
   Project,
   Scene,
@@ -101,7 +102,7 @@ export const api = {
   getBranches: (id: string) => unwrap<BranchTree>(http.get(`/projects/${id}/branches`)),
   listSnapshots: (id: string) => unwrap<SnapshotMeta[]>(http.get(`/projects/${id}/snapshots`)),
   forkBranch: (id: string, snapshotId: string, payload: Record<string, unknown>) =>
-    unwrap(http.post(`/snapshots/${snapshotId}/fork?project_id=${id}`, payload)),
+    unwrap<ForkResult>(http.post(`/snapshots/${snapshotId}/fork?project_id=${id}`, payload)),
   deleteSnapshot: (id: string, snapshotId: string) =>
     unwrap(http.delete(`/snapshots/${snapshotId}?project_id=${id}`)),
 

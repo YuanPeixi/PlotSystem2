@@ -6,10 +6,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
+import tempfile
 from pathlib import Path
+from typing import Any
 
 from backend.config import settings
+from backend.exceptions import MemoryError as MemoryCopyError
 from backend.exceptions import SnapshotNotFoundError
 from backend.knowledge_graph import GraphManager
 from backend.models import (
@@ -22,6 +27,7 @@ from backend.models import (
 )
 from backend.snapshot.branch_tree import build_branch_tree
 from backend.utils import db
+from backend.utils.branch_memory import is_fork_initialized, mark_fork_initialized
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_json
 
@@ -173,6 +179,183 @@ class SnapshotManager:
         logger.info("恢复快照 %s，角色数 %d", snapshot_id, len(states))
         return states
 
+    async def clone_collections_for_branch(
+        self, snapshot_id: str, new_branch_id: str
+    ) -> int:
+        """把快照时点的长期记忆复制到新分支的集合（工单08 I1 + I3）。
+
+        新分支必须继承来源分支在该时点之前的记忆，否则角色一分叉就失忆；又不能
+        直接共用集合，否则两条线互相污染。返回成功复制的集合数。
+
+        契约6：Chroma 不可用或快照不含向量库时只 warning 并跳过，不打断 fork；
+        但库可用却复制失败是真错误，抛 `MemoryError` —— 静默失败会让用户拿到一条
+        "看上去成功但角色失忆"的新时间线。
+        """
+        snap = await self.get_snapshot(snapshot_id)
+        if snap is None:
+            raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
+        ckpt = Path(snap.chroma_checkpoint) if snap.chroma_checkpoint else None
+        # 认 chroma.sqlite3：快照可能是在 Chroma 不可用时打的，此时目录里没有真正的库，
+        # 强行 PersistentClient 会往快照目录里写出一个空库（违反 I2 的只读要求）。
+        if ckpt is None or not (ckpt / "chroma.sqlite3").exists():
+            logger.warning(
+                "快照 %s 不含向量库副本，分支 %s 将从空长期记忆开始",
+                snapshot_id,
+                new_branch_id,
+            )
+            copied = 0
+        else:
+            copied = await asyncio.to_thread(
+                self._clone_collections_sync,
+                ckpt,
+                snap.branch_id,
+                new_branch_id,
+            )
+
+        # collection 元数据无法覆盖“快照时该角色根本没有集合”的情况。无集合或
+        # Chroma 缺失的降级路径也必须封住整条分支，否则未来首次连接仍会越过分叉点。
+        try:
+            await asyncio.to_thread(
+                mark_fork_initialized,
+                settings.project_dir(self.project_id) / "chroma_db",
+                new_branch_id,
+            )
+        except OSError as exc:
+            raise MemoryCopyError(f"分支 {new_branch_id} 的记忆初始化状态保存失败") from exc
+        return copied
+
+    def _clone_collections_sync(
+        self,
+        checkpoint_dir: Path,
+        src_branch_id: str,
+        new_branch_id: str,
+    ) -> int:
+        try:
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+
+            from backend.memory.embeddings import RemoteEmbeddingFunction
+            from backend.memory.long_term import (
+                branch_suffix,
+                copy_collection,
+                mark_adopted,
+                max_batch_size,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Chroma 不可用，跳过分支记忆复制：%s", exc)
+            return 0
+
+        chroma_settings = ChromaSettings(anonymized_telemetry=False, allow_reset=True)
+        live_dir = settings.project_dir(self.project_id) / "chroma_db"
+        live_dir.mkdir(parents=True, exist_ok=True)
+        work_root: Path | None = None
+        src_client = None
+        dst_client = None
+        try:
+            # PersistentClient 即使只读也会改写 sqlite/HNSW 文件。先复制到临时工作库，
+            # 保证权威快照在重复或并发分叉过程中始终逐字节不变。
+            work_root = Path(tempfile.mkdtemp(prefix="plotsystem_chroma_fork_"))
+            source_dir = work_root / "checkpoint"
+            shutil.copytree(checkpoint_dir, source_dir)
+            src_client = chromadb.PersistentClient(path=str(source_dir), settings=chroma_settings)
+            dst_client = chromadb.PersistentClient(path=str(live_dir), settings=chroma_settings)
+            available = {c.name for c in src_client.list_collections()}
+        except Exception as exc:  # noqa: BLE001
+            self._close_chroma_client(src_client, stop_fallback=True)
+            self._close_chroma_client(dst_client)
+            if work_root is not None:
+                shutil.rmtree(work_root, ignore_errors=True)
+            raise MemoryCopyError(
+                f"分支 {new_branch_id} 的长期记忆继承失败：无法打开向量库"
+            ) from exc
+
+        try:
+            plan = self._plan_clone(
+                available,
+                branch_suffix(src_branch_id),
+                branch_suffix(new_branch_id),
+                include_legacy=not is_fork_initialized(source_dir, src_branch_id),
+            )
+            embed_fn = RemoteEmbeddingFunction()
+            batch = max_batch_size(dst_client)
+            copied = 0
+            failed: list[str] = []
+            for src_name, dst_name in plan.items():
+                try:
+                    src_col = src_client.get_collection(src_name, embedding_function=embed_fn)
+                    dst_col = dst_client.get_or_create_collection(
+                        dst_name, embedding_function=embed_fn
+                    )
+                    # 带着原向量一起搬，避免为历史记忆重新调用 embedding 服务
+                    copy_collection(src_col, dst_col, batch)
+                    # 新分支的起点就是快照时点，即使零条也不得再从项目级老集合补数据
+                    mark_adopted(dst_col)
+                    copied += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("集合 %s 复制到分支 %s 失败：%s", src_name, new_branch_id, exc)
+                    failed.append(src_name)
+            if failed:
+                raise MemoryCopyError(
+                    f"分支 {new_branch_id} 的长期记忆继承失败：{', '.join(failed)}"
+                )
+            logger.info("分支 %s 继承了 %d 个集合的长期记忆", new_branch_id, copied)
+            return copied
+        finally:
+            self._close_chroma_client(src_client, stop_fallback=True)
+            self._close_chroma_client(dst_client)
+            try:
+                shutil.rmtree(work_root)
+            except OSError as exc:
+                # 旧版 Chroma 可能没有 close()；临时副本清理失败不能反过来破坏
+                # 已经完成的分叉，但必须留下可诊断信号。
+                logger.warning("清理分叉用 Chroma 临时副本失败：%s", exc)
+
+    @staticmethod
+    def _close_chroma_client(client: Any, *, stop_fallback: bool = False) -> None:
+        if client is None:
+            return
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                logger.debug("关闭 Chroma 客户端失败", exc_info=True)
+            return
+        if stop_fallback:
+            stop = getattr(getattr(client, "_system", None), "stop", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001
+                    logger.debug("停止旧版 Chroma 临时系统失败", exc_info=True)
+
+    @staticmethod
+    def _plan_clone(
+        available: set[str],
+        src_suffix: str,
+        dst_suffix: str,
+        *,
+        include_legacy: bool = True,
+    ) -> dict[str, str]:
+        """算出快照里属于来源分支的集合 → 新分支集合名的映射。
+
+        不能只看快照的 `character_states`：那里只有本场参演者，没出场的角色一分叉
+        就会拿到空集合。同一角色同时存在分支集合与改造前的项目级集合时取前者。
+        已经确定起点的分叉不再使用共享集合兜底，避免二次分叉重新引入未来记忆。
+        """
+        plan: dict[str, str] = {}
+        for name in available:
+            if not include_legacy or not name.startswith("char_") or "__" in name:
+                continue
+            if src_suffix and f"{name}{src_suffix}" in available:
+                continue
+            plan[name] = f"{name}{dst_suffix}"
+        if src_suffix:
+            for name in available:
+                if name.startswith("char_") and name.endswith(src_suffix):
+                    plan[name] = f"{name[: -len(src_suffix)]}{dst_suffix}"
+        return plan
+
     async def get_snapshot(self, snapshot_id: str) -> Snapshot | None:
         meta = _snapshots_dir(self.project_id) / snapshot_id / "meta.json"
         if not meta.exists():
@@ -227,6 +410,7 @@ class SnapshotManager:
         new_conditions: dict,
         branch_name: str,
         director_notes: str = "",
+        branch_id: str = "",
     ) -> Branch:
         snap = await self.get_snapshot(from_snapshot_id)
         if snap is None:
@@ -236,7 +420,7 @@ class SnapshotManager:
         # 把主线的运行态回滚掉。分支首场如何承接该快照归工单 08。
 
         branch = Branch(
-            branch_id=new_id(),
+            branch_id=branch_id or new_id(),
             project_id=self.project_id,
             parent_branch_id=snap.branch_id or None,
             fork_from_snapshot_id=from_snapshot_id,

@@ -346,6 +346,7 @@ class Branch:
     project_id: str = ""
     parent_branch_id: str | None = None
     fork_from_snapshot_id: str | None = None
+    # 溯源元数据：权威值在首场 Scene 的 initial_conditions（工单08 I5），此处仅供分支树展示
     fork_conditions: dict = field(default_factory=dict)
     name: str = ""
     scenes: list[str] = field(default_factory=list)

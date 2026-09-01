@@ -130,7 +130,7 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整的展示） |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16（硬前置，已随 PR #15 修复） | 待处理 |
-| [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | 待处理（已重写，含严格定义 + 五条不变量，分两阶段） |
+| [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | 🔍 审核中（分支 `feat/branch-isolated-memory`，阶段 A+B 一并落地） |
 
 **为什么把 17 提到 04/05 之前**：用户面板、导演评估、最终总结智能体这三方要看的其实是同一份东西
 （角色的情绪、记忆、位置、内心）。若各做各的，会出现三套口径不一致的读取路径。

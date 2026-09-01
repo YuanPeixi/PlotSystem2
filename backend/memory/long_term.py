@@ -15,6 +15,7 @@ from pathlib import Path
 from backend.config import settings
 from backend.memory.embeddings import RemoteEmbeddingFunction
 from backend.models import MemoryChunk, new_id
+from backend.utils.branch_memory import is_fork_initialized
 from backend.utils.logger import get_logger
 
 logger = get_logger("memory.long_term")
@@ -29,14 +30,91 @@ except Exception:  # noqa: BLE001
     _CHROMA_AVAILABLE = False
 
 
+def branch_suffix(branch_id: str) -> str:
+    """集合名的分支后缀。空 branch_id 表示项目级共享集合（改造前的老数据）。"""
+    return f"__{branch_id.replace('-', '')}" if branch_id else ""
+
+
+def collection_name_for(character_id: str, branch_id: str = "") -> str:
+    """角色在某条分支上的 Chroma 集合名。branch_id 为空表示项目级共享集合。"""
+    return f"char_{character_id.replace('-', '')}{branch_suffix(branch_id)}"
+
+
+# 集合元数据上的“不需要再从项目级老集合承接”标记。不能用“集合非空”代替：
+# 空集合可能是“尚未承接”，也可能是“分叉点本来就没记忆”，两者误判会把
+# 分叉点之后的共享记忆灌进历史分支；非空也可能是“承接到一半被杀”。
+LEGACY_ADOPTED_KEY = "legacy_adopted"
+
+
+def is_adopted(col) -> bool:
+    return bool((col.metadata or {}).get(LEGACY_ADOPTED_KEY))
+
+
+def mark_adopted(col) -> None:
+    """标记集合已完成初始化，不得再从项目级老集合补数据。"""
+    if is_adopted(col):
+        return
+    col.modify(metadata={**(col.metadata or {}), LEGACY_ADOPTED_KEY: True})
+
+
+def max_batch_size(client, default: int = 1000) -> int:
+    """取 Chroma 客户端单次写入的条数上限（不同版本暴露方式不同）。"""
+    getter = getattr(client, "get_max_batch_size", None)
+    if callable(getter):
+        try:
+            return max(1, int(getter()))
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        return max(1, int(getattr(client, "max_batch_size", default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def copy_collection(src_col, dst_col, batch_size: int) -> int:
+    """分页读、分批写地整体搬运一个集合（带原向量），返回搬运条数。
+
+    Chroma 单次 add/upsert 有条数上限（1.5.9 实测 5461），一次性读全量再一次性
+    写入会在大集合上整组失败。用源记录的原 id upsert，中断后重跑天然幂等。
+    """
+    total = 0
+    offset = 0
+    while True:
+        page = src_col.get(
+            limit=batch_size,
+            offset=offset,
+            include=["documents", "metadatas", "embeddings"],
+        )
+        ids = list(page.get("ids") or [])
+        if not ids:
+            break
+        metas = page.get("metadatas")
+        embeddings = page.get("embeddings")
+        dst_col.upsert(
+            ids=ids,
+            documents=list(page.get("documents") or []),
+            # chromadb 不接受 None 元素，补一个占位字段与 _add_sync 保持一致
+            metadatas=[m or {"source": "unknown"} for m in metas] if metas is not None else None,
+            embeddings=embeddings if embeddings is not None else None,
+        )
+        total += len(ids)
+        offset += len(ids)
+        if len(ids) < batch_size:
+            break
+    return total
+
+
 class LongTermMemory:
     """单个角色的长期记忆库。"""
 
-    def __init__(self, character_id: str, project_id: str):
+    def __init__(self, character_id: str, project_id: str, branch_id: str = ""):
         self.character_id = character_id
         self.project_id = project_id
+        self.branch_id = branch_id
         self.db_dir: Path = settings.project_dir(project_id) / "chroma_db"
-        self.collection_name = f"char_{character_id.replace('-', '')}"
+        # 分支后缀让 IF 线与主线各自持有独立向量集合（工单08 不变量 I3）。
+        # 留空 = 项目级共享集合，兼容既有数据，无需迁移。
+        self.collection_name = collection_name_for(character_id, branch_id)
         self._client = None
         self._collection = None
         # 降级时的内存存储
@@ -55,14 +133,56 @@ class LongTermMemory:
                 path=str(self.db_dir),
                 settings=ChromaSettings(anonymized_telemetry=False, allow_reset=True),
             )
+            embed_fn = RemoteEmbeddingFunction()
+            self._adopt_legacy_collection(embed_fn)
             self._collection = self._client.get_or_create_collection(
                 self.collection_name,
-                embedding_function=RemoteEmbeddingFunction(),
+                embedding_function=embed_fn,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("ChromaDB 初始化失败，使用降级模式：%s", exc)
             self._client = None
             self._collection = None
+
+    def _adopt_legacy_collection(self, embed_fn) -> None:
+        """把改造前的项目级集合一次性承接到本分支集合。
+
+        集合名加分支后缀（工单08 I3）之后，老项目的记忆全留在无后缀集合里，而生产
+        路径一律传分支 ID —— 不承接就等于升级即失忆（数据还在，检索不到）。
+
+        分叉初始化凭据禁止整条分支从当前共享集合补数据，包括快照时尚不存在的角色集合；
+        普通升级分支仍按 `LEGACY_ADOPTED_KEY` 判断每个集合是否完成承接；
+        反过来，承接到一半被硬杀也不会因为集合非空而被当成“已完成”，下次连接会
+        用原 id 继续 upsert 补齐。
+        """
+        if is_fork_initialized(self.db_dir, self.branch_id):
+            return
+        legacy_name = collection_name_for(self.character_id, "")
+        if legacy_name == self.collection_name:
+            return
+        existing = {c.name for c in self._client.list_collections()}
+        if legacy_name not in existing:
+            return
+        dst = self._client.get_or_create_collection(
+            self.collection_name, embedding_function=embed_fn
+        )
+        if is_adopted(dst):
+            return
+        src = self._client.get_collection(legacy_name, embedding_function=embed_fn)
+        try:
+            moved = copy_collection(src, dst, max_batch_size(self._client))
+            mark_adopted(dst)
+        except Exception as exc:  # noqa: BLE001
+            # 不删集合：没打标记就不算完成，下次连接会幂等地继续搬完
+            logger.warning("角色 %s 承接项目级历史记忆失败，下次连接重试：%s", self.character_id, exc)
+            return
+        if moved:
+            logger.info(
+                "角色 %s 承接 %d 条项目级历史记忆到分支 %s",
+                self.character_id,
+                moved,
+                self.branch_id,
+            )
 
     async def add(self, text: str, metadata: dict | None = None) -> None:
         meta = metadata or {}

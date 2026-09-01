@@ -18,6 +18,8 @@ venv/
 # Data (runtime)
 data/
 mvp_seed_*.txt
+# 临时探针/工作目录（Chroma 的 PersistentClient 一打开就会实体化一个库）
+.tmp_*/
 
 # Node
 node_modules/

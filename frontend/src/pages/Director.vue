@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCharacterStore } from '@/stores/characters'
 import { useSceneStore } from '@/stores/scenes'
@@ -27,6 +27,7 @@ const inspectingId = ref('')
 const scenes = ref<Scene[]>([])
 const forkingId = ref('')
 const forkName = ref('')
+const forkConditions = ref('')
 // 首次加载期间不让 branchId 的 watcher 推翻刚从 URL 恢复出来的场景
 let bootstrapped = false
 
@@ -146,12 +147,35 @@ async function startScene() {
   await refreshBranchData()
 }
 
+/** 把每行 `key=value` 解析成初始条件字典（第一个 = 之后全部算值）。 */
+function parseConditions(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const idx = line.indexOf('=')
+    if (idx <= 0) continue
+    const key = line.slice(0, idx).trim()
+    if (key) out[key] = line.slice(idx + 1).trim()
+  }
+  return out
+}
+
 async function confirmFork() {
   if (!forkingId.value || !forkName.value.trim()) return
   try {
-    await directorStore.fork(props.projectId, forkingId.value, forkName.value.trim(), {}, '')
+    const { branch, scene } = await directorStore.fork(
+      props.projectId,
+      forkingId.value,
+      forkName.value.trim(),
+      parseConditions(forkConditions.value),
+      '',
+    )
     forkingId.value = ''
     forkName.value = ''
+    forkConditions.value = ''
+    // 切到新分支并打开首场。只 attach 不 start：分叉是探索性操作，不该隐式烧掉一整场 LLM。
+    branchId.value = branch.branch_id
+    await refreshBranchData()
+    await attach(scene.scene_id)
   } catch (err) {
     alert(err instanceof Error ? err.message : '分叉失败')
   }
@@ -171,6 +195,15 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
   try {
     await sceneStore.submitDecision(sceneStore.currentScene.scene_id, payload)
     await directorStore.loadBranches(props.projectId)
+    // rollback 会把新场景建到一条新分支上，分支选择不跟着切，后续"让导演规划"
+    // 和场景列表还会落回旧分支（watcher 会改写当前场景，故先抑制再手工刷新）
+    const nextBranch = sceneStore.currentScene?.branch_id
+    if (nextBranch && nextBranch !== branchId.value) {
+      bootstrapped = false
+      branchId.value = nextBranch
+      await nextTick()
+      bootstrapped = true
+    }
     await refreshBranchData()
     const nowId = sceneStore.currentScene?.scene_id
     if (nowId && route.query.scene !== nowId) {
@@ -304,8 +337,14 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
               </div>
               <div v-if="forkingId === s.snapshot_id" class="fork-form">
                 <input v-model="forkName" placeholder="新分支名称，如：IF线·公主提前知情" />
+                <textarea
+                  v-model="forkConditions"
+                  rows="3"
+                  placeholder="IF 条件，每行一条 key=value，如：公主知情=是"
+                ></textarea>
                 <span class="dim" style="font-size: 12px">
-                  分叉只登记来源快照，不会改动当前项目的运行态；新分支首场承接该快照的能力见工单 08。
+                  分叉不会改动当前分支的任何数据；新分支会承接该快照的角色状态与长期记忆，
+                  并生成一个未开跑的首场。
                 </span>
                 <div class="row" style="gap: 6px">
                   <button @click="confirmFork">创建分支</button>

@@ -37,11 +37,12 @@ def _turn_to_text(turn: DialogueTurn, include_inner_thought: bool = True) -> str
 class MemoryManager:
     """角色记忆的统一门面。"""
 
-    def __init__(self, character_id: str, project_id: str):
+    def __init__(self, character_id: str, project_id: str, branch_id: str = ""):
         self.character_id = character_id
         self.project_id = project_id
+        self.branch_id = branch_id
         self.short_term = ShortTermMemory()
-        self.long_term = LongTermMemory(character_id, project_id)
+        self.long_term = LongTermMemory(character_id, project_id, branch_id)
         self.episodic = EpisodicMemory(character_id)
         self._connected = False
 
