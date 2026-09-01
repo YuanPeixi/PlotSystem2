@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
 import pytest
 
 from backend.models import CharacterState, RelationshipState
@@ -64,3 +70,70 @@ async def test_list_and_delete_snapshot():
     await sm.delete_snapshot(snap.snapshot_id)
     snaps_after = await sm.list_snapshots()
     assert not any(s["snapshot_id"] == snap.snapshot_id for s in snaps_after)
+
+
+def test_fork_memory_initialization_has_no_hard_chromadb_dependency(tmp_path):
+    """契约6：没有安装 Chroma 时仍能确定一个空起点，且不在导入阶段崩溃。"""
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import json
+        import os
+        import sys
+        from pathlib import Path
+
+        os.environ["DATA_DIR"] = sys.argv[1]
+        sys.modules["chromadb"] = None
+
+        from backend.models import CharacterState
+        from backend.snapshot import SnapshotManager
+        from backend.utils.branch_memory import is_fork_initialized
+        from backend.utils.db import init_db
+
+        async def main():
+            await init_db()
+            sm = SnapshotManager("proj-no-chroma")
+            snap = await sm.create_snapshot(
+                "scene-no-chroma",
+                "branch-main",
+                {"char-a": CharacterState(character_id="char-a")},
+            )
+            checkpoint = Path(sys.argv[1]) / "fake-checkpoint"
+            checkpoint.mkdir(parents=True)
+            (checkpoint / "chroma.sqlite3").touch()
+            meta = (
+                Path(sys.argv[1])
+                / "projects"
+                / "proj-no-chroma"
+                / "snapshots"
+                / snap.snapshot_id
+                / "meta.json"
+            )
+            payload = json.loads(meta.read_text(encoding="utf-8"))
+            payload["chroma_checkpoint"] = str(checkpoint)
+            meta.write_text(json.dumps(payload), encoding="utf-8")
+
+            copied = await sm.clone_collections_for_branch(
+                snap.snapshot_id, "branch-no-chroma"
+            )
+            live = Path(sys.argv[1]) / "projects" / "proj-no-chroma" / "chroma_db"
+            assert copied == 0
+            assert is_fork_initialized(live, "branch-no-chroma")
+
+        asyncio.run(main())
+        """
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repo_root), env.get("PYTHONPATH", "")]))
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr

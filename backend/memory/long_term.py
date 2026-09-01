@@ -15,6 +15,7 @@ from pathlib import Path
 from backend.config import settings
 from backend.memory.embeddings import RemoteEmbeddingFunction
 from backend.models import MemoryChunk, new_id
+from backend.utils.branch_memory import is_fork_initialized
 from backend.utils.logger import get_logger
 
 logger = get_logger("memory.long_term")
@@ -149,11 +150,13 @@ class LongTermMemory:
         集合名加分支后缀（工单08 I3）之后，老项目的记忆全留在无后缀集合里，而生产
         路径一律传分支 ID —— 不承接就等于升级即失忆（数据还在，检索不到）。
 
-        是否需要承接只看 `LEGACY_ADOPTED_KEY` 标记：分叉出来的分支在复制时就已打上标记，
-        即使零条记忆也不能再从共享集合补数据（那些是分叉点之后的“未来记忆”）；
+        分叉初始化凭据禁止整条分支从当前共享集合补数据，包括快照时尚不存在的角色集合；
+        普通升级分支仍按 `LEGACY_ADOPTED_KEY` 判断每个集合是否完成承接；
         反过来，承接到一半被硬杀也不会因为集合非空而被当成“已完成”，下次连接会
         用原 id 继续 upsert 补齐。
         """
+        if is_fork_initialized(self.db_dir, self.branch_id):
+            return
         legacy_name = collection_name_for(self.character_id, "")
         if legacy_name == self.collection_name:
             return

@@ -259,7 +259,7 @@ frontend/src/
    对话逐轮落盘，但固化（`consolidate`）只在场景正常结束时发生一次。崩溃/异常中断后
    续跑时，`SceneEngine.run()` 会把 `dialogue_log[turns_consolidated:]` 重新写回各角色记忆，
    否则就是“对话恢复了，但角色忘了这些对话”。**新增写入记忆的路径时必须跟上这个水位线**，
-   否则会造成长期记忆重复写入（长期记忆按角色+项目共享，不随分支回滚，重复只会累积）。
+   否则会造成长期记忆重复写入（长期记忆按角色+分支隔离，但不随场景状态回滚，重复只会累积）。
    **且水位线必须与固化写入在同一次落盘内推进**（`run()` 的 `on_persist` 钩子）：
    内存里改完、等方法返回再存是不够的 —— 中间隔着后置快照拷贝几十兆的 kuzu/chroma，
    进程在该窗口被硬杀（走不到 orchestrator 的 `except`）就会整场二次写入。
@@ -288,10 +288,12 @@ frontend/src/
 12. **改造前的项目级集合靠首次连接一次性承接**：`LongTermMemory._connect_sync` 发现无后缀
     的老集合存在、而本分支集合还没打上 `LEGACY_ADOPTED_KEY` 标记时，把老记录 upsert
     过来（原 id、原向量）并打标记。没有它，老项目升级后角色会读到空集合（数据还在，
-    但检索不到）。**判据只能是标记，不能是“集合是否为空”**：空可能是“分叉点本来就
-    没记忆”（按空判会把分叉后的共享记忆灌进历史分支），非空也可能是“承接到一半被杀”
-    （按非空判就永远补不齐了）。因此 `clone_collections_for_branch` 必须给它新建的每个
-    集合打标记，而承接失败时**不**打标记、**不**删集合，下次连接幂等续传。
+    但检索不到）。**判据只能是初始化凭据，不能是“集合是否为空”**：普通升级分支用集合
+    的 `LEGACY_ADOPTED_KEY` 判断可重试承接；从快照创建的分支另有分支级初始化文件，表达
+    “快照时这个角色尚无 collection”以及“Chroma 缺失、正确起点就是空”。没有后者，角色
+    首次登场会把分叉后的共享记忆灌进历史分支，再次分叉还会继续泄漏。承接失败时**不**打
+    集合标记、**不**删集合，下次连接按原 id 幂等续传；分叉复制或分支级凭据落盘失败则
+    整次 fork 失败，不能登记一条看似成功但失忆的分支。
 
 ---
 
@@ -433,8 +435,8 @@ graph TD
 | 编号 | 名称 | 实现 |
 |------|------|------|
 | I1 | 起点一致 | `Scene₀.restore_snapshot_id = S`，靠契约4 懒承接，**绝不 restore_snapshot()** |
-| I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景 |
-| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进 `char_{cid}__{新分支}`，分页读 + 按客户端 `max_batch_size` 分批写 |
+| I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景；Chroma `PersistentClient` 会在打开时维护文件，因此只能打开 checkpoint 的临时副本，不能直接打开权威快照目录 |
+| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进 `char_{cid}__{新分支}`，分页读 + 按客户端 `max_batch_size` 分批写；另以分支级初始化文件封住快照中不存在 collection 的角色和空起点 |
 | I4 | 可追溯 | `Branch.parent_branch_id = S.branch_id`；`Scene₀.parent_scene_id = S.scene_id` |
 | I5 | 条件生效 | `Scene₀.initial_conditions = {**来源场景条件, **C}` |
 
@@ -443,7 +445,7 @@ graph TD
 `Branch.fork_conditions` 仅为溯源元数据，权威值在 `Scene₀.initial_conditions`。
 **记忆先搬、分支后建**：复制用预生成的 `branch_id` 在 `fork_branch` 之前执行，失败
 （`MemoryError` → 500）就不会留下一条无记忆的孤儿分支。Chroma 不可用 / 快照不含向量库
-仍按契约6 只 warning 跳过，与「库可用但复制失败」区别对待。
+仍按契约6 只 warning 并记录空起点；Chroma 已安装且快照库存在但复制/打开失败则必须中止。
 
 ### 6.4 启动对账
 
@@ -858,4 +860,12 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      - `_resolve_branch` 优先级改为显式分支 > 显式快照 > **场景自身分支** > 默认时点快照：
        上轮写的“与状态来源同源”规则在新分支首场上是错的（它的 restore_snapshot_id
        指向来源分支），会让只传 scene_id 的面板查回主线记忆。4.2 陷阱 11 已改写。
+-->
+<!-- 2026-09-01: PR #16 最终复审修复：
+     - 新增分支级长期记忆初始化凭据，覆盖“快照时角色无 collection”、无 Chroma checkpoint
+       以及再次分叉，阻止首次连接从当前共享集合引入分叉后的未来记忆；
+     - 分叉读取 Chroma checkpoint 时先复制到临时目录再打开，避免 PersistentClient 的
+       sqlite/HNSW 启动维护改写权威快照；库存在却打不开时由静默空分支改为 MemoryError；
+     - 补充空集合/缺失集合/二次分叉、快照逐字节不可变、inspection 真链路、打开失败、
+       初始化凭据失败和无 Chroma 依赖的回归测试。
 -->
