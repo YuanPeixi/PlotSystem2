@@ -126,9 +126,9 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 | 编号 | 标题 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
 | 17 | **【新】** 统一 Inspection API 层（角色情绪/记忆/位置/内心的查询与微调） | **P1** | 14 | **✅ PR #12（合入 main：`0dcd507`到`78c2b46`）** |
-| [27](./27-context-compaction.md) | **【新】** 统一上下文压缩管线（27-A） | **P1** | 无 | ⏳ 等待 PR（`feat/director-context`） |
-| [04](./04-director-context.md) | 补全导演评估上下文 + P0 bug 清扫 | P1 | 17 ✅、27 | ⏳ 等待 PR（`feat/director-context`） |
-| [28](./28-narrative-goal-and-ending.md) | **【新】** 项目叙事目标持久化 + 结局判定 | **P1** | 04 | 待处理 |
+| [27](./27-context-compaction.md) | **【新】** 统一上下文压缩管线（27-A） | **P1** | 无 | ✅ PR #17（合入 main：`973c350`到`71d6f24`；27-B 角色/selector 迁移未做） |
+| [04](./04-director-context.md) | 补全导演评估上下文 + P0 bug 清扫 | P1 | 17 ✅、27 ✅ | ✅ PR #17（合入 main：`973c350`到`71d6f24`） |
+| [28](./28-narrative-goal-and-ending.md) | **【新】** 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | 待处理（**下一个开工**） |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整的展示） |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16（硬前置，已随 PR #15 修复） | 待处理 |
@@ -154,6 +154,21 @@ Selector 的实现方案是**独立评分**（`backend/scene_engine/speaker_sele
 **27** 抽出公用的上下文压缩（导演侧目前零预算，总结侧按字符截尾会丢结局）
 → **04** 修掉评估空转与一批 P0 bug → **28** 立只读的故事目标锚点与可观测度量
 → **18** 给导演路线图与长期记忆。顺序不可调：没有 28 的锚点，18 的路线图就没有对齐对象。
+
+**27 / 04 已随 PR #17 合入**（`973c350`到`71d6f24`，线性历史）。落地内容：
+`backend/utils/context.py`（`fit_lines` / `compact_lines`，四策略 + 最终预算校验）；
+导演评估补入场景预设与角色卡（含 `unknown_facts`）；`opening_narration` 在 `next_scene`
+自动路径上不再丢失；评估解析失败不再伪装成一份全 5 分的正常评估；导演三档温度。
+
+PR review 又抓出三条（已随同一 PR 修复，值得记住）：
+1. **“不可用”不能用普通数值表达**。`-1` 分会撞进 `make_decision` 的 `< 4` / `< 5` 阈值规则
+   被判成 rollback，而 rollback 会真的建分支、真的改剧情状态；同族缺陷是 `apply_decision`
+   用裸的 `SceneEvaluation()`（四项 0.0）表示“没有评估”。已收敛到
+   `unavailable_evaluation()` + `is_evaluation_unavailable()` 前置守卫。
+2. **预算是硬约束，不是“结果非空”**。行粒度丢弃解决不了“被强制保留的行自己就超预算”，
+   必须在返回前做最终校验；单行截断要二分求精确解（`estimate_tokens` 对 CJK 权重不同）。
+3. **压缩手段自身也要有预算**。`llm_summary` 原本把不限长的中段塞进一次摘要请求，
+   越该压缩的场景越容易把摘要请求自己撑爆。
 
 ---
 
