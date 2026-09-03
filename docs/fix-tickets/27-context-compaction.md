@@ -65,6 +65,14 @@ async def compact_lines(lines, budget, *, model, temperature) -> FitResult  # ll
 2. **中段省略必须带计数**（`（此处省略 N 轮）`），让下游模型知道有缺口，否则会当成连续对话推理。
 3. **绝不允许尾部截断**。导演评估与总结最需要的就是结局。
 
+补充（PR review 追加）：
+
+4. **返回前必须做最终预算校验**。行粒度的丢弃解决不了"被强制保留的行自己就超预算"
+   （如必须保留的末行）。只保证"结果非空"是不够的，要按 token 从长到短依次截断到真正进预算。
+   单行截断用二分，不能按字符比例估——`estimate_tokens` 对 CJK/非 CJK 权重不同，按比例切会系统性偏大。
+5. **摘要输入要有独立预算**（`ContextBudget.summary_input_tokens`）。越是需要压缩的超长场景中段越大，
+   不设上限就会变成"摘要请求自己爆上下文，`chat_safe` 还要重试三次才降级"。摘要返回值同样要过预算校验。
+
 ### 3.3 接入两处（本单只动这两处）
 
 - `DirectorAgent`：`_format_transcript` 改为产出行列表，评估处走 `compact_lines`；

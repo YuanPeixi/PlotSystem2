@@ -48,6 +48,9 @@ class ContextBudget:
     tail_ratio: float = 0.65
     # block_drop 丢弃后回落到的水位线（占预算比例），留出后续若干轮的增长空间
     drop_target_ratio: float = 0.75
+    # 交给摘要模型的中段原文上限。越是需要压缩的超长场景，中段越大，
+    # 不设上限就会变成"摘要请求自己爆上下文，重试三次后才降级"。
+    summary_input_tokens: int = 8000
 
 
 @dataclass
@@ -66,21 +69,45 @@ def _ellipsis(n: int) -> str:
 
 
 def _truncate_line(line: str, max_tokens: int) -> str:
-    """把单行压到预算内。用于"一行就超预算"的极端情况，绝不返回空串。"""
-    if max_tokens <= 0:
+    """把单行精确压到预算内（二分）。绝不返回空串。
+
+    不用按字符比例估算：estimate_tokens 对 CJK/非 CJK 权重不同，按比例切会系统性偏大，
+    而本函数是最终预算校验的收尾手段，必须真的能收敛。
+    """
+    if max_tokens <= 0 or estimate_tokens(line) <= max_tokens:
         return line
-    tokens = estimate_tokens(line)
-    if tokens <= max_tokens:
-        return line
-    keep = max(1, int(len(line) * max_tokens / tokens))
-    return line[:keep] + "…"
+    lo, hi = 0, len(line)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if estimate_tokens(line[:mid] + "…") <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return line[:lo] + "…"
 
 
-def _guard_single_line(kept: list[str], budget: ContextBudget) -> list[str]:
-    """只剩一行且它自己就超预算时，截断它——行粒度的裁剪到此为止。"""
-    if len(kept) == 1:
-        return [_truncate_line(kept[0], budget.max_tokens)]
-    return kept
+def _enforce_budget(parts: list[str], budget: ContextBudget) -> tuple[list[str], bool]:
+    """返回前的最终预算校验。返回 ``(parts, 是否动过)``。
+
+    行粒度的丢弃无法解决"被强制保留的行自己就超预算"（如必须保留的末行），
+    这里按 token 从长到短依次截断，直到真的进预算。
+    """
+    if budget.max_tokens <= 0 or not parts:
+        return parts, False
+    costs = [estimate_tokens(p) for p in parts]
+    total = sum(costs)
+    if total <= budget.max_tokens:
+        return parts, False
+    out = list(parts)
+    for i in sorted(range(len(out)), key=lambda x: costs[x], reverse=True):
+        if total <= budget.max_tokens:
+            break
+        allowance = max(1, budget.max_tokens - (total - costs[i]))
+        out[i] = _truncate_line(out[i], allowance)
+        new_cost = estimate_tokens(out[i])
+        total += new_cost - costs[i]
+        costs[i] = new_cost
+    return out, True
 
 
 def _split_head_tail(lines: list[str], budget: ContextBudget) -> tuple[int, int]:
@@ -136,18 +163,24 @@ def fit_lines(
 
     if strategy == TAIL_ONLY:
         _, tail_start = _split_head_tail(lines, replace(budget, head_ratio=0.0))
-        kept = _guard_single_line(lines[tail_start:], budget)
+        kept = lines[tail_start:]
         dropped = len(lines) - len(kept)
-        body = "\n".join(kept)
-        text = f"{_ellipsis(dropped)}\n{body}" if dropped > 0 else body
-        return FitResult(text=text, dropped=dropped, compacted=dropped > 0)
+        parts = [_ellipsis(dropped), *kept] if dropped > 0 else list(kept)
+        parts, forced = _enforce_budget(parts, budget)
+        return FitResult(
+            text="\n".join(parts), dropped=dropped, compacted=dropped > 0 or forced
+        )
 
     head_end, tail_start = _split_head_tail(lines, budget)
     dropped = tail_start - head_end
-    kept = _guard_single_line([*lines[:head_end], *lines[tail_start:]], budget)
+    parts = [*lines[:head_end]]
     if dropped > 0:
-        kept = [*kept[:head_end], _ellipsis(dropped), *kept[head_end:]]
-    return FitResult(text="\n".join(kept), dropped=max(dropped, 0), compacted=dropped > 0)
+        parts.append(_ellipsis(dropped))
+    parts.extend(lines[tail_start:])
+    parts, forced = _enforce_budget(parts, budget)
+    return FitResult(
+        text="\n".join(parts), dropped=max(dropped, 0), compacted=dropped > 0 or forced
+    )
 
 
 def _fit_block_drop(lines: list[str], budget: ContextBudget, start_hint: int) -> FitResult:
@@ -159,11 +192,12 @@ def _fit_block_drop(lines: list[str], budget: ContextBudget, start_hint: int) ->
             while start < len(lines) - 1 and total > target:
                 total -= estimate_tokens(lines[start])
                 start += 1
+    parts, forced = _enforce_budget(lines[start:], budget)
     return FitResult(
-        text="\n".join(lines[start:]),
+        text="\n".join(parts),
         start_index=start,
         dropped=start,
-        compacted=start > start_hint,
+        compacted=start > start_hint or forced,
     )
 
 
@@ -193,9 +227,16 @@ async def compact_lines(
     if not middle:
         return fit_lines(lines, fallback)
 
+    # 中段先本地裁剪再送去摘要：不限长地拼进一次请求，越是该压缩的场景
+    # 越容易把摘要请求自己撑爆，而 chat_safe 还会重试三次才降级。
+    summary_input = fit_lines(
+        middle,
+        ContextBudget(max_tokens=budget.summary_input_tokens, strategy=HEAD_TAIL),
+    )
+
     try:
         raw = await chat_safe(
-            [{"role": "user", "content": _SUMMARY_PROMPT.format(body="\n".join(middle))}],
+            [{"role": "user", "content": _SUMMARY_PROMPT.format(body=summary_input.text)}],
             temperature=temperature,
             model=model,
             max_tokens=512,
@@ -214,6 +255,8 @@ async def compact_lines(
         f"【中段摘要（原 {dropped} 轮）】{summary}",
         *lines[tail_start:],
     ]
+    # 模型可能不理会字数要求，摘要本身也得受预算约束
+    parts, _ = _enforce_budget(parts, budget)
     return FitResult(
         text="\n".join(parts),
         dropped=dropped,

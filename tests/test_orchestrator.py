@@ -131,6 +131,29 @@ async def test_rollback_updates_character_and_creates_new_scene():
 
 
 @pytest.mark.asyncio
+async def test_apply_decision_without_evaluation_does_not_rollback(monkeypatch):
+    """没有评估时不得自动回滚。
+
+    旧实现用裸的 SceneEvaluation()（四项 0.0）代表"没有评估"，直接撞进导演的
+    阈值规则被判成 rollback —— 无人值守下会真的建分支、真的改剧情状态。
+    这里刻意走真实的 make_decision，只把 next_scene 分支的 LLM 规划打桩。
+    """
+    _, _, scene, _ = await _setup_project_scene_and_snapshot("-no-eval")
+    assert await repository.get_evaluation(scene.scene_id) is None
+
+    async def _fake_plan(project_id, branch_id, goal):
+        return SceneConfig(name="下一场", description=goal, location="某处")
+
+    monkeypatch.setattr(orchestrator, "plan_scene", _fake_plan)
+
+    decision = await orchestrator.apply_decision(scene.scene_id, None)
+
+    assert decision.decision_type == "next_scene"
+    scenes = await repository.list_scenes(scene.project_id)
+    assert not any("回滚重演" in s.name for s in scenes)
+
+
+@pytest.mark.asyncio
 async def test_rollback_without_snapshot_target_is_noop_but_safe():
     """当场景既没有 snapshot_id_before 也没有指定 rollback_snapshot_id 时，
     不应抛异常，也不应设置 next_scene_id。"""

@@ -124,3 +124,66 @@ def test_all_strategies_never_return_empty(strategy):
     lines = _lines(50)
     result = ctx.fit_lines(lines, ctx.ContextBudget(max_tokens=20, strategy=strategy))
     assert result.text.strip()
+
+
+# --- 最终预算校验 ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("strategy", list(ctx.STRATEGIES))
+def test_oversized_forced_line_is_truncated(strategy):
+    """被强制保留的行自己就超预算时，不能原样放行——行粒度丢弃解决不了它。"""
+    lines = ["前", "长" * 1000]
+    result = ctx.fit_lines(lines, ctx.ContextBudget(max_tokens=50, strategy=strategy))
+    assert estimate_tokens(result.text) <= 50
+    assert result.compacted is True
+
+
+def test_single_oversized_line_block_drop():
+    result = ctx.fit_lines(
+        ["长" * 1000], ctx.ContextBudget(max_tokens=50, strategy=ctx.BLOCK_DROP)
+    )
+    assert estimate_tokens(result.text) <= 50
+    assert result.text.strip()
+
+
+@pytest.mark.parametrize("n,budget", [(1, 5), (2, 30), (50, 120), (300, 400)])
+def test_fit_lines_always_within_budget(n, budget):
+    lines = [f"角色: {'台' * (i * 7 % 50 + 1)}" for i in range(n)]
+    for strategy in ctx.STRATEGIES:
+        result = ctx.fit_lines(
+            lines, ctx.ContextBudget(max_tokens=budget, strategy=strategy)
+        )
+        assert estimate_tokens(result.text) <= budget, strategy
+
+
+async def test_summary_input_is_bounded(monkeypatch):
+    """中段原文不能不限长地拼进一次摘要请求，否则越该压缩的场景越容易把它自己撑爆。"""
+    seen: list[str] = []
+
+    async def _fake(messages, **kwargs):
+        seen.append(messages[0]["content"])
+        return "要点。"
+
+    monkeypatch.setattr(ctx, "chat_safe", _fake)
+    lines = _lines(5000)
+    budget = ctx.ContextBudget(
+        max_tokens=500, strategy=ctx.LLM_SUMMARY, summary_input_tokens=300
+    )
+    result = await ctx.compact_lines(lines, budget)
+
+    assert seen, "应当真的发起了摘要调用"
+    assert estimate_tokens(seen[0]) <= 300 + estimate_tokens(ctx._SUMMARY_PROMPT)
+    assert estimate_tokens(result.text) <= 500
+
+
+async def test_oversized_summary_is_clamped(monkeypatch):
+    """模型可能不理会字数要求，摘要本身也得受预算约束。"""
+
+    async def _fake(messages, **kwargs):
+        return "啰" * 5000
+
+    monkeypatch.setattr(ctx, "chat_safe", _fake)
+    result = await ctx.compact_lines(
+        _lines(200), ctx.ContextBudget(max_tokens=300, strategy=ctx.LLM_SUMMARY)
+    )
+    assert estimate_tokens(result.text) <= 300

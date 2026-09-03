@@ -30,6 +30,34 @@ from backend.utils.logger import get_logger
 
 logger = get_logger("agents.director")
 
+#: 评分为该值表示"评估未生成"，而不是"得分很低"
+SCORE_UNAVAILABLE = -1.0
+
+
+def unavailable_evaluation(scene_id: str) -> SceneEvaluation:
+    """构造一份显式标记为"不可用"的评估。
+
+    调用方拿不到评估时必须用它，而不是裸的 ``SceneEvaluation()``：后者四项分数
+    默认 0.0，会直接撞进 make_decision 的阈值规则变成回滚。
+    """
+    return SceneEvaluation(
+        scene_id=scene_id,
+        narrative_goal_score=SCORE_UNAVAILABLE,
+        dramatic_tension_score=SCORE_UNAVAILABLE,
+        plot_deviation_score=SCORE_UNAVAILABLE,
+        character_consistency_score=SCORE_UNAVAILABLE,
+        recommended_decision=DecisionType.NEXT_SCENE.value,
+    )
+
+
+def is_evaluation_unavailable(evaluation: SceneEvaluation) -> bool:
+    return min(
+        evaluation.narrative_goal_score,
+        evaluation.dramatic_tension_score,
+        evaluation.plot_deviation_score,
+        evaluation.character_consistency_score,
+    ) < 0
+
 
 def _extract_json(raw: str) -> tuple[dict, bool]:
     """从 LLM 输出里抠 JSON。返回 ``(data, ok)``。
@@ -187,17 +215,11 @@ class DirectorAgent:
         )
         data, ok = _extract_json(raw)
         if not ok:
-            # 不能静默给一份"看起来正常"的中位分：分数置 -1，让前端显式标注评估失败
+            # 不能静默给一份"看起来正常"的中位分：置为不可用，后续决策与前端都据此跳过
             logger.warning("场景 %s 的评估结果无法解析为 JSON：%s", scene.scene_id, raw[:300])
-            return SceneEvaluation(
-                scene_id=scene.scene_id,
-                synopsis="（评估结果解析失败，分数不可信）",
-                narrative_goal_score=-1.0,
-                dramatic_tension_score=-1.0,
-                plot_deviation_score=-1.0,
-                character_consistency_score=-1.0,
-                recommended_decision=DecisionType.NEXT_SCENE.value,
-            )
+            result = unavailable_evaluation(scene.scene_id)
+            result.synopsis = "（评估结果解析失败，分数不可信）"
+            return result
 
         def _score(key: str) -> float:
             try:
@@ -233,6 +255,16 @@ class DirectorAgent:
         """综合评估与人类干预做出决策。human_override 优先。"""
         if human_override is not None:
             return human_override
+
+        # 评分不可用时绝不能让它进阈值规则：-1 会把每一条下限判断都误触发，
+        # 而 rollback 在 apply_decision 里是真的会建分支、真的改剧情状态。
+        if is_evaluation_unavailable(evaluation):
+            logger.warning(
+                "场景 %s 的评估不可用，跳过评分规则，按保守默认决策 %s",
+                evaluation.scene_id,
+                evaluation.recommended_decision,
+            )
+            return DirectorDecision(decision_type=evaluation.recommended_decision)
 
         # 基于评分的规则化推荐（与 CLAUDE.md 5.3 评分维度一致）
         decision_type = evaluation.recommended_decision
