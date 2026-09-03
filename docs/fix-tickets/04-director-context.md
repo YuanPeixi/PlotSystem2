@@ -7,6 +7,27 @@
 
 ---
 
+## 0. 状态更新（2026-09-03，开工前重新核对代码）
+
+**本单范围已变化，请以本节为准：**
+
+| 原章节 | 状态 |
+|---|---|
+| §2.2 / §3.2 `query_character_state` 空壳 | ✅ **已随工单17 落地**到 `backend/services/inspection.py`，本单不再涉及（下文保留仅供追溯） |
+| §2.1 / §3.1 评估上下文缺失 | ⬜ 仍然有效，本单核心 |
+| §2.3 / §3.3 `plan_scene` 角色描述过简 | ⬜ 仍然有效 |
+| **§6（新增）** | ⬜ 本轮复核发现的 5 个新缺陷，一并在本单修掉 |
+
+本单的目的一句话：**让导演不再瞎评**。它现在评一场戏时，既不知道角色是谁，
+也没有任何上下文预算，解析失败还会伪装成一份正常评估。
+
+本单**不涉及**主线目标（工单 28）与导演长期记忆（工单 18），也**不要**顺手修
+`query_graph` / `GraphManager` 未 `connect()`——那是 CLAUDE.md §12.2 登记的 dead code，归工单 06。
+
+**前置**：工单 27-A（统一上下文压缩管线）。下文 §6 的 D4 直接消费它。
+
+---
+
 ## 1. 背景
 
 `DirectorAgent` 按设计应该是"唯一拥有全局知识图谱访问权、可查看所有角色内部状态"的实体
@@ -97,7 +118,7 @@ char_desc = "\n".join(
    角色卡是符合 CLAUDE.md 设计的（区别于 `CharacterAgent.build_system_prompt` 绝对不能注入
    `unknown_facts` 的约束，那是角色自己看不到，但导演可以看到）。
 
-### 3.2 实现 query_character_state（核心）
+### 3.2 实现 query_character_state（✅ 已随工单17 完成，本单不再涉及，以下仅供追溯）
 
 1. 修改方法签名，需要能访问 `repository`（当前 `DirectorAgent` 构造时没有传 `project_id` 对应的
    repository 访问方式，但 `self.project_id` 已存在，可以直接 `from backend.services import repository`
@@ -152,3 +173,41 @@ char_desc = "\n".join(
    确认返回的 `CharacterState` 中 `current_emotion`/`current_goal` 等字段与该角色卡 JSON 文件中的
    实际值一致，而不是默认值 "平静"/""。
 3. 如有条件，人工比较修改前后同一场景的 `character_consistency_score` 差异，确认评分不再是"空转"。
+
+---
+
+## 6. 【新增】本轮复核发现的缺陷（一并修掉）
+
+| 编号 | 问题 | 位置 | 要求 |
+|---|---|---|---|
+| **D1** | **AI 规划的 `opening_narration` 被静默丢弃** | `orchestrator.create_scene_from_config` | 引擎读的是 `scene.initial_conditions["opening_narration"]`，而这里只搬了 `config.initial_conditions`，同名字段没搬。手动建场景路径（`api/scenes.py`）有写入，**只有 `next_scene` 决策这条自动路径丢**——即导演自己写的开场白永远不生效。修复时留一行注释说明 `initial_conditions` 才是权威载体 |
+| **D2** | **JSON 解析失败伪装成正常评估** | `_extract_json` → `evaluate_scene` | 现在返回 `{}` → 四项分数全默认 5.0、synopsis 空、推荐 next_scene，**无任何告警**。改为：`_extract_json` 返回 `(data, ok)`；失败时 `logger.warning` 打出原文前 300 字，分数置 **-1**（不是 0，也不是 5），synopsis 写明解析失败，前端据此显示"评估失败"而非一份看起来正常的低分 |
+| **D3** | **角色名→ID 映射失败静默兜底** | `plan_scene` | LLM 返回别名/重名时 `chosen_ids` 为空 → 直接取 `available_characters[:2]`（即实体抽取顺序的前两个），不记日志。改为：精确 → 去空格 → 最长子串包含 三级匹配；未命中的名字 `logger.warning`；兜底改为按最近出场频次取 2–3 人 |
+| **D4** | **导演侧完全没有上下文预算** | `_format_transcript` | 全量 transcript（含所有 `inner_thought`）直接进 prompt，而 `max_turns` 无上限校验。接入工单 27-A 的 `compact_lines`，策略 `llm_summary`，预算 `DIRECTOR_TRANSCRIPT_BUDGET`。**绝不用尾部截断**——评估最需要的就是结局 |
+| **D15** | 规划与评估共用 `temperature=0.3` | `DirectorAgent.__init__` | 规划要创意、评估要一致，同温度是场景同质化的来源之一。拆为 `DIRECTOR_PLAN_TEMPERATURE=0.7` / `DIRECTOR_EVAL_TEMPERATURE=0.3` / `DIRECTOR_DECISION_TEMPERATURE=0.1`，构造参数保留为覆盖入口 |
+| **D16** | 导演是唯一没有测试的 agent | — | 新建 `tests/test_director_agent.py` |
+
+### 6.1 契约提醒
+
+- **`unknown_facts` 进导演 prompt 是契约1 的合法例外**（导演有全知权，且这些内容不进入任何
+  角色可见上下文）。请在代码里留一行注释写明，否则下一个人看到会当 bug 顺手删掉。
+- `_extract_json` 改签名后**必须全量搜调用点**（`plan_scene` 与 `evaluate_scene` 都在用），
+  漏一处就是把 tuple 当 dict 用。
+
+### 6.2 新增验收
+
+`tests/test_director_agent.py`（mock `chat_safe`）至少覆盖：
+
+1. 评估 prompt 内确实出现参演角色名与其 `unknown_facts` 内容；
+2. LLM 返回非法 JSON 时不抛异常，分数为 -1，且打了 warning；
+3. 角色名带别名时能匹配上；完全不匹配时走频次兜底并 warning；
+4. `plan_scene` → `create_scene_from_config` 后 `Scene.initial_conditions["opening_narration"]` 非空（D1 端到端）；
+5. 超长 transcript 触发压缩后，结果仍包含**最后一轮**对白。
+
+### 6.3 涉及文件（在 §4 基础上追加）
+
+- `backend/config.py`（三个温度配置）、`.env.example`
+- `frontend/src/components/DirectorPanel.vue`（-1 分显示为"评估失败"）
+- `tests/test_director_agent.py`（新建）
+- CLAUDE.md §4.2 增补一条陷阱：`opening_narration` 的权威载体是 `initial_conditions`，
+  `SceneConfig` 的同名字段只是规划期载体，**新增建场景路径必须搬运**
