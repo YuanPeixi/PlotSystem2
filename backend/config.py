@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     DIRECTOR_TRANSCRIPT_STRATEGY: str = "llm_summary"
     SUMMARY_TRANSCRIPT_BUDGET: int = 40000
 
+    # --- 导演三档温度（工单04）---
+    # 规划要创意、评估与决策要一致；构造 DirectorAgent 时传 temperature 可统一覆盖
+    DIRECTOR_PLAN_TEMPERATURE: float = 0.7
+    DIRECTOR_EVAL_TEMPERATURE: float = 0.3
+    DIRECTOR_DECISION_TEMPERATURE: float = 0.1
+
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
 

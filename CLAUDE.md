@@ -296,6 +296,16 @@ frontend/src/
     集合标记、**不**删集合，下次连接按原 id 幂等续传；分叉复制或分支级凭据落盘失败则
     整次 fork 失败，不能登记一条看似成功但失忆的分支。
 
+13. **`opening_narration` 的权威载体是 `Scene.initial_conditions`**，`SceneConfig` 的同名字段
+    只是导演规划期的载体。`run_scene` 重建 `SceneConfig` 时从 `initial_conditions` 取值，
+    因此**任何新增的建场景路径都必须显式搬运**（工单04 D1：`create_scene_from_config` 漏搬，
+    导致导演自己写的开场白在 `next_scene` 自动路径上永远不生效，而手动建场景路径正常——
+    这类"两条路径只有一条对"的 bug 不会被前端发现）。
+
+14. **`SceneEvaluation` 的四项分数为 `-1` 表示评估未生成**（LLM 返回内容无法解析为 JSON）。
+    不要把它当成"很低的分"参与阈值比较——旧实现在解析失败时给全部维度填 5.0，
+    产出一份看起来完全正常的评估，静默污染决策。前端按负值显式提示。
+
 ---
 
 ## 5. 持久化契约 ★

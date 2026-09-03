@@ -36,9 +36,12 @@ const DECISION_LABEL: Record<string, string> = {
 const decided = computed(() => (props.appliedDecision?.decision_type as string) || '')
 const locked = computed(() => !!props.pending || !!decided.value)
 
+// 后端在评估 JSON 解析失败时把四项分数置为 -1（工单04），不能当成正常低分展示
+const evalFailed = computed(() => (props.evaluation?.narrative_goal_score ?? 0) < 0)
+
 const scores = computed(() => {
   const e = props.evaluation
-  if (!e) return []
+  if (!e || evalFailed.value) return []
   return [
     { label: '目标达成', value: e.narrative_goal_score, danger: e.narrative_goal_score < 4 },
     { label: '戏剧张力', value: e.dramatic_tension_score, danger: e.dramatic_tension_score < 3 },
@@ -122,6 +125,7 @@ function confirmRollback() {
     <h3>导演决策面板</h3>
     <div v-if="!evaluation" class="dim" style="margin: 16px 0">场景完成后将自动生成评估。</div>
     <template v-else>
+      <p v-if="evalFailed" class="eval-failed">⚠ 本场评估未能生成（模型返回内容无法解析），评分不可用，请自行判断。</p>
       <p class="synopsis">{{ evaluation.synopsis }}</p>
       <div class="scores">
         <div v-for="s in scores" :key="s.label" class="score-bar">
@@ -195,6 +199,11 @@ function confirmRollback() {
 .synopsis {
   font-size: 13px;
   margin: 10px 0 16px;
+}
+.eval-failed {
+  font-size: 12px;
+  color: #e94560;
+  margin: 10px 0 0;
 }
 .scores {
   display: flex;
