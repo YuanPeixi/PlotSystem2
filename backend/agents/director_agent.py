@@ -23,6 +23,7 @@ from backend.models import (
     SceneEvaluation,
 )
 from backend.services import inspection
+from backend.utils.context import ContextBudget, compact_lines
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -149,7 +150,7 @@ class DirectorAgent:
         scene: Scene,
         dialogue_log: list[DialogueTurn],
     ) -> SceneEvaluation:
-        transcript = self._format_transcript(dialogue_log)
+        transcript = await self._build_transcript(dialogue_log)
         prompt = _EVAL_PROMPT.format(description=scene.description, transcript=transcript)
         raw = await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)
         data = _extract_json(raw)
@@ -227,8 +228,30 @@ class DirectorAgent:
         return await self.graph.query(cypher)
 
     # ---- 辅助 ----
+    async def _build_transcript(self, log: list[DialogueTurn]) -> str:
+        """把对白装进导演的上下文预算（工单27）。
+
+        预算默认足以容纳整场，只有 continue 续跑累积出超长场景才会真的压缩；
+        无论哪种策略都不得截掉结尾——评估最需要的就是结局。
+        """
+        lines = self._transcript_lines(log)
+        if not lines:
+            return "（无对话）"
+        fitted = await compact_lines(
+            lines,
+            ContextBudget(
+                max_tokens=settings.DIRECTOR_TRANSCRIPT_BUDGET,
+                strategy=settings.DIRECTOR_TRANSCRIPT_STRATEGY,
+            ),
+            model=self.model,
+        )
+        if fitted.compacted:
+            logger.info("导演评估上下文已压缩，省略 %d 轮", fitted.dropped)
+        return fitted.text
+
     @staticmethod
-    def _format_transcript(log: list[DialogueTurn]) -> str:
+    def _transcript_lines(log: list[DialogueTurn]) -> list[str]:
+        """导演有全知权，故保留 inner_thought。"""
         lines = []
         for t in log:
             parts = []
@@ -239,4 +262,4 @@ class DirectorAgent:
             if t.inner_thought:
                 parts.append(f"[{t.inner_thought}]")
             lines.append(f"{t.character_name}: {' '.join(parts)}")
-        return "\n".join(lines) or "（无对话）"
+        return lines

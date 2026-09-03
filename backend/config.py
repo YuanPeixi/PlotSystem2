@@ -112,6 +112,13 @@ class Settings(BaseSettings):
     # 默认给到 24K 足以完整容纳一整场对话，避免过早截断浪费模型能力。
     TRANSCRIPT_TOKEN_BUDGET: int = 24000
 
+    # --- 导演 / 总结的上下文预算（工单27）---
+    # 默认足以容纳整场，正常场景触发不到裁剪（即事实上的全文），
+    # 只有超预算才降级压缩，不为常规场景多付一次 LLM 调用。
+    DIRECTOR_TRANSCRIPT_BUDGET: int = 24000
+    DIRECTOR_TRANSCRIPT_STRATEGY: str = "llm_summary"
+    SUMMARY_TRANSCRIPT_BUDGET: int = 40000
+
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
 
@@ -122,6 +129,18 @@ class Settings(BaseSettings):
         allowed = sorted(m.value for m in SpeakerMode)
         if v not in allowed:
             raise ValueError(f"DEFAULT_SPEAKER_MODE 必须是 {allowed} 之一，收到 {v!r}")
+        return v
+
+    @field_validator("DIRECTOR_TRANSCRIPT_STRATEGY")
+    @classmethod
+    def _validate_director_strategy(cls, v: str) -> str:
+        # 取值列表与 backend/utils/context.py 的 STRATEGIES 一致；
+        # 那边 import 了 config，这里不能反向 import，只能手工同步。
+        allowed = ["block_drop", "head_tail", "tail_only", "llm_summary"]
+        if v not in allowed:
+            raise ValueError(
+                f"DIRECTOR_TRANSCRIPT_STRATEGY 必须是 {allowed} 之一，收到 {v!r}"
+            )
         return v
 
     # ---- 派生属性 ----

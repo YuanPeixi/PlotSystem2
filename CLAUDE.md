@@ -189,6 +189,7 @@ backend/
 │
 └── utils/
     ├── llm.py         ★ LLM 唯一出口（chat / chat_safe / estimate_tokens）
+    ├── context.py     ★ 统一上下文压缩管线（fit_lines / compact_lines，4 种策略）
     ├── db.py          SQLite DDL + 连接
     ├── serializer.py  to_dict（dataclass → JSON 安全字典）
     ├── logger.py
