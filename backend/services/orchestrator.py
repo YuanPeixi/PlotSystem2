@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
+from backend.agents.director_agent import unavailable_evaluation
 from backend.config import settings
 from backend.exceptions import ConflictError, PlotSystemError, SnapshotNotFoundError
 from backend.graphrag_pipeline import GraphRAGPipeline
@@ -25,7 +26,6 @@ from backend.models import (
     ProjectStatus,
     Scene,
     SceneConfig,
-    SceneEvaluation,
     SceneStatus,
     new_id,
 )
@@ -589,7 +589,8 @@ async def apply_decision(
         scene = await repository.get_scene(scene_id)
         evaluation = await repository.get_evaluation(scene_id)
         if evaluation is None:
-            evaluation = SceneEvaluation(scene_id=scene_id)
+            # 裸的 SceneEvaluation() 四项分数是 0.0，会撞进导演的阈值规则被判成回滚
+            evaluation = unavailable_evaluation(scene_id)
         director = DirectorAgent(
             scene.project_id, GraphManager(scene.project_id), SnapshotManager(scene.project_id)
         )

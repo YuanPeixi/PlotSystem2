@@ -115,6 +115,43 @@ async def test_non_dict_json_is_treated_as_failure(monkeypatch):
     assert result.narrative_goal_score == -1.0
 
 
+async def test_failed_evaluation_does_not_become_rollback(monkeypatch):
+    """评估不可用时，-1 绝不能进阈值规则——rollback 会真的建分支、真的改剧情。"""
+    _patch_chat(monkeypatch, "今天不想输出 JSON。")
+    agent = da.DirectorAgent("p1")
+
+    evaluation = await agent.evaluate_scene(_scene(), _log(), _cards())
+    decision = await agent.make_decision(evaluation)
+
+    assert decision.decision_type == "next_scene"
+    assert decision.rollback_notes is None
+
+
+async def test_missing_evaluation_does_not_become_rollback():
+    """压根没有评估时同理：裸的 SceneEvaluation() 四项是 0.0，会被阈值判成回滚。"""
+    agent = da.DirectorAgent("p1")
+    decision = await agent.make_decision(da.unavailable_evaluation("s1"))
+    assert decision.decision_type == "next_scene"
+
+
+async def test_valid_low_scores_still_trigger_rollback():
+    """修复不得把真实的低分回滚也一并屏蔽掉。"""
+    from backend.models import SceneEvaluation
+
+    agent = da.DirectorAgent("p1")
+    decision = await agent.make_decision(
+        SceneEvaluation(
+            scene_id="s1",
+            narrative_goal_score=2.0,
+            dramatic_tension_score=5.0,
+            plot_deviation_score=8.0,
+            character_consistency_score=3.0,
+            recommended_decision="next_scene",
+        )
+    )
+    assert decision.decision_type == "rollback"
+
+
 # --- 角色名匹配（D3）---------------------------------------------------------
 
 
