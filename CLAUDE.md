@@ -26,7 +26,7 @@
 |------|------|------|
 | `CLAUDE.md`（本文件） | AI 助手 + 开发者 | 代码地图、数据契约、红线约束、已知缺陷、设想清单 |
 | `README.md` | 人类 | 项目介绍、截图、快速启动 |
-| `docs/fix-tickets/` | AI 助手 | 在途工单，每单自包含、可并行；索引见该目录 `README.md` |
+| `docs/fix-tickets/` | AI 助手 | 在途工单，每单自包含、可并行；索引 `README.md`、流程规则 `CONVENTIONS.md`、排期理由与 PR 结论 `NOTES.md` |
 | `.env.example` | 全体 | **配置项的唯一真值**，本文档不复制其内容 |
 | `backend/models.py` | 全体 | **数据模型的唯一定义源**，本文档只讲语义与陷阱 |
 
