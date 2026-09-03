@@ -10,6 +10,7 @@ import json
 
 from backend.config import settings
 from backend.models import DialogueTurn, OutputFormat, Scene
+from backend.utils.context import HEAD_TAIL, ContextBudget, fit_lines
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_dict
@@ -39,7 +40,7 @@ _FORMAT_INSTRUCTIONS = {
 }
 
 
-def _format_transcript(log: list[DialogueTurn], include_thoughts: bool = False) -> str:
+def _transcript_lines(log: list[DialogueTurn], include_thoughts: bool = False) -> list[str]:
     lines = []
     for t in log:
         parts = []
@@ -50,7 +51,11 @@ def _format_transcript(log: list[DialogueTurn], include_thoughts: bool = False) 
         if include_thoughts and t.inner_thought:
             parts.append(f"[{t.inner_thought}]")
         lines.append(f"{t.character_name}: {' '.join(parts)}")
-    return "\n".join(lines)
+    return lines
+
+
+def _format_transcript(log: list[DialogueTurn], include_thoughts: bool = False) -> str:
+    return "\n".join(_transcript_lines(log, include_thoughts))
 
 
 class SummaryAgent:
@@ -95,15 +100,23 @@ class SummaryAgent:
             )
 
         # 非 raw 格式：默认不暴露角色内心独白（CLAUDE.md 10.6）
-        transcript = "\n\n".join(
-            f"== 场景：{s.name}（{s.location}）==\n{s.description}\n"
-            f"{_format_transcript(s.dialogue_log, include_thoughts=False)}"
-            for s in scenes
+        lines: list[str] = []
+        for s in scenes:
+            lines.append(f"== 场景：{s.name}（{s.location}）==")
+            if s.description:
+                lines.append(s.description)
+            lines.extend(_transcript_lines(s.dialogue_log, include_thoughts=False))
+        # 旧实现是 transcript[:12000] 按字符截尾，丢掉的恰恰是结局（工单27）
+        fitted = fit_lines(
+            lines,
+            ContextBudget(
+                max_tokens=settings.SUMMARY_TRANSCRIPT_BUDGET, strategy=HEAD_TAIL
+            ),
         )
+        if fitted.compacted:
+            logger.info("总结输入已裁剪，省略 %d 行", fitted.dropped)
         instruction = _FORMAT_INSTRUCTIONS.get(
             output_format.value, _FORMAT_INSTRUCTIONS[OutputFormat.WEB_NOVEL.value]
         )
-        prompt = (
-            f"{instruction}\n\n以下是原始场景日志：\n\n{transcript[:12000]}"
-        )
+        prompt = f"{instruction}\n\n以下是原始场景日志：\n\n{fitted.text}"
         return await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)
