@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 
 from backend.config import settings
 from backend.knowledge_graph import GraphManager
@@ -30,7 +31,12 @@ from backend.utils.logger import get_logger
 logger = get_logger("agents.director")
 
 
-def _extract_json(raw: str) -> dict:
+def _extract_json(raw: str) -> tuple[dict, bool]:
+    """从 LLM 输出里抠 JSON。返回 ``(data, ok)``。
+
+    ok=False 必须被调用方区分对待：旧实现直接返回 ``{}``，让解析失败伪装成
+    一份分数全默认的"正常评估"，无任何告警。
+    """
     raw = raw.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
     if fence:
@@ -40,9 +46,10 @@ def _extract_json(raw: str) -> dict:
         if m:
             raw = m.group(0)
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except json.JSONDecodeError:
-        return {}
+        return {}, False
+    return (data, True) if isinstance(data, dict) else ({}, False)
 
 
 _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个场景。
@@ -70,11 +77,17 @@ _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个�
 
 _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场景。
 
-【场景预设目标】
-{description}
+【本场预设】
+{scene_brief}
+
+【参演角色设定（导演视角，含角色本人并不知道的信息）】
+{character_profiles}
 
 【场景对白记录】
 {transcript}
+
+评分要求：角色一致性请对照上面的角色设定；若某角色说出了它本不该知道的信息
+（即上面标注的"不知道"项），应显著扣分。
 
 请客观评估并严格输出 JSON（不要额外文字）：
 {{
@@ -97,13 +110,17 @@ class DirectorAgent:
         project_id: str,
         graph_manager: GraphManager | None = None,
         snapshot_manager=None,
-        temperature: float = 0.3,
+        temperature: float | None = None,
     ):
         self.project_id = project_id
         self.graph = graph_manager
         self.snapshot_manager = snapshot_manager
+        # 非空时统一覆盖三档温度；缺省则规划要创意、评估与决策要一致（工单04 D15）
         self.temperature = temperature
         self.model = settings.director_model
+
+    def _temp(self, default: float) -> float:
+        return self.temperature if self.temperature is not None else default
 
     # ---- 场景规划 ----
     async def plan_scene(
@@ -113,10 +130,7 @@ class DirectorAgent:
         available_characters: list[CharacterCard],
         history_scenes: list[Scene] | None = None,
     ) -> SceneConfig:
-        char_desc = "\n".join(
-            f"- {c.name}：{(c.persona or '')[:80]}（目标：{c.current_goal}）"
-            for c in available_characters
-        )
+        char_desc = "\n".join(self._describe_for_plan(c) for c in available_characters)
         history_text = "（暂无历史场景）"
         if history_scenes:
             lines = []
@@ -124,14 +138,23 @@ class DirectorAgent:
                 lines.append(f"- 【{s.name}】@{s.location}：{s.description[:60]}（已完成 {s.turns_completed} 轮）")
             history_text = "\n".join(lines)
         prompt = _PLAN_PROMPT.format(goal=narrative_goal, characters=char_desc, history=history_text)
-        raw = await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)
-        data = _extract_json(raw)
+        raw = await chat_safe(
+            [{"role": "user", "content": prompt}],
+            temperature=self._temp(settings.DIRECTOR_PLAN_TEMPERATURE),
+            model=self.model,
+        )
+        data, ok = _extract_json(raw)
+        if not ok:
+            logger.warning("导演规划返回的内容无法解析为 JSON，将全部走兜底：%s", raw[:300])
 
-        name_to_id = {c.name: c.character_id for c in available_characters}
-        chosen_names = data.get("participating_characters", []) or []
-        chosen_ids = [name_to_id[n] for n in chosen_names if n in name_to_id]
-        if not chosen_ids:  # 兜底：至少取前两个
-            chosen_ids = [c.character_id for c in available_characters[:2]]
+        chosen_ids, missed = self._match_characters(
+            data.get("participating_characters", []) or [], available_characters
+        )
+        if missed:
+            logger.warning("导演选中的角色名无法匹配，已忽略：%s", missed)
+        if not chosen_ids:
+            chosen_ids = self._fallback_characters(available_characters, history_scenes)
+            logger.warning("导演未选出任何有效角色，按最近出场频次兜底为：%s", chosen_ids)
 
         return SceneConfig(
             name=data.get("name", "未命名场景"),
@@ -149,11 +172,32 @@ class DirectorAgent:
         self,
         scene: Scene,
         dialogue_log: list[DialogueTurn],
+        characters: list[CharacterCard] | None = None,
     ) -> SceneEvaluation:
         transcript = await self._build_transcript(dialogue_log)
-        prompt = _EVAL_PROMPT.format(description=scene.description, transcript=transcript)
-        raw = await chat_safe([{"role": "user", "content": prompt}], temperature=self.temperature, model=self.model)
-        data = _extract_json(raw)
+        prompt = _EVAL_PROMPT.format(
+            scene_brief=self._scene_brief(scene),
+            character_profiles=self._describe_for_eval(characters or []),
+            transcript=transcript,
+        )
+        raw = await chat_safe(
+            [{"role": "user", "content": prompt}],
+            temperature=self._temp(settings.DIRECTOR_EVAL_TEMPERATURE),
+            model=self.model,
+        )
+        data, ok = _extract_json(raw)
+        if not ok:
+            # 不能静默给一份"看起来正常"的中位分：分数置 -1，让前端显式标注评估失败
+            logger.warning("场景 %s 的评估结果无法解析为 JSON：%s", scene.scene_id, raw[:300])
+            return SceneEvaluation(
+                scene_id=scene.scene_id,
+                synopsis="（评估结果解析失败，分数不可信）",
+                narrative_goal_score=-1.0,
+                dramatic_tension_score=-1.0,
+                plot_deviation_score=-1.0,
+                character_consistency_score=-1.0,
+                recommended_decision=DecisionType.NEXT_SCENE.value,
+            )
 
         def _score(key: str) -> float:
             try:
@@ -228,6 +272,102 @@ class DirectorAgent:
         return await self.graph.query(cypher)
 
     # ---- 辅助 ----
+    @staticmethod
+    def _describe_for_plan(c: CharacterCard) -> str:
+        facts = "；".join(c.known_facts[:3]) or "无"
+        rel = (
+            "；".join(
+                f"对 {s.target_character_id}：{s.relation_type}"
+                for s in list(c.relationships.values())[:3]
+            )
+            or "无"
+        )
+        return (
+            f"- {c.name}：{(c.persona or '（待补充）')[:150]}\n"
+            f"  当前：{c.current_emotion} @ {c.current_location or '未知'}"
+            f"｜目标：{c.current_goal or '顺其自然'}\n"
+            f"  已知：{facts}\n"
+            f"  关系：{rel}"
+        )
+
+    @staticmethod
+    def _describe_for_eval(characters: list[CharacterCard]) -> str:
+        """评估用的角色设定块。
+
+        这里注入 unknown_facts 是契约1 的合法例外：导演拥有全知视角，且本文本只进
+        导演 prompt，不进入任何角色可见上下文。没有它，角色一致性评分只能靠猜。
+        """
+        if not characters:
+            return "（未提供角色设定，角色一致性评分请保守给出）"
+        blocks = []
+        for c in characters:
+            known = "；".join(c.known_facts[:5]) or "无"
+            unknown = "；".join(c.unknown_facts[:5]) or "无"
+            blocks.append(
+                f"- {c.name}：{(c.persona or '（待补充）')[:200]}\n"
+                f"  说话风格：{c.speech_style or '自然'}\n"
+                f"  已知：{known}\n"
+                f"  **不知道**：{unknown}"
+            )
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _scene_brief(scene: Scene) -> str:
+        lines = [f"{scene.name} @ {scene.location}".strip(" @"), scene.description]
+        narration = scene.initial_conditions.get("opening_narration")
+        if narration:
+            lines.append(f"开场：{narration}")
+        conditions = {
+            k: v for k, v in scene.initial_conditions.items() if k != "opening_narration"
+        }
+        if conditions:
+            lines.append("初始条件：" + "；".join(f"{k}={v}" for k, v in conditions.items()))
+        return "\n".join(line for line in lines if line)
+
+    @staticmethod
+    def _match_characters(
+        names: list, cards: list[CharacterCard]
+    ) -> tuple[list[str], list[str]]:
+        """三级匹配角色名 → ID：精确 → 去空格 → 子串包含。返回 (命中 id, 未命中名)。
+
+        LLM 常返回别名或带头衔的写法（"张丞相"），旧实现只做精确匹配，落空后直接
+        取角色列表前两个（即实体抽取顺序），且不留日志。
+        """
+        by_exact = {c.name: c for c in cards if c.name}
+        by_squashed = {c.name.replace(" ", ""): c for c in cards if c.name}
+        # 最长名优先，避免"王"抢在"王子"前面命中
+        by_length = sorted((c for c in cards if c.name), key=lambda c: len(c.name), reverse=True)
+
+        hit: list[str] = []
+        missed: list[str] = []
+        for raw in names:
+            name = str(raw).strip()
+            if not name:
+                continue
+            card = by_exact.get(name) or by_squashed.get(name.replace(" ", ""))
+            if card is None:
+                card = next(
+                    (c for c in by_length if c.name in name or name in c.name), None
+                )
+            if card is None:
+                missed.append(name)
+            elif card.character_id not in hit:
+                hit.append(card.character_id)
+        return hit, missed
+
+    @staticmethod
+    def _fallback_characters(
+        cards: list[CharacterCard], history_scenes: list[Scene] | None, limit: int = 3
+    ) -> list[str]:
+        """选角全部落空时的兜底：按最近出场频次取人，而非实体抽取顺序的前两个。"""
+        valid = {c.character_id for c in cards}
+        counter: Counter[str] = Counter()
+        for s in (history_scenes or [])[-5:]:
+            counter.update(cid for cid in s.participating_characters if cid in valid)
+        ranked = [cid for cid, _ in counter.most_common()]
+        ranked += [c.character_id for c in cards if c.character_id not in ranked]
+        return ranked[: max(2, min(limit, len(ranked)))]
+
     async def _build_transcript(self, log: list[DialogueTurn]) -> str:
         """把对白装进导演的上下文预算（工单27）。
 

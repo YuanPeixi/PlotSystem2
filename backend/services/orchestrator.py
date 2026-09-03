@@ -282,6 +282,11 @@ async def plan_scene(
 async def create_scene_from_config(
     project_id: str, branch_id: str, config: SceneConfig
 ) -> Scene:
+    # opening_narration 的权威载体是 initial_conditions（引擎从那里读），
+    # SceneConfig 的同名字段只是规划期载体，此处是 AI 规划路径的唯一搬运点。
+    initial_conditions = dict(config.initial_conditions)
+    if config.opening_narration:
+        initial_conditions.setdefault("opening_narration", config.opening_narration)
     scene = Scene(
         scene_id=new_id(),
         project_id=project_id,
@@ -290,7 +295,7 @@ async def create_scene_from_config(
         description=config.description,
         participating_characters=config.participating_characters,
         location=config.location,
-        initial_conditions=config.initial_conditions,
+        initial_conditions=initial_conditions,
         max_turns=config.max_turns,
         speaker_mode=config.speaker_mode,
         status=SceneStatus.PENDING.value,
@@ -372,7 +377,9 @@ async def run_scene(scene_id: str) -> None:
             director = DirectorAgent(
                 scene.project_id, GraphManager(scene.project_id), sm
             )
-            evaluation = await director.evaluate_scene(scene, result.dialogue_log)
+            evaluation = await director.evaluate_scene(
+                scene, result.dialogue_log, [a.card for a in agents]
+            )
             await repository.save_evaluation(evaluation)
             await events.publish(scene_id, "evaluation", to_dict(evaluation))
         except Exception as exc:  # noqa: BLE001
