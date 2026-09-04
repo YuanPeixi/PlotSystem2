@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, UploadFile
 
-from backend.api.schemas import ApiResponse, CreateProjectRequest
+from backend.api.schemas import ApiResponse, CreateProjectRequest, UpdateProjectRequest
 from backend.config import settings
 from backend.models import Project
 from backend.services import orchestrator, repository
@@ -15,7 +15,12 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 @router.post("")
 async def create_project(req: CreateProjectRequest) -> ApiResponse:
-    project = Project(name=req.name, description=req.description)
+    project = Project(
+        name=req.name,
+        description=req.description,
+        narrative_goal=req.narrative_goal,
+        ending_criteria=req.ending_criteria,
+    )
     await repository.save_project(project)
     return ApiResponse.ok(to_dict(project))
 
@@ -29,6 +34,16 @@ async def list_projects() -> ApiResponse:
 @router.get("/{project_id}")
 async def get_project(project_id: str) -> ApiResponse:
     project = await repository.get_project(project_id)
+    return ApiResponse.ok(to_dict(project))
+
+
+@router.patch("/{project_id}")
+async def update_project(project_id: str, req: UpdateProjectRequest) -> ApiResponse:
+    """人工编辑项目属性（含主线目标）。"""
+    project = await repository.get_project(project_id)
+    for name, value in req.model_dump(exclude_none=True).items():
+        setattr(project, name, value)
+    await repository.save_project(project)
     return ApiResponse.ok(to_dict(project))
 
 

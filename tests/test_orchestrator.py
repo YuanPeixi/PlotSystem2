@@ -141,8 +141,8 @@ async def test_apply_decision_without_evaluation_does_not_rollback(monkeypatch):
     _, _, scene, _ = await _setup_project_scene_and_snapshot("-no-eval")
     assert await repository.get_evaluation(scene.scene_id) is None
 
-    async def _fake_plan(project_id, branch_id, goal):
-        return SceneConfig(name="下一场", description=goal, location="某处")
+    async def _fake_plan(project_id, branch_id, narrative_goal="", scene_intent=""):
+        return SceneConfig(name="下一场", description=scene_intent, location="某处")
 
     monkeypatch.setattr(orchestrator, "plan_scene", _fake_plan)
 
@@ -259,11 +259,20 @@ class _FakeDirectorForDecision:
     async def make_decision(self, evaluation, human_override):
         return human_override
 
-    async def plan_scene(self, branch_id, narrative_goal, cards, history_scenes=None):
+    async def plan_scene(
+        self,
+        branch_id,
+        narrative_goal,
+        cards,
+        history_scenes=None,
+        scene_intent="",
+        recent_results=None,
+    ):
         if self.plan_delay:
             await asyncio.sleep(self.plan_delay)
         if self.captured_goal is not None:
             self.captured_goal["goal"] = narrative_goal
+            self.captured_goal["intent"] = scene_intent
         return SceneConfig(
             name="AI规划场景",
             description="AI规划描述",
@@ -358,7 +367,9 @@ async def test_next_scene_decision_applies_user_overrides(monkeypatch):
     )
     decision = await orchestrator.apply_decision(scene.scene_id, override)
 
-    assert captured["goal"] == "用户自定义目标"
+    # 用户填的"下一场目标"是本场意图（第三层），不得冒充主线目标（工单28）
+    assert captured["intent"] == "用户自定义目标"
+    assert captured["goal"] == ""
     new_scene = await repository.get_scene(decision.next_scene_id)
     assert new_scene.participating_characters == [char_user]
     assert new_scene.location == "用户指定地点"
@@ -426,9 +437,9 @@ async def test_apply_decision_sequential_retry_replays_same_result(monkeypatch):
     plan_calls = {"n": 0}
 
     class CountingDirector(_FakeDirectorForDecision):
-        async def plan_scene(self, branch_id, narrative_goal, cards, history_scenes=None):
+        async def plan_scene(self, branch_id, narrative_goal, cards, **kwargs):
             plan_calls["n"] += 1
-            return await super().plan_scene(branch_id, narrative_goal, cards, history_scenes)
+            return await super().plan_scene(branch_id, narrative_goal, cards, **kwargs)
 
     monkeypatch.setattr(orchestrator, "DirectorAgent", CountingDirector)
 

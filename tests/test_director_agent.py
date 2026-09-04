@@ -247,3 +247,137 @@ async def test_long_transcript_keeps_last_turn(monkeypatch):
     prompt = sink[0][0]["content"]
     assert "第299句台词" in prompt  # 绝不截尾
     assert "省略" in prompt
+
+
+# --- 主线目标锚点与结局判定（工单28）-----------------------------------------
+
+
+def _eval_reply(**kw) -> str:
+    data = {
+        "synopsis": "梗概",
+        "narrative_goal_score": 7,
+        "dramatic_tension_score": 7,
+        "plot_deviation_score": 2,
+        "character_consistency_score": 8,
+    }
+    data.update(kw)
+    return json.dumps(data, ensure_ascii=False)
+
+
+async def test_eval_prompt_contains_narrative_goal(monkeypatch):
+    sink: list = []
+    _patch_chat(monkeypatch, _eval_reply(), sink)
+
+    agent = da.DirectorAgent("p1")
+    await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", ending_criteria="丞相伏法"
+    )
+
+    prompt = sink[0][0]["content"]
+    assert "扳倒丞相" in prompt
+    assert "丞相伏法" in prompt
+
+
+async def test_plan_prompt_keeps_goal_and_intent_separate(monkeypatch):
+    """主线目标是只读锚点，本场意图是第三层：两者必须并存，后者不得顶掉前者。"""
+    sink: list = []
+    _patch_chat(monkeypatch, json.dumps({"name": "夜谈", "participating_characters": ["王子"]}), sink)
+
+    agent = da.DirectorAgent("p1")
+    await agent.plan_scene("b1", "扳倒丞相", _cards(), scene_intent="让公主试探王子")
+
+    prompt = sink[0][0]["content"]
+    assert "扳倒丞相" in prompt
+    assert "让公主试探王子" in prompt
+
+
+async def test_story_progress_does_not_regress(monkeypatch):
+    """LLM 自评噪声大：新值低于历史最高值时钳制回历史值，并记一次停滞。"""
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.2))
+
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", prior_progress=0.6
+    )
+
+    assert result.story_progress == 0.6
+    assert result.story_progress_raw == 0.2
+    assert result.progress_stalled is True
+
+
+async def test_story_progress_advances(monkeypatch):
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.8))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", prior_progress=0.6
+    )
+    assert result.story_progress == 0.8
+    assert result.progress_stalled is False
+
+
+async def test_missing_story_progress_is_unavailable_not_zero(monkeypatch):
+    """缺失不能当成"进度 0"：那会伪造一次停滞信号，也会让进度条掉回去。"""
+    _patch_chat(monkeypatch, _eval_reply())
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", prior_progress=0.6
+    )
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert result.progress_stalled is False
+    # 单项缺失不得让整份评估作废、连带把决策打成保守默认
+    assert not da.is_evaluation_unavailable(result)
+
+
+async def test_unavailable_progress_does_not_poison_decision(monkeypatch):
+    _patch_chat(monkeypatch, _eval_reply(story_progress="不知道"))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    decision = await agent.make_decision(result)
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert decision.decision_type == "next_scene"
+
+
+async def test_ending_requires_user_anchor(monkeypatch):
+    """既无主线目标又无结局标准时，导演唯一能对照的只有它自己刚演出来的内容。"""
+    _patch_chat(monkeypatch, _eval_reply(is_ending_reached=True, ending_reason="都结束了"))
+    agent = da.DirectorAgent("p1")
+
+    without_anchor = await agent.evaluate_scene(_scene(), _log(), _cards())
+    assert without_anchor.is_ending_reached is False
+    assert without_anchor.ending_reason == ""
+
+    with_anchor = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相"
+    )
+    assert with_anchor.is_ending_reached is True
+    assert with_anchor.ending_reason == "都结束了"
+
+
+async def test_unresolved_threads_dedup_and_capped(monkeypatch):
+    threads = ["线索A", "线索A", *[f"线索{i}" for i in range(30)]]
+    _patch_chat(monkeypatch, _eval_reply(unresolved_threads=threads))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+
+    assert len(result.unresolved_threads) == da.MAX_UNRESOLVED_THREADS
+    assert result.unresolved_threads.count("线索A") == 1
+
+
+async def test_missing_threads_key_keeps_prior_list(monkeypatch):
+    """LLM 没提这个键 ≠ 线索全部收束了。"""
+    _patch_chat(monkeypatch, _eval_reply())
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="g", prior_threads=["旧线索"]
+    )
+    assert result.unresolved_threads == ["旧线索"]
+
+
+async def test_unparsable_evaluation_keeps_prior_threads(monkeypatch):
+    _patch_chat(monkeypatch, "不想输出 JSON")
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), prior_threads=["旧线索"]
+    )
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert result.unresolved_threads == ["旧线索"]

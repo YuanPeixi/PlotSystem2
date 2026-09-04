@@ -16,6 +16,7 @@ from backend.graphrag_pipeline import GraphRAGPipeline
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
 from backend.models import (
+    PROGRESS_UNAVAILABLE,
     Branch,
     CharacterCard,
     CharacterState,
@@ -26,6 +27,7 @@ from backend.models import (
     ProjectStatus,
     Scene,
     SceneConfig,
+    SceneEvaluation,
     SceneStatus,
     new_id,
 )
@@ -269,14 +271,94 @@ async def _load_inherited_states(
 
 
 async def plan_scene(
-    project_id: str, branch_id: str, narrative_goal: str
+    project_id: str,
+    branch_id: str,
+    narrative_goal: str = "",
+    scene_intent: str = "",
 ) -> SceneConfig:
+    project = await repository.get_project(project_id)
+    # 主线目标是项目级只读锚点：调用方不显式给才回退，且任何情况下都不会被写回项目
+    goal = narrative_goal or project.narrative_goal
     cards = await repository.list_characters(project_id)
     history = await repository.list_scenes(project_id, branch_id)
     # 只传已完成的场景作为历史上下文
     completed = [s for s in history if s.status == SceneStatus.COMPLETED.value]
+    recent_results = await _recent_scene_results(completed)
     director = DirectorAgent(project_id, GraphManager(project_id), SnapshotManager(project_id))
-    return await director.plan_scene(branch_id, narrative_goal, cards, history_scenes=completed)
+    return await director.plan_scene(
+        branch_id,
+        goal,
+        cards,
+        history_scenes=completed,
+        scene_intent=scene_intent,
+        recent_results=recent_results,
+    )
+
+
+async def _recent_scene_results(
+    completed: list[Scene], limit: int = 3
+) -> list[tuple[Scene, SceneEvaluation]]:
+    """取最近若干已完成场景的评估（演出来的结果，而非演之前的预设）。"""
+    results: list[tuple[Scene, SceneEvaluation]] = []
+    for scene in completed[-limit:]:
+        evaluation = await repository.get_evaluation(scene.scene_id)
+        if evaluation is not None:
+            results.append((scene, evaluation))
+    return results
+
+
+async def _story_context(scene: Scene) -> tuple[float, list[str]]:
+    """沿因果谱系取回 (历史最高推进度, 最近一次的未收束线索)。
+
+    推进度已在写入时单调钳制，所以谱系上"最近一条可用的评估"就是历史最高值，
+    无需遍历全部祖先。
+    """
+    lineage = [scene, *await _ancestor_scenes(scene)]  # 新 → 旧
+    progress = PROGRESS_UNAVAILABLE
+    threads: list[str] = []
+    for node in lineage:
+        evaluation = await repository.get_evaluation(node.scene_id)
+        if evaluation is None:
+            continue
+        if progress < 0 and evaluation.story_progress >= 0:
+            progress = evaluation.story_progress
+        if not threads and evaluation.unresolved_threads:
+            threads = list(evaluation.unresolved_threads)
+        if progress >= 0 and threads:
+            break
+    return progress, threads
+
+
+async def _ancestor_scenes(scene: Scene) -> list[Scene]:
+    """本场的因果祖先，从新到旧。
+
+    主链是 `parent_scene_id`：next_scene 会把它指向上一场，fork/rollback 的首场
+    按不变量 I4 指向来源分支的场景，因此这条链天然跨分支接上，IF 线不必从头爬。
+    手工建的场景没有父场景，链会断，故并入同分支内更早的场景。
+
+    顺序只能用 `list_scenes` 的返回次序（它按 created_at 列排序）：
+    `_deserialize_scene` 不还原 created_at，dataclass 上的值全是反序列化时刻。
+    """
+    all_scenes = await repository.list_scenes(scene.project_id)
+    by_id = {s.scene_id: s for s in all_scenes}
+    order = {s.scene_id: i for i, s in enumerate(all_scenes)}
+
+    seen = {scene.scene_id}
+    ancestors: list[Scene] = []
+    cursor = by_id.get(scene.parent_scene_id or "")
+    while cursor is not None and cursor.scene_id not in seen:
+        seen.add(cursor.scene_id)
+        ancestors.append(cursor)
+        cursor = by_id.get(cursor.parent_scene_id or "")
+
+    position = order.get(scene.scene_id, len(all_scenes))
+    ancestors.extend(
+        s
+        for s in all_scenes[:position]
+        if s.branch_id == scene.branch_id and s.scene_id not in seen
+    )
+    ancestors.sort(key=lambda s: order.get(s.scene_id, -1), reverse=True)
+    return ancestors
 
 
 async def create_scene_from_config(
@@ -377,8 +459,16 @@ async def run_scene(scene_id: str) -> None:
             director = DirectorAgent(
                 scene.project_id, GraphManager(scene.project_id), sm
             )
+            project = await repository.get_project(scene.project_id)
+            prior_progress, prior_threads = await _story_context(scene)
             evaluation = await director.evaluate_scene(
-                scene, result.dialogue_log, [a.card for a in agents]
+                scene,
+                result.dialogue_log,
+                [a.card for a in agents],
+                narrative_goal=project.narrative_goal,
+                ending_criteria=project.ending_criteria,
+                prior_progress=prior_progress,
+                prior_threads=prior_threads,
             )
             await repository.save_evaluation(evaluation)
             await events.publish(scene_id, "evaluation", to_dict(evaluation))
@@ -651,8 +741,13 @@ async def apply_decision(
         elif decision.decision_type == DecisionType.NEXT_SCENE.value:
             # 下一场：让导演根据历史自动规划新场景，人工可在提交前覆盖
             # 参与角色/地点/初始条件（均为 None 时保持 AI 自动规划的结果，工单13）。
-            goal = decision.next_scene_description or f"延续上一场（{scene.name}）的剧情走向"
-            config = await plan_scene(scene.project_id, scene.branch_id, goal)
+            # 用户填的"下一场目标"是本场意图（第三层），不是主线目标：把它当 goal 传
+            # 会让主线锚点被"延续上一场"这类动量描述顶掉，连跑几场后系统就只剩动量。
+            config = await plan_scene(
+                scene.project_id,
+                scene.branch_id,
+                scene_intent=decision.next_scene_description or "",
+            )
             if decision.next_participating_characters:
                 config.participating_characters = decision.next_participating_characters
             if decision.next_location:

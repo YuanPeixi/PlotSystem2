@@ -39,6 +39,21 @@ class ApiResponse(BaseModel):
 class CreateProjectRequest(BaseModel):
     name: str
     description: str = ""
+    narrative_goal: str = ""
+    ending_criteria: str = ""
+
+
+class UpdateProjectRequest(BaseModel):
+    """项目属性的人工编辑。None = 不改该字段。
+
+    主线目标只能从这里改（工单28）：建项目时种子文本还没上传、角色还没抽出来，
+    目标往往写不准；但导演侧的任何路径都不得写回它。
+    """
+
+    name: str | None = None
+    description: str | None = None
+    narrative_goal: str | None = None
+    ending_criteria: str | None = None
 
 
 class UpdateCharacterRequest(BaseModel):
@@ -54,7 +69,9 @@ class UpdateCharacterRequest(BaseModel):
 
 class PlanSceneRequest(BaseModel):
     branch_id: str
-    narrative_goal: str
+    # 本场意图（第三层）。主线目标固定读 project.narrative_goal，不从请求体进来，
+    # 否则锚点会被逐场传入的临时目标架空（工单28）。
+    scene_intent: str = ""
 
 
 class CreateSceneRequest(BaseModel):

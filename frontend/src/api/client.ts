@@ -40,9 +40,16 @@ async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T>
 export const api = {
   // 项目
   listProjects: () => unwrap<Project[]>(http.get('/projects')),
-  createProject: (name: string, description = '') =>
-    unwrap<Project>(http.post('/projects', { name, description })),
+  createProject: (payload: {
+    name: string
+    description?: string
+    narrative_goal?: string
+    ending_criteria?: string
+  }) => unwrap<Project>(http.post('/projects', payload)),
   getProject: (id: string) => unwrap<Project>(http.get(`/projects/${id}`)),
+  /** 主线目标的唯一写入口（导演不得改写它）。 */
+  updateProject: (id: string, patch: Partial<Project>) =>
+    unwrap<Project>(http.patch(`/projects/${id}`, patch)),
   deleteProject: (id: string) => unwrap(http.delete(`/projects/${id}`)),
 
   uploadSeed: (id: string, file: File) => {
@@ -75,8 +82,9 @@ export const api = {
     ),
 
   // 场景
-  planScene: (id: string, branch_id: string, narrative_goal: string) =>
-    unwrap<SceneConfig>(http.post(`/projects/${id}/scenes/plan`, { branch_id, narrative_goal })),
+  /** scene_intent 是本场意图；主线目标由后端固定读 project.narrative_goal。 */
+  planScene: (id: string, branch_id: string, scene_intent = '') =>
+    unwrap<SceneConfig>(http.post(`/projects/${id}/scenes/plan`, { branch_id, scene_intent })),
   createScene: (id: string, payload: Record<string, unknown>) =>
     unwrap<Scene>(http.post(`/projects/${id}/scenes`, payload)),
   listScenes: (id: string, branchId?: string) =>

@@ -43,7 +43,9 @@ async def _get_project_scene(project_id: str, scene_id: str) -> Scene:
 @project_router.post("/plan")
 async def plan_scene(project_id: str, req: PlanSceneRequest) -> ApiResponse:
     """导演规划场景，返回 SceneConfig 建议（不创建）。"""
-    config = await orchestrator.plan_scene(project_id, req.branch_id, req.narrative_goal)
+    config = await orchestrator.plan_scene(
+        project_id, req.branch_id, scene_intent=req.scene_intent
+    )
     return ApiResponse.ok(to_dict(config))
 
 

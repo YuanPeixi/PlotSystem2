@@ -14,6 +14,7 @@ const emit = defineEmits<{
   // done 回调由父组件在请求结束后调用：ok=true 时面板才关闭/清空表单，
   // 失败（409/网络错误/500）时保留用户已填写的内容供修正重试。
   (e: 'decision', payload: Record<string, unknown>, done?: (ok: boolean) => void): void
+  (e: 'generate-output'): void
 }>()
 
 const rollbackConditions = ref('')
@@ -49,6 +50,13 @@ const scores = computed(() => {
     { label: '角色一致', value: e.character_consistency_score, danger: e.character_consistency_score < 5 },
   ]
 })
+
+// 负值 = 本场未度量到推进度，不能当成“进度 0”画成空进度条
+const progress = computed(() => {
+  const v = props.evaluation?.story_progress ?? -1
+  return v >= 0 ? v : null
+})
+const ending = computed(() => props.evaluation?.is_ending_reached === true)
 
 function decide(type: string) {
   if (locked.value) return
@@ -139,6 +147,34 @@ function confirmRollback() {
         </div>
       </div>
       <div class="recommend dim">AI 建议：{{ evaluation.recommended_decision }}</div>
+
+      <div class="story-progress">
+        <div class="score-label">
+          <span>主线推进度</span>
+          <span v-if="progress !== null">{{ Math.round(progress * 100) }}%</span>
+          <span v-else class="dim">未评估</span>
+        </div>
+        <div v-if="progress !== null" class="bar">
+          <div class="fill" :style="{ width: progress * 100 + '%' }"></div>
+        </div>
+        <p v-if="evaluation.progress_stalled" class="dim stalled">
+          本场未推进主线（导演自评 {{ Math.round(evaluation.story_progress_raw * 100) }}%，不低于历史值才算推进）
+        </p>
+      </div>
+
+      <div v-if="evaluation.unresolved_threads.length" class="threads">
+        <div class="dim">未收束线索</div>
+        <ul>
+          <li v-for="t in evaluation.unresolved_threads" :key="t">{{ t }}</li>
+        </ul>
+      </div>
+
+      <div v-if="ending" class="ending-box">
+        <div class="ending-title">🏁 导演判定故事已抵达结局</div>
+        <p v-if="evaluation.ending_reason" class="dim">{{ evaluation.ending_reason }}</p>
+        <button @click="emit('generate-output')">✒ 生成结局输出</button>
+        <p class="dim" style="font-size: 12px">不认同这个判定？下方三个决策依然可用。</p>
+      </div>
     </template>
 
     <div class="actions">
@@ -154,8 +190,8 @@ function confirmRollback() {
     </div>
 
     <div v-if="showNextScene" class="rollback-box">
-      <label>下一场叙事目标（可不填，导演自动接续）</label>
-      <textarea v-model="nextSceneGoal" placeholder="例：两人在業余中和解，或新冲突将起"></textarea>
+      <label>下一场意图（可不填，导演自动接续）</label>
+      <textarea v-model="nextSceneGoal" placeholder="例：两人在业余中和解，或新冲突将起"></textarea>
       <label style="margin-top: 8px">参与角色（不选则由导演自动决定）</label>
       <div class="char-pills">
         <label v-for="c in characters || []" :key="c.character_id" class="check-pill">
@@ -236,6 +272,37 @@ function confirmRollback() {
 .recommend {
   margin: 14px 0;
   font-size: 13px;
+}
+.story-progress {
+  margin: 4px 0 12px;
+}
+.stalled {
+  font-size: 12px;
+  margin-top: 6px;
+}
+.threads {
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.threads ul {
+  list-style: none;
+  margin-top: 4px;
+}
+.threads li::before {
+  content: '· ';
+}
+.ending-box {
+  border: 1px solid var(--highlight);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.ending-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.ending-box button {
+  margin: 8px 0;
 }
 .actions {
   display: flex;
