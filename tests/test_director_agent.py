@@ -8,6 +8,7 @@ import pytest
 
 from backend.agents import director_agent as da
 from backend.models import CharacterCard, DialogueTurn, Scene
+from backend.utils.llm import estimate_tokens
 
 
 def _cards() -> list[CharacterCard]:
@@ -451,3 +452,77 @@ async def test_goal_revision_recorded(monkeypatch):
     agent = da.DirectorAgent("p1")
     result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="扳倒丞相")
     assert result.goal_revision == goal_revision("扳倒丞相")
+
+
+# --- PR review 第二轮 ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity", True, False])
+async def test_non_finite_progress_is_unavailable(monkeypatch, raw):
+    """`max(0, min(1, nan))` 会返回上界 —— 一个 NaN 就把主线推成 100% 完成。
+
+    `json.loads` 默认接受裸 NaN/Infinity，`float(True)` 也是 1.0。
+    """
+    _patch_chat(monkeypatch, _eval_reply(story_progress=raw))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert result.progress_stalled is False
+
+
+async def test_bare_nan_in_json_is_unavailable(monkeypatch):
+    """模型直接吐裸 NaN（合法的 Python json，不是字符串）。"""
+    _patch_chat(monkeypatch, '{"synopsis": "x", "story_progress": NaN}')
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+
+
+async def test_non_finite_score_is_not_full_marks(monkeypatch):
+    """同族缺陷：NaN 分数会被钳成满分 10，再直接喂进 make_decision 的阈值规则。"""
+    _patch_chat(monkeypatch, '{"synopsis": "x", "narrative_goal_score": NaN}')
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.narrative_goal_score == 5.0
+
+
+async def test_threads_respect_token_budget(monkeypatch):
+    """只限条数不够：线索会落库并逐场回喂，20 条超长线索会把导演上下文永久拖死。"""
+    long_threads = [f"线索{i}：" + "极其冗长的来龙去脉" * 80 for i in range(20)]
+    _patch_chat(monkeypatch, _eval_reply(unresolved_threads=long_threads))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+
+    assert result.unresolved_threads
+    assert len(result.unresolved_threads) <= da.MAX_UNRESOLVED_THREADS
+    total = sum(estimate_tokens(t) for t in result.unresolved_threads)
+    assert total <= da._THREADS_BUDGET_TOKENS
+    # 单条也不得超上限，否则一条就能吃掉整个预算
+    assert max(estimate_tokens(t) for t in result.unresolved_threads) <= da._THREAD_ITEM_TOKENS
+
+
+async def test_single_huge_thread_is_truncated_not_dropped(monkeypatch):
+    _patch_chat(monkeypatch, _eval_reply(unresolved_threads=["关键线索" * 500]))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+
+    assert len(result.unresolved_threads) == 1
+    assert result.unresolved_threads[0].startswith("关键线索")
+    assert estimate_tokens(result.unresolved_threads[0]) <= da._THREAD_ITEM_TOKENS
+
+
+async def test_inherited_threads_also_budgeted(monkeypatch):
+    """继承路径同样要过预算：库里可能存着本次预算之前写入的超长列表。"""
+    _patch_chat(monkeypatch, _eval_reply())  # 未返回该键 → 走 fallback
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(),
+        _log(),
+        _cards(),
+        narrative_goal="g",
+        prior_threads=[f"旧线索{i}：" + "冗长" * 200 for i in range(20)],
+    )
+
+    total = sum(estimate_tokens(t) for t in result.unresolved_threads)
+    assert result.unresolved_threads
+    assert total <= da._THREADS_BUDGET_TOKENS
