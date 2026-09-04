@@ -12,6 +12,7 @@ from backend.models import (
     Scene,
     SceneConfig,
     SceneEvaluation,
+    goal_revision,
 )
 from backend.services import orchestrator, repository
 from backend.utils import db
@@ -73,6 +74,7 @@ async def test_legacy_evaluation_progress_is_unavailable_not_zero():
     evaluation = await repository.get_evaluation("scene-legacy-eval")
     assert evaluation is not None
     assert evaluation.story_progress == PROGRESS_UNAVAILABLE
+    assert evaluation.goal_revision == ""
     assert evaluation.unresolved_threads == []
 
 
@@ -86,6 +88,7 @@ async def test_evaluation_round_trip_keeps_new_fields():
             is_ending_reached=True,
             ending_reason="丞相伏法",
             unresolved_threads=["公主的身世"],
+            goal_revision="abc123",
         )
     )
     loaded = await repository.get_evaluation("scene-eval-roundtrip")
@@ -96,6 +99,7 @@ async def test_evaluation_round_trip_keeps_new_fields():
     assert loaded.is_ending_reached is True
     assert loaded.ending_reason == "丞相伏法"
     assert loaded.unresolved_threads == ["公主的身世"]
+    assert loaded.goal_revision == "abc123"
 
 
 class _CapturingDirector:
@@ -203,6 +207,7 @@ async def test_story_context_follows_parent_chain_across_branches():
         SceneEvaluation(
             scene_id=main_scene.scene_id,
             story_progress=0.5,
+            goal_revision=goal_revision(""),
             unresolved_threads=["公主的身世"],
         )
     )
@@ -217,7 +222,7 @@ async def test_story_context_follows_parent_chain_across_branches():
     )
     await repository.save_scene(fork_scene)
 
-    progress, threads = await orchestrator._story_context(fork_scene)
+    progress, threads, _ = await orchestrator._story_context(fork_scene)
     assert progress == 0.5
     assert threads == ["公主的身世"]
 
@@ -236,7 +241,9 @@ async def test_story_context_uses_same_branch_history_when_chain_breaks():
     )
     await repository.save_scene(first)
     await repository.save_evaluation(
-        SceneEvaluation(scene_id=first.scene_id, story_progress=0.3)
+        SceneEvaluation(
+            scene_id=first.scene_id, story_progress=0.3, goal_revision=goal_revision("")
+        )
     )
 
     second = Scene(
@@ -247,7 +254,7 @@ async def test_story_context_uses_same_branch_history_when_chain_breaks():
     )
     await repository.save_scene(second)
 
-    progress, _ = await orchestrator._story_context(second)
+    progress, _, _ = await orchestrator._story_context(second)
     assert progress == 0.3
 
 
@@ -262,6 +269,104 @@ async def test_story_context_without_history_is_unavailable():
     )
     await repository.save_scene(scene)
 
-    progress, threads = await orchestrator._story_context(scene)
+    progress, threads, synopses = await orchestrator._story_context(scene)
     assert progress == PROGRESS_UNAVAILABLE
     assert threads == []
+    assert synopses == []
+
+
+# --- PR review 修复 -----------------------------------------------------------
+
+
+async def _chain(project_id: str, names: list[str]) -> list[Scene]:
+    """建一条 parent_scene_id 相连的场景链，返回从旧到新的列表。"""
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+    scenes: list[Scene] = []
+    parent: str | None = None
+    for i, name in enumerate(names):
+        scene = Scene(
+            scene_id=f"{project_id}-s{i}",
+            project_id=project_id,
+            branch_id="branch-main",
+            parent_scene_id=parent,
+            name=name,
+            status="completed",
+        )
+        await repository.save_scene(scene)
+        scenes.append(scene)
+        parent = scene.scene_id
+    return scenes
+
+
+async def test_resolved_threads_do_not_resurrect():
+    """A 留下线索、B 显式收束成空表，C 必须看到空表而不是回头取 A 的。
+
+    旧实现把"空列表"和"还没找到线索状态"混为一谈，会让已收束的线索被提示词
+    重新要求模型保留。
+    """
+    a, b, c = await _chain("proj-threads-resurrect", ["A", "B", "C"])
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id=a.scene_id, unresolved_threads=["公主的身世"])
+    )
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id=b.scene_id, unresolved_threads=[])
+    )
+
+    _, threads, _ = await orchestrator._story_context(c)
+    assert threads == []
+
+
+async def test_threads_inherited_when_latest_evaluation_missing():
+    """B 压根没评估过（≠ 显式收束）时仍应沿用 A 的线索。"""
+    a, _b, c = await _chain("proj-threads-missing-eval", ["A", "B", "C"])
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id=a.scene_id, unresolved_threads=["公主的身世"])
+    )
+
+    _, threads, _ = await orchestrator._story_context(c)
+    assert threads == ["公主的身世"]
+
+
+async def test_progress_not_inherited_across_goal_change():
+    """换了主线目标就是换了尺子：旧目标下的 0.9 不得钳死新目标的真实进度。"""
+    a, b = await _chain("proj-goal-changed", ["A", "B"])
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=a.scene_id,
+            story_progress=0.9,
+            goal_revision=goal_revision("扳倒丞相"),
+        )
+    )
+
+    same, _, _ = await orchestrator._story_context(b, "扳倒丞相")
+    assert same == 0.9
+
+    changed, _, _ = await orchestrator._story_context(b, "找回失踪的妹妹")
+    assert changed == PROGRESS_UNAVAILABLE
+
+
+async def test_legacy_evaluation_progress_not_inherited():
+    """旧记录没有 goal_revision，其进度不该被当成当前目标下的度量。"""
+    a, b = await _chain("proj-goal-legacy-rev", ["A", "B"])
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id=a.scene_id, story_progress=0.7)  # goal_revision 为空
+    )
+
+    progress, _, _ = await orchestrator._story_context(b, "扳倒丞相")
+    assert progress == PROGRESS_UNAVAILABLE
+
+
+async def test_story_context_collects_ancestor_synopses_in_time_order():
+    """结局往往跨场次达成：评估时导演必须看得到前面几场发生了什么。"""
+    a, b, c = await _chain("proj-synopses", ["揭露叛徒", "两家对峙", "当下"])
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id=a.scene_id, synopsis="王子当众揭穿了丞相")
+    )
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id=b.scene_id, synopsis="两家在朝堂上剑拔弩张")
+    )
+
+    _, _, synopses = await orchestrator._story_context(c)
+    assert len(synopses) == 2
+    assert "王子当众揭穿了丞相" in synopses[0]
+    assert "两家在朝堂上剑拔弩张" in synopses[1]

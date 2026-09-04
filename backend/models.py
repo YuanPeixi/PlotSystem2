@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,6 +30,15 @@ PROGRESS_UNAVAILABLE = -1.0
 
 #: 未收束线索的累积上限，超出会把导演上下文吃光（工单28）
 MAX_UNRESOLVED_THREADS = 20
+
+
+def goal_revision(narrative_goal: str) -> str:
+    """主线目标的版本指纹。
+
+    推进度是"离这个目标还有多远"，换了目标就换了尺子。没有它的话，用户
+    把目标改成完全不同的一个之后，旧目标下的 0.9 会把新目标的真实进度永久钳到顶。
+    """
+    return hashlib.sha256(narrative_goal.strip().encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +324,8 @@ class SceneEvaluation:
     story_progress: float = PROGRESS_UNAVAILABLE  # 0-1，沿因果谱系单调钳制后的值
     story_progress_raw: float = PROGRESS_UNAVAILABLE  # 导演本场原始自评，仅供观测
     progress_stalled: bool = False  # 本场自评未超过历史最高值
+    # 本场推进度是对照哪个版本的主线目标给出的（空 = 旧记录，不参与钳制）
+    goal_revision: str = ""
     is_ending_reached: bool = False
     ending_reason: str = ""
     unresolved_threads: list[str] = field(default_factory=list)

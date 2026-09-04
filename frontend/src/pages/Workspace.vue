@@ -18,6 +18,8 @@ const newName = ref('')
 const newDesc = ref('')
 const newGoal = ref('')
 const editingGoal = ref(false)
+// 草稿归属的项目：编辑 A 时直接点开 B 再保存，会把 A 的文字静默写进 B 的锚点
+const editingProjectId = ref('')
 const goalDraft = ref('')
 const criteriaDraft = ref('')
 const savingGoal = ref(false)
@@ -56,18 +58,29 @@ async function create() {
 function startEditGoal() {
   goalDraft.value = store.current?.narrative_goal ?? ''
   criteriaDraft.value = store.current?.ending_criteria ?? ''
+  editingProjectId.value = store.current?.project_id ?? ''
   editingGoal.value = true
 }
 
+function cancelEditGoal() {
+  editingGoal.value = false
+  editingProjectId.value = ''
+  goalDraft.value = ''
+  criteriaDraft.value = ''
+}
+
 async function saveGoal() {
-  if (!store.current) return
+  if (!store.current || store.current.project_id !== editingProjectId.value) {
+    cancelEditGoal()
+    return
+  }
   savingGoal.value = true
   try {
-    await store.updateProject(store.current.project_id, {
+    await store.updateProject(editingProjectId.value, {
       narrative_goal: goalDraft.value,
       ending_criteria: criteriaDraft.value,
     })
-    editingGoal.value = false
+    cancelEditGoal()
   } finally {
     savingGoal.value = false
   }
@@ -78,6 +91,7 @@ async function open(id: string) {
     window.clearInterval(pollTimer)
     pollTimer = undefined
   }
+  cancelEditGoal()
   await store.selectProject(id)
   await store.loadGraph(id)
   await charStore.load(id)
@@ -187,7 +201,7 @@ async function build() {
             </div>
             <div class="row">
               <button :disabled="savingGoal" @click="saveGoal">{{ savingGoal ? '保存中...' : '保存' }}</button>
-              <button class="ghost" @click="editingGoal = false">取消</button>
+              <button class="ghost" @click="cancelEditGoal">取消</button>
             </div>
           </template>
           <template v-else>

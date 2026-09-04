@@ -24,9 +24,10 @@ from backend.models import (
     Scene,
     SceneConfig,
     SceneEvaluation,
+    goal_revision,
 )
 from backend.services import inspection
-from backend.utils.context import ContextBudget, compact_lines
+from backend.utils.context import TAIL_ONLY, ContextBudget, compact_lines, fit_lines
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -34,6 +35,10 @@ logger = get_logger("agents.director")
 
 #: 评分为该值表示"评估未生成"，而不是"得分很低"
 SCORE_UNAVAILABLE = -1.0
+
+#: 结局判定用的前情提要预算。梯概每条 50-100 字，够装下十几场；
+#: 它不该与对白预算一样大，否则长线推演下整个评估请求会被历史吃掉。
+_HISTORY_BUDGET_TOKENS = 2000
 
 
 def unavailable_evaluation(scene_id: str) -> SceneEvaluation:
@@ -100,6 +105,26 @@ def _parse_progress(value) -> float:
         return PROGRESS_UNAVAILABLE
 
 
+def _parse_bool(value) -> bool | None:
+    """严格布尔解析，无法判定时返回 None。
+
+    不能直接用 ``bool()``：LLM 完全可能输出合法 JSON 的字符串 ``"false"``，
+    而 ``bool("false") is True`` —— 故事就这么“结束”了。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "yes", "1"}:
+            return True
+        if text in {"false", "no", "0", ""}:
+            return False
+        return None
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _normalize_threads(value, fallback: list[str] | None = None) -> list[str]:
     """未收束线索：去重保序并截到上限。
 
@@ -162,6 +187,9 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
 【本场开始前的主线推进度】
 {prior_progress}
 
+【前情提要（本场之前的因果谱系，按时间顺序）】
+{prior_synopses}
+
 【截至上一场的未收束线索】
 {prior_threads}
 
@@ -181,7 +209,9 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   本场开始前的推进度；本场没有实质推进时给与之相同的值；
 - unresolved_threads 请输出**更新后的完整列表**：保留仍未收束的旧线索、删去本场已收束的、
   追加本场新开的，最近提及的排在前面；
-- 结局判定只看【结局判定标准】与【主线目标】，不得把本场演出来的任意告一段落当成故事结局。
+- 结局判定只看【结局判定标准】与【主线目标】，并对照【前情提要】确认条件是否真的已在
+  前面的场次里完成（多条件的结局往往跨场次达成）；不得把本场演出来的任意告一段落
+  当成故事结局。
 
 请客观评估并严格输出 JSON（不要额外文字）：
 {{
@@ -283,16 +313,19 @@ class DirectorAgent:
         ending_criteria: str = "",
         prior_progress: float = PROGRESS_UNAVAILABLE,
         prior_threads: list[str] | None = None,
+        prior_synopses: list[str] | None = None,
     ) -> SceneEvaluation:
         transcript = await self._build_transcript(dialogue_log)
         # 钳制基线：不可用（无历史评估）时按 0 起算，但仍要区分于"历史进度确实是 0"
         baseline = prior_progress if prior_progress >= 0 else 0.0
+        revision = goal_revision(narrative_goal)
         prompt = _EVAL_PROMPT.format(
             narrative_goal=narrative_goal or "（用户未设定主线目标，plot_deviation_score 请保守给出）",
             ending_criteria=ending_criteria or "（用户未给出明确的结局标准）",
             prior_progress=f"{baseline:.2f}"
             if prior_progress >= 0
             else "（暂无历史评估，本场是主线的起点）",
+            prior_synopses=self._fit_synopses(prior_synopses or []),
             prior_threads="\n".join(f"- {t}" for t in (prior_threads or [])) or "（暂无）",
             scene_brief=self._scene_brief(scene),
             character_profiles=self._describe_for_eval(characters or []),
@@ -310,6 +343,7 @@ class DirectorAgent:
             result = unavailable_evaluation(scene.scene_id)
             result.synopsis = "（评估结果解析失败，分数不可信）"
             result.unresolved_threads = list(prior_threads or [])
+            result.goal_revision = revision
             return result
 
         def _score(key: str) -> float:
@@ -351,12 +385,22 @@ class DirectorAgent:
             story_progress=progress,
             story_progress_raw=raw_progress,
             progress_stalled=stalled,
+            goal_revision=revision,
             is_ending_reached=ending_reached,
             ending_reason=ending_reason,
             unresolved_threads=_normalize_threads(
                 data.get("unresolved_threads"), fallback=prior_threads
             ),
         )
+
+    @staticmethod
+    def _fit_synopses(synopses: list[str]) -> str:
+        """把因果谱系上的梯概装进预算。尾部（最近几场）优先保留。"""
+        if not synopses:
+            return "（本场之前没有已评估的场次）"
+        return fit_lines(
+            synopses, ContextBudget(max_tokens=_HISTORY_BUDGET_TOKENS, strategy=TAIL_ONLY)
+        ).text
 
     @staticmethod
     def _resolve_ending(
@@ -367,7 +411,14 @@ class DirectorAgent:
         既无主线目标又无结局标准时，导演唯一能对照的就是它自己刚演出来的内容 ——
         那正是自评系统宣布"故事讲完了"的典型失效模式。
         """
-        reached = bool(data.get("is_ending_reached", False))
+        reached = _parse_bool(data.get("is_ending_reached", False))
+        if reached is None:
+            logger.warning(
+                "场景 %s 的 is_ending_reached 无法判定（%r），按未抵达结局处理",
+                scene_id,
+                data.get("is_ending_reached"),
+            )
+            reached = False
         if reached and not (narrative_goal or ending_criteria):
             logger.warning(
                 "场景 %s 的评估声称已抵达结局，但项目没有主线目标/结局标准，已忽略", scene_id

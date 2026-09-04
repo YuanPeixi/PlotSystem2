@@ -299,6 +299,7 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         story_progress=data.get("story_progress", PROGRESS_UNAVAILABLE),
         story_progress_raw=data.get("story_progress_raw", PROGRESS_UNAVAILABLE),
         progress_stalled=bool(data.get("progress_stalled", False)),
+        goal_revision=data.get("goal_revision", ""),
         is_ending_reached=bool(data.get("is_ending_reached", False)),
         ending_reason=data.get("ending_reason", ""),
         unresolved_threads=list(data.get("unresolved_threads", []) or []),

@@ -227,7 +227,7 @@ frontend/src/
 | `LoreEntry` | 世界观条目（keywords 触发、scope 控制可见范围、priority 排序） | 内嵌于角色卡 |
 | `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
-| `SceneEvaluation` | 四维评分 + 主线度量（推进度/结局/未收束线索）+ 推荐决策 | SQLite `evaluations` |
+| `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 推荐决策 | SQLite `evaluations` |
 | `DirectorDecision` | 导演决策 + 人工覆盖字段 | SQLite `decisions` |
 | `Snapshot` / `Branch` / `BranchTree` | 快照与分支 | SQLite `snapshots`/`branches` + 快照目录 |
 | `MemoryChunk` / `MemorySnapshot` | 记忆检索与序列化载体 | 运行时 |
@@ -311,20 +311,28 @@ frontend/src/
     自评系统的典型失效模式是把目标改成自己刚演出来的东西，然后分数变高。
     第二层（分支级路线图）才是导演的可写空间，归工单18。
 
-16. **`story_progress` 的语义有三重约束**，动它之前三条都要保持：
+16. **`story_progress` 的语义有四重约束**，动它之前四条都要保持：
     - **`PROGRESS_UNAVAILABLE`（-1）表示"没度量到"**，与 `-1` 分同理，绝不能当成"进度 0"
       参与钳制或停滞判定。但它**不进** `is_evaluation_unavailable()`：那个函数的语义是
       "整份评估作废"，LLM 漏返回一个键不该连带把决策打成保守默认；
     - **单调钳制**：落库值取 `max(本场自评, 谱系历史最高)`，原始自评另存
       `story_progress_raw`，未超过历史值时置 `progress_stalled`。LLM 自评噪声大，
       不钳制则进度条来回抖，基于它的决策规则跟着抖；
+    - **只在同一 `goal_revision` 内钳制**（`models.goal_revision()` = 主线目标的 sha256 前缀）。
+      推进度衡量的是"离这个目标还有多远"，用户改目标就是换了尺子；不比对版本的话，
+      旧目标下的 0.9 会把新目标的真实进度永久钳到顶。旧记录的 revision 为空串，
+      与任何现行目标都不相等，因此不参与继承；
     - **谱系不是"同分支"而是 `parent_scene_id` 链**（`orchestrator._ancestor_scenes`）。
       fork/rollback 的首场按不变量 I4 指向来源分支的场景，因此 IF 线天然继承分叉点的进度，
       不必从 0 重爬；手工建的场景没有父场景，链会断，故并入同分支内更早的场景。
       顺序只能用 `list_scenes` 的返回次序——`_deserialize_scene` 不还原 `created_at`。
 
 17. **`unresolved_threads` 的合并由导演做，后端只去重截断到 20 条**：只有导演知道哪条
-    线索本场被收束了。LLM 未返回该键时沿用上一场的列表，**不是**"线索全部收束了"。
+    线索本场被收束了。两处易错：
+    - LLM 未返回该键时沿用上一场的列表，**不是**"线索全部收束了"；
+    - 反过来，谱系上**最近一份评估的空列表是权威值**（表示上一场把线索都收束了），
+      `_story_context` 不得因为它是空的就继续往前找 —— 那会让已收束的旧线索复活，
+      并被提示词要求模型继续保留。空列表与"还没找到评估"必须用独立标志区分。
 
 ---
 
@@ -916,4 +924,14 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      scene_intent；`POST /scenes/plan` 请求体 narrative_goal → scene_intent；
      repository 把 Project / SceneEvaluation 的反序列化收敛成单一函数（原先两处内联）。
      新增 4.2 陷阱 15–17 与 tests/test_narrative_goal.py。
+-->
+<!-- 2026-09-04: 工单28 的 PR review 修复（5 条）：
+     - `SceneEvaluation.goal_revision` + `models.goal_revision()`：推进度只在同一版本
+       主线目标内钳制，否则用户改目标后旧目标的 0.9 会把新目标永久钳到顶；
+     - `_story_context` 用独立的 threads_found 标志：导演显式给出的空线索表是权威值，
+       不得因为它是空的就继续往前取回已收束的旧线索；
+     - 评估 prompt 补【前情提要】（谱系上的 synopsis 经 fit_lines 压缩），
+       否则跨场次达成的结局条件根本判不出来；
+     - `is_ending_reached` 改严格布尔解析（`bool("false")` 是 True）；
+     - 前端目标编辑草稿绑定 editingProjectId，切项目时清空，避免把 A 的目标存进 B。
 -->
