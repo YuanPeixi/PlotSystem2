@@ -29,6 +29,7 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
     SceneStatus,
+    goal_revision,
     new_id,
 )
 from backend.scene_engine import SceneEngine
@@ -307,26 +308,44 @@ async def _recent_scene_results(
     return results
 
 
-async def _story_context(scene: Scene) -> tuple[float, list[str]]:
-    """沿因果谱系取回 (历史最高推进度, 最近一次的未收束线索)。
+async def _story_context(
+    scene: Scene, narrative_goal: str = "", synopsis_limit: int = 12
+) -> tuple[float, list[str], list[str]]:
+    """沿因果谱系取回 (可继承的推进度, 最近一次的未收束线索, 前情梗概)。
 
-    推进度已在写入时单调钳制，所以谱系上"最近一条可用的评估"就是历史最高值，
-    无需遍历全部祖先。
+    三条各自的取值规则不同，不能合成一次"找到就停"：
+
+    - 推进度只继承**同一版本主线目标**下的度量。用户改了目标就是换了尺子，
+      旧目标下的 0.9 会把新目标的真实进度永久钳到顶；
+    - 线索取**最近一份评估的列表原样**，哪怕它是空的 —— 空表示"上一场把线索都收束了"，
+      不是"还没找到线索状态"。把两者混为一谈会让已收束的旧线索被重新复活；
+    - 梗概要多取几条：结局往往是跨场次达成的，只看本场判不出来。
     """
     lineage = [scene, *await _ancestor_scenes(scene)]  # 新 → 旧
+    revision = goal_revision(narrative_goal)
     progress = PROGRESS_UNAVAILABLE
     threads: list[str] = []
+    threads_found = False
+    synopses: list[str] = []
     for node in lineage:
         evaluation = await repository.get_evaluation(node.scene_id)
         if evaluation is None:
             continue
-        if progress < 0 and evaluation.story_progress >= 0:
+        if (
+            progress < 0
+            and evaluation.story_progress >= 0
+            and evaluation.goal_revision == revision
+        ):
             progress = evaluation.story_progress
-        if not threads and evaluation.unresolved_threads:
+        if not threads_found:
             threads = list(evaluation.unresolved_threads)
-        if progress >= 0 and threads:
+            threads_found = True
+        if evaluation.synopsis and len(synopses) < synopsis_limit:
+            synopses.append(f"【{node.name or '未命名场景'}】{evaluation.synopsis}")
+        if progress >= 0 and threads_found and len(synopses) >= synopsis_limit:
             break
-    return progress, threads
+    synopses.reverse()  # 交给导演时按时间顺序读
+    return progress, threads, synopses
 
 
 async def _ancestor_scenes(scene: Scene) -> list[Scene]:
@@ -460,7 +479,9 @@ async def run_scene(scene_id: str) -> None:
                 scene.project_id, GraphManager(scene.project_id), sm
             )
             project = await repository.get_project(scene.project_id)
-            prior_progress, prior_threads = await _story_context(scene)
+            prior_progress, prior_threads, prior_synopses = await _story_context(
+                scene, project.narrative_goal
+            )
             evaluation = await director.evaluate_scene(
                 scene,
                 result.dialogue_log,
@@ -469,6 +490,7 @@ async def run_scene(scene_id: str) -> None:
                 ending_criteria=project.ending_criteria,
                 prior_progress=prior_progress,
                 prior_threads=prior_threads,
+                prior_synopses=prior_synopses,
             )
             await repository.save_evaluation(evaluation)
             await events.publish(scene_id, "evaluation", to_dict(evaluation))

@@ -381,3 +381,73 @@ async def test_unparsable_evaluation_keeps_prior_threads(monkeypatch):
     )
     assert result.story_progress == da.PROGRESS_UNAVAILABLE
     assert result.unresolved_threads == ["旧线索"]
+
+
+# --- PR review 修复 -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(True, True), ("true", True), (1, True), (False, False), ("false", False), (0, False)],
+)
+async def test_ending_flag_parses_strictly(monkeypatch, raw, expected):
+    """`bool("false")` 是 True —— 模型输出合法 JSON 的字符串就能"结束"整个故事。"""
+    _patch_chat(monkeypatch, _eval_reply(is_ending_reached=raw, ending_reason="r"))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.is_ending_reached is expected
+
+
+async def test_unparsable_ending_flag_falls_back_to_false(monkeypatch, caplog):
+    _patch_chat(monkeypatch, _eval_reply(is_ending_reached="maybe"))
+    agent = da.DirectorAgent("p1")
+    with caplog.at_level("WARNING"):
+        result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.is_ending_reached is False
+    assert any("is_ending_reached" in r.message for r in caplog.records)
+
+
+async def test_eval_prompt_contains_prior_synopses(monkeypatch):
+    """结局条件常跨场次达成，只看本场判不出来。"""
+    sink: list = []
+    _patch_chat(monkeypatch, _eval_reply(), sink)
+
+    agent = da.DirectorAgent("p1")
+    await agent.evaluate_scene(
+        _scene(),
+        _log(),
+        _cards(),
+        narrative_goal="揭露叛徒并促成两家和解",
+        prior_synopses=["【第一场】王子当众揭穿了丞相"],
+    )
+
+    assert "王子当众揭穿了丞相" in sink[0][0]["content"]
+
+
+async def test_prior_synopses_are_budgeted(monkeypatch):
+    """前情提要也要受预算约束，且优先保留最近几场。"""
+    sink: list = []
+    _patch_chat(monkeypatch, _eval_reply(), sink)
+    monkeypatch.setattr(da, "_HISTORY_BUDGET_TOKENS", 60)
+
+    agent = da.DirectorAgent("p1")
+    await agent.evaluate_scene(
+        _scene(),
+        _log(),
+        _cards(),
+        narrative_goal="g",
+        prior_synopses=[f"【第{i}场】" + "梗概内容" * 20 for i in range(20)],
+    )
+
+    prompt = sink[0][0]["content"]
+    assert "第19场" in prompt
+    assert "第0场" not in prompt
+
+
+async def test_goal_revision_recorded(monkeypatch):
+    from backend.models import goal_revision
+
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.5))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="扳倒丞相")
+    assert result.goal_revision == goal_revision("扳倒丞相")
