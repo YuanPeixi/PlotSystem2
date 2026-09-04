@@ -8,6 +8,7 @@ temperature 默认 0.3（追求一致性）。
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import Counter
 
@@ -28,7 +29,7 @@ from backend.models import (
 )
 from backend.services import inspection
 from backend.utils.context import TAIL_ONLY, ContextBudget, compact_lines, fit_lines
-from backend.utils.llm import chat_safe
+from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
 logger = get_logger("agents.director")
@@ -39,6 +40,11 @@ SCORE_UNAVAILABLE = -1.0
 #: 结局判定用的前情提要预算。梯概每条 50-100 字，够装下十几场；
 #: 它不该与对白预算一样大，否则长线推演下整个评估请求会被历史吃掉。
 _HISTORY_BUDGET_TOKENS = 2000
+
+#: 未收束线索的总预算与单条上限。只限条数是不够的：它会被落库并逐场回喂，
+#: 20 条超长线索一旦写进去，后续每一次规划与评估都拖着它（PR #17：预算是硬约束）。
+_THREADS_BUDGET_TOKENS = 800
+_THREAD_ITEM_TOKENS = 60
 
 
 def unavailable_evaluation(scene_id: str) -> SceneEvaluation:
@@ -95,14 +101,25 @@ def _extract_json(raw: str) -> tuple[dict, bool]:
     return (data, True) if isinstance(data, dict) else ({}, False)
 
 
+def _parse_number(value) -> float | None:
+    """解析成有限浮点数，否则 None。
+
+    两个坑都会静默变成满分/满进度：先钳后判的 ``max(0, min(1, nan))`` 返回上界，
+    而 ``json.loads`` 默认就接受裸的 ``NaN`` / ``Infinity``；``float(True)`` 也是 1.0。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _parse_progress(value) -> float:
     """把 LLM 给的推进度收进 0-1，无法解析时返回 PROGRESS_UNAVAILABLE。"""
-    if value is None:
-        return PROGRESS_UNAVAILABLE
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return PROGRESS_UNAVAILABLE
+    parsed = _parse_number(value)
+    return PROGRESS_UNAVAILABLE if parsed is None else max(0.0, min(1.0, parsed))
 
 
 def _parse_bool(value) -> bool | None:
@@ -126,21 +143,27 @@ def _parse_bool(value) -> bool | None:
 
 
 def _normalize_threads(value, fallback: list[str] | None = None) -> list[str]:
-    """未收束线索：去重保序并截到上限。
+    """未收束线索：去重保序，并同时受条数与 token 预算约束。
 
     合并交给导演做（只有它知道哪条已被收束），后端只负责别让列表无限膨胀。
-    LLM 未给出该键时沿用上一场的列表，而不是当成"线索全部收束了"。
+    LLM 未给出该键时沿用上一场的列表，而不是当成"线索全部收束了"；
+    继承进来的列表同样要过预算，否则超长内容会沿着谱系一直传下去。
     """
-    if not isinstance(value, list):
-        return list(fallback or [])[:MAX_UNRESOLVED_THREADS]
+    items = value if isinstance(value, list) else (fallback or [])
     seen: set[str] = set()
     threads: list[str] = []
-    for item in value:
+    used = 0
+    for item in items:
         text = str(item).strip()
         if not text or text in seen:
             continue
         seen.add(text)
+        text = fit_lines([text], ContextBudget(max_tokens=_THREAD_ITEM_TOKENS)).text
+        cost = estimate_tokens(text)
+        if threads and used + cost > _THREADS_BUDGET_TOKENS:
+            break
         threads.append(text)
+        used += cost
         if len(threads) >= MAX_UNRESOLVED_THREADS:
             break
     return threads
@@ -319,6 +342,8 @@ class DirectorAgent:
         # 钳制基线：不可用（无历史评估）时按 0 起算，但仍要区分于"历史进度确实是 0"
         baseline = prior_progress if prior_progress >= 0 else 0.0
         revision = goal_revision(narrative_goal)
+        # 继承进来的线索也要过预算：库里可能存着本次预算之前写入的超长列表
+        prior = _normalize_threads(None, fallback=prior_threads)
         prompt = _EVAL_PROMPT.format(
             narrative_goal=narrative_goal or "（用户未设定主线目标，plot_deviation_score 请保守给出）",
             ending_criteria=ending_criteria or "（用户未给出明确的结局标准）",
@@ -326,7 +351,7 @@ class DirectorAgent:
             if prior_progress >= 0
             else "（暂无历史评估，本场是主线的起点）",
             prior_synopses=self._fit_synopses(prior_synopses or []),
-            prior_threads="\n".join(f"- {t}" for t in (prior_threads or [])) or "（暂无）",
+            prior_threads="\n".join(f"- {t}" for t in prior) or "（暂无）",
             scene_brief=self._scene_brief(scene),
             character_profiles=self._describe_for_eval(characters or []),
             transcript=transcript,
@@ -342,15 +367,13 @@ class DirectorAgent:
             logger.warning("场景 %s 的评估结果无法解析为 JSON：%s", scene.scene_id, raw[:300])
             result = unavailable_evaluation(scene.scene_id)
             result.synopsis = "（评估结果解析失败，分数不可信）"
-            result.unresolved_threads = list(prior_threads or [])
+            result.unresolved_threads = _normalize_threads(None, fallback=prior)
             result.goal_revision = revision
             return result
 
         def _score(key: str) -> float:
-            try:
-                return max(0.0, min(10.0, float(data.get(key, 5))))
-            except (TypeError, ValueError):
-                return 5.0
+            parsed = _parse_number(data.get(key, 5))
+            return 5.0 if parsed is None else max(0.0, min(10.0, parsed))
 
         rec = data.get("recommended_decision", DecisionType.NEXT_SCENE.value)
         if rec not in {d.value for d in DecisionType}:
@@ -389,7 +412,7 @@ class DirectorAgent:
             is_ending_reached=ending_reached,
             ending_reason=ending_reason,
             unresolved_threads=_normalize_threads(
-                data.get("unresolved_threads"), fallback=prior_threads
+                data.get("unresolved_threads"), fallback=prior
             ),
         )
 
@@ -516,9 +539,10 @@ class DirectorAgent:
             synopsis = ev.synopsis or "（无梗概）"
             blocks.append(f"- 【{scene.name}】{synopsis}")
         latest = results[-1][1]
-        if latest.unresolved_threads:
+        threads = _normalize_threads(None, fallback=latest.unresolved_threads)
+        if threads:
             blocks.append("未收束线索：")
-            blocks.extend(f"  · {t}" for t in latest.unresolved_threads)
+            blocks.extend(f"  · {t}" for t in threads)
         return "\n".join(blocks)
 
     @staticmethod
