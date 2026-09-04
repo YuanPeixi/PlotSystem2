@@ -14,7 +14,7 @@
 `✅ PR #N（合入 main：起始hash到结束hash）`。完整口径与 hash 填写规则见
 [CONVENTIONS.md](./CONVENTIONS.md)。**索引标注可能滞后于实际合并状态，以 git 为准。**
 
-**当前推进中**：工单 28（叙事目标与结局判定），从 main 开分支。
+**当前推进中**：工单 28（叙事目标与结局判定）已在分支 `feat/narrative-goal` 完成，等待 PR。
 
 ---
 
@@ -55,7 +55,7 @@
 | [27](./27-context-compaction.md) | 统一上下文压缩管线（27-A） | P1 | 无 | ✅ PR #17（合入 main：`973c350`到`71d6f24`；27-B 未做） | [落地与 review 教训](./NOTES.md#pr17) |
 | [04](./04-director-context.md) | 补全导演评估上下文 + P0 bug 清扫 | P1 | 17 ✅、27 ✅ | ✅ PR #17（同上） | [三层目标模型](./NOTES.md#director-goal) |
 | [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | ✅ PR #16（合入 main：`3f8d4d7`，阶段 A+B） | [两轮 review 教训](./NOTES.md#t08) |
-| [28](./28-narrative-goal-and-ending.md) | 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | **待处理（下一个开工）** | [三层目标模型 + 两条禁令](./NOTES.md#director-goal) |
+| [28](./28-narrative-goal-and-ending.md) | 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | **⏳ 等待 PR（feat/narrative-goal）** | [三层目标模型 + 两条禁令](./NOTES.md#director-goal) |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 ✅ | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整展示） | — |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 | [契约 3 补充条款待裁定](./NOTES.md#contract3) |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16 ✅（硬前置） | 待处理 | [硬前置已解除](./NOTES.md#t16) |

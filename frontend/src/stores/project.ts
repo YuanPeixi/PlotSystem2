@@ -24,8 +24,20 @@ export const useProjectStore = defineStore('project', () => {
     projects.value = await api.listProjects()
   }
 
-  async function createProject(name: string, description = '') {
-    const p = await api.createProject(name, description)
+  async function createProject(payload: {
+    name: string
+    description?: string
+    narrative_goal?: string
+    ending_criteria?: string
+  }) {
+    const p = await api.createProject(payload)
+    await loadProjects()
+    return p
+  }
+
+  async function updateProject(id: string, patch: Partial<Project>) {
+    const p = await api.updateProject(id, patch)
+    if (current.value?.project_id === id) current.value = p
     await loadProjects()
     return p
   }
@@ -68,6 +80,7 @@ export const useProjectStore = defineStore('project', () => {
     buildStatus,
     loadProjects,
     createProject,
+    updateProject,
     selectProject,
     deleteProject,
     uploadSeed,

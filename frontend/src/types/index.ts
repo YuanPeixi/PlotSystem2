@@ -13,6 +13,9 @@ export interface Project {
   description: string
   seed_texts: string[]
   status: string
+  /** 主线目标：导演的只读锚点，只能由用户修改 */
+  narrative_goal: string
+  ending_criteria: string
 }
 
 export interface RelationshipState {
@@ -136,6 +139,13 @@ export interface SceneEvaluation {
   character_consistency_score: number
   recommended_decision: string
   rollback_suggestion: Record<string, unknown> | null
+  /** 0-1 主线推进度；负值 = 本场未度量到，不是“进度为 0” */
+  story_progress: number
+  story_progress_raw: number
+  progress_stalled: boolean
+  is_ending_reached: boolean
+  ending_reason: string
+  unresolved_threads: string[]
 }
 
 export interface Branch {

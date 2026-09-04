@@ -40,7 +40,11 @@ async def main() -> None:
     await init_db()
 
     # 1. 创建项目并写入种子文本
-    project = Project(name="雨夜客栈推演", description="武侠场景端到端演示")
+    project = Project(
+        name="雨夜客栈推演",
+        description="武侠场景端到端演示",
+        narrative_goal="三人在雨夜客栈相遇，气氛逐渐紧张，揭开各自的秘密",
+    )
     await repository.save_project(project)
     seed_dir = settings.project_dir(project.project_id) / "seed_texts"
     seed_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +73,7 @@ async def main() -> None:
     director = DirectorAgent(project.project_id, GraphManager(project.project_id), sm)
     config = await director.plan_scene(
         main_branch.branch_id,
-        "三人在雨夜客栈相遇，气氛逐渐紧张，揭开各自的秘密",
+        project.narrative_goal,
         cards,
     )
     config.max_turns = 6  # 演示用，控制成本
@@ -102,6 +106,12 @@ async def main() -> None:
             evaluation.plot_deviation_score,
             evaluation.character_consistency_score,
             evaluation.recommended_decision,
+        )
+        logger.info(
+            "✔ 主线推进度=%s 结局=%s 未收束线索=%s",
+            "不可用" if evaluation.story_progress < 0 else f"{evaluation.story_progress:.2f}",
+            evaluation.is_ending_reached,
+            evaluation.unresolved_threads,
         )
 
     # 6. 输出

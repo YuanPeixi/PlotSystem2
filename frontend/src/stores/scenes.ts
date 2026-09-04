@@ -19,8 +19,12 @@ export const useSceneStore = defineStore('scenes', () => {
   const decisionPending = ref(false)
   let es: EventSource | null = null
 
-  async function plan(projectId: string, branchId: string, goal: string): Promise<SceneConfig> {
-    return api.planScene(projectId, branchId, goal)
+  async function plan(
+    projectId: string,
+    branchId: string,
+    sceneIntent: string,
+  ): Promise<SceneConfig> {
+    return api.planScene(projectId, branchId, sceneIntent)
   }
 
   async function createScene(projectId: string, payload: Record<string, unknown>) {
