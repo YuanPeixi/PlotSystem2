@@ -333,7 +333,7 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
           :applied-decision="sceneStore.appliedDecision"
           :pending="sceneStore.decisionPending"
           @decision="onDecision"
-          @generate-output="router.push(`/output/${props.projectId}`)"
+          @generate-output="router.push(`/output/${props.projectId}?branch=${sceneStore.currentScene?.branch_id || branchId}`)"
         />
         <div class="card">
           <h3>快照</h3>

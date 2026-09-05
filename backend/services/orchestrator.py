@@ -308,6 +308,32 @@ async def _recent_scene_results(
     return results
 
 
+async def _lineage_cutoff(scene: Scene) -> str:
+    """分叉起点若在某场**开演之前**，返回那一场的 scene_id，否则空串。
+
+    `parent_scene_id` 只说"分叉自哪一场"，不说"分叉在那一场的哪个时点"（工单08 的
+    不变量 I4 只需要血缘可追溯，before/after 对它无差别）。但推进度/线索/梗概是
+    **演完才产生**的度量：从 `before:` 快照分叉时，那一场在本条时间线上根本没发生过，
+    它的评估必须整条排除。
+
+    典型失效：用户对第 5 场不满意 → 从其前置快照回滚（`apply_decision` 的默认目标
+    就是 `scene.snapshot_id_before`）→ IF 线首场却继承了原线第 5 场演出来的进度与
+    线索。进度只升不降（`max(raw, baseline)`），于是这条线被永久钳在一个从未发生过
+    的高度上，还被提示词要求去收束本线没埋过的伏笔。
+
+    判据用来源场景自己记的 `snapshot_id_before`，不用快照 label 前缀：label 是
+    展示字符串（`before:{场景名}`），场景名可含冒号，靠前缀解析会误判。
+    """
+    if not scene.restore_snapshot_id or not scene.parent_scene_id:
+        return ""
+    try:
+        parent = await repository.get_scene(scene.parent_scene_id)
+    except PlotSystemError:
+        # 父场景已被删：血缘断了，无从判断分叉时点，按不截断处理（与下面的降级一致）
+        return ""
+    return parent.scene_id if scene.restore_snapshot_id == parent.snapshot_id_before else ""
+
+
 async def _story_context(
     scene: Scene, narrative_goal: str = "", synopsis_limit: int = 12
 ) -> tuple[float, list[str], list[str]]:
@@ -320,14 +346,21 @@ async def _story_context(
     - 线索取**最近一份评估的列表原样**，哪怕它是空的 —— 空表示"上一场把线索都收束了"，
       不是"还没找到线索状态"。把两者混为一谈会让已收束的旧线索被重新复活；
     - 梗概要多取几条：结局往往是跨场次达成的，只看本场判不出来。
+
+    从前置快照分叉时还要**跳过分叉点那一场**：见 `_lineage_cutoff`。
     """
     lineage = [scene, *await _ancestor_scenes(scene)]  # 新 → 旧
+    cutoff = await _lineage_cutoff(scene)
     revision = goal_revision(narrative_goal)
     progress = PROGRESS_UNAVAILABLE
     threads: list[str] = []
     threads_found = False
     synopses: list[str] = []
     for node in lineage:
+        # 分叉点那一场在本条时间线上尚未发生，它的评估整条不可继承（含线索：
+        # 不跳过的话 threads_found 会被它锁死，反而挡住更早的真实线索状态）
+        if node.scene_id == cutoff:
+            continue
         evaluation = await repository.get_evaluation(node.scene_id)
         if evaluation is None:
             continue

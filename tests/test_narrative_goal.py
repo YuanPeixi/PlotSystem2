@@ -370,3 +370,127 @@ async def test_story_context_collects_ancestor_synopses_in_time_order():
     assert len(synopses) == 2
     assert "王子当众揭穿了丞相" in synopses[0]
     assert "两家在朝堂上剑拔弩张" in synopses[1]
+
+
+# --- PR review 第二轮：分叉时点与数值解析 -------------------------------------
+
+
+async def _forked_scene(
+    project_id: str, *, from_before: bool
+) -> tuple[Scene, Scene]:
+    """建「主线一场 + 从其快照分叉出的 IF 首场」，返回 (来源场景, 分叉首场)。
+
+    from_before=True 模拟回滚（`apply_decision` 默认取 `snapshot_id_before`），
+    False 模拟从结束态分叉（next_scene 式的正常承接）。
+    """
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+    src = Scene(
+        scene_id=f"{project_id}-src",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="主线一场",
+        status="completed",
+        snapshot_id_before=f"{project_id}-snap-before",
+        snapshot_id_after=f"{project_id}-snap-after",
+    )
+    await repository.save_scene(src)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=src.scene_id,
+            story_progress=0.5,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["公主的身世"],
+            synopsis="主线一场演出来的结果",
+        )
+    )
+    fork = Scene(
+        scene_id=f"{project_id}-fork",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=src.scene_id,  # 分叉不变量 I4
+        name="IF 首场",
+        snapshot_id_before="",
+        restore_snapshot_id=(
+            src.snapshot_id_before if from_before else src.snapshot_id_after
+        ),
+    )
+    await repository.save_scene(fork)
+    return src, fork
+
+
+async def test_rollback_fork_does_not_inherit_unplayed_scene():
+    """从前置快照分叉：那一场在本条线上从未发生，其评估必须整条排除。
+
+    不排除的话，IF 线首场会继承原线演出来的进度（且 max() 只升不降，永久钳死）
+    与线索，还会把没发生过的梗概喂给导演当"前情"。
+    """
+    _src, fork = await _forked_scene("proj-fork-before", from_before=True)
+
+    progress, threads, synopses = await orchestrator._story_context(fork)
+    assert progress == PROGRESS_UNAVAILABLE
+    assert threads == []
+    assert synopses == []
+
+
+async def test_fork_from_after_snapshot_still_inherits():
+    """从结束态分叉是正常承接：不能被上面的截断误伤。"""
+    _src, fork = await _forked_scene("proj-fork-after", from_before=False)
+
+    progress, threads, synopses = await orchestrator._story_context(fork)
+    assert progress == 0.5
+    assert threads == ["公主的身世"]
+    assert len(synopses) == 1
+
+
+async def test_rollback_fork_still_inherits_from_earlier_scenes():
+    """只跳过分叉点那一场，更早的祖先仍应正常继承。
+
+    截断若实现成 break（而非 continue），A 的真实历史会连带丢掉。
+    """
+    project_id = "proj-fork-earlier"
+    a, b = await _chain(project_id, ["A", "B"])
+    b.snapshot_id_before = "snap-b-before"
+    await repository.save_scene(b)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=a.scene_id,
+            story_progress=0.2,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["更早埋下的线索"],
+        )
+    )
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=b.scene_id,
+            story_progress=0.8,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["B 演出来才有的线索"],
+        )
+    )
+
+    fork = Scene(
+        scene_id=f"{project_id}-fork",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=b.scene_id,
+        name="IF 首场",
+        restore_snapshot_id="snap-b-before",
+    )
+    await repository.save_scene(fork)
+
+    progress, threads, _ = await orchestrator._story_context(fork)
+    assert progress == 0.2
+    assert threads == ["更早埋下的线索"]
+
+
+async def test_huge_integer_score_does_not_break_evaluation():
+    """裸的超大整数：float() 抛的是 OverflowError，不接住会废掉整份评估。"""
+    from backend.agents.director_agent import _parse_number, _parse_progress
+
+    huge = json.loads("{\"v\": 1" + "0" * 400 + "}")["v"]
+    assert _parse_number(huge) is None
+    assert _parse_progress(huge) == PROGRESS_UNAVAILABLE
+    # 同族的 inf / NaN / bool 仍按原样挡住
+    assert _parse_number(json.loads('{"v": Infinity}')["v"]) is None
+    assert _parse_number(json.loads('{"v": NaN}')["v"]) is None
+    assert _parse_number(True) is None
