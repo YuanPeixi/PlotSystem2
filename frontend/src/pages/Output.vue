@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import { useDirectorStore } from '@/stores/director'
 
 const props = defineProps<{ projectId: string }>()
 const directorStore = useDirectorStore()
+const route = useRoute()
 
 const format = ref('web_novel')
 const branchId = ref('')
@@ -19,7 +21,17 @@ const FORMATS = [
   { value: 'raw', label: '原始日志(JSON)' },
 ]
 
-onMounted(() => directorStore.loadBranches(props.projectId))
+// 从导演台「生成结局输出」跳进来时带着 ?branch=：不预选就会按“全部分支”导出，
+// 用户在 IF 线上判定的结局，导出的却是另一条时间线的故事。
+// 必须等分支列表回来再校验：分支可能已被删，预选一个不在下拉框里的值会让
+// select 显示空白，而 branchId 仍是那个失效 id。
+onMounted(async () => {
+  await directorStore.loadBranches(props.projectId)
+  const wanted = String(route.query.branch || '')
+  if (wanted && flatten(directorStore.branchTree.roots).some((b) => b?.branch_id === wanted)) {
+    branchId.value = wanted
+  }
+})
 
 async function generate() {
   loading.value = true

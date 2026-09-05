@@ -16,6 +16,13 @@ const inspectingId = ref('')
 
 const newName = ref('')
 const newDesc = ref('')
+const newGoal = ref('')
+const editingGoal = ref(false)
+// 草稿归属的项目：编辑 A 时直接点开 B 再保存，会把 A 的文字静默写进 B 的锚点
+const editingProjectId = ref('')
+const goalDraft = ref('')
+const criteriaDraft = ref('')
+const savingGoal = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const building = ref(false)
 const graphViewerVersion = ref<'legacy' | 'focused'>('legacy')
@@ -37,10 +44,46 @@ onBeforeUnmount(() => {
 
 async function create() {
   if (!newName.value.trim()) return
-  const p = await store.createProject(newName.value, newDesc.value)
+  const p = await store.createProject({
+    name: newName.value,
+    description: newDesc.value,
+    narrative_goal: newGoal.value,
+  })
   newName.value = ''
   newDesc.value = ''
+  newGoal.value = ''
   await open(p.project_id)
+}
+
+function startEditGoal() {
+  goalDraft.value = store.current?.narrative_goal ?? ''
+  criteriaDraft.value = store.current?.ending_criteria ?? ''
+  editingProjectId.value = store.current?.project_id ?? ''
+  editingGoal.value = true
+}
+
+function cancelEditGoal() {
+  editingGoal.value = false
+  editingProjectId.value = ''
+  goalDraft.value = ''
+  criteriaDraft.value = ''
+}
+
+async function saveGoal() {
+  if (!store.current || store.current.project_id !== editingProjectId.value) {
+    cancelEditGoal()
+    return
+  }
+  savingGoal.value = true
+  try {
+    await store.updateProject(editingProjectId.value, {
+      narrative_goal: goalDraft.value,
+      ending_criteria: criteriaDraft.value,
+    })
+    cancelEditGoal()
+  } finally {
+    savingGoal.value = false
+  }
 }
 
 async function open(id: string) {
@@ -48,6 +91,7 @@ async function open(id: string) {
     window.clearInterval(pollTimer)
     pollTimer = undefined
   }
+  cancelEditGoal()
   await store.selectProject(id)
   await store.loadGraph(id)
   await charStore.load(id)
@@ -112,6 +156,9 @@ async function build() {
         <div class="field">
           <input v-model="newDesc" placeholder="简述（可选）" />
         </div>
+        <div class="field">
+          <input v-model="newGoal" placeholder="主线目标（可选，之后也可修改）" />
+        </div>
         <button @click="create">＋ 创建项目</button>
 
         <ul class="project-list">
@@ -140,6 +187,29 @@ async function build() {
         </div>
         <p class="dim">{{ store.current.description }}</p>
 
+        <div class="goal-box">
+          <div class="row" style="justify-content: space-between">
+            <span class="dim">主线目标（导演的只读锚点）</span>
+            <button v-if="!editingGoal" class="ghost" @click="startEditGoal">编辑</button>
+          </div>
+          <template v-if="editingGoal">
+            <div class="field">
+              <textarea v-model="goalDraft" placeholder="例如：王子查明丞相通敌并最终将其拉下马"></textarea>
+            </div>
+            <div class="field">
+              <textarea v-model="criteriaDraft" placeholder="结局判定标准（可选）：什么情形算故事讲完了"></textarea>
+            </div>
+            <div class="row">
+              <button :disabled="savingGoal" @click="saveGoal">{{ savingGoal ? '保存中...' : '保存' }}</button>
+              <button class="ghost" @click="cancelEditGoal">取消</button>
+            </div>
+          </template>
+          <template v-else>
+            <p v-if="store.current.narrative_goal" class="goal-text">{{ store.current.narrative_goal }}</p>
+            <p v-else class="dim">尚未设定。没有它，导演只能顺着上一场的惯性往下演，也无法判定结局。</p>
+            <p v-if="store.current.ending_criteria" class="dim">结局标准：{{ store.current.ending_criteria }}</p>
+          </template>
+        </div>
         <div class="seed-box">
           <div class="row" style="justify-content: space-between">
             <span class="dim">种子文本（{{ store.current.seed_texts.length }}）</span>
@@ -266,6 +336,17 @@ async function build() {
 .seed-box,
 .build-box {
   margin-top: 18px;
+}
+.goal-box {
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.goal-text {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.6;
 }
 .seed-list {
   list-style: none;

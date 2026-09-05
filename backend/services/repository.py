@@ -16,6 +16,7 @@ from backend.exceptions import (
     SceneNotFoundError,
 )
 from backend.models import (
+    PROGRESS_UNAVAILABLE,
     CharacterCard,
     DialogueTurn,
     DirectorDecision,
@@ -64,6 +65,24 @@ async def save_project(project: Project) -> None:
         await conn.commit()
 
 
+def _deserialize_project(data: dict) -> Project:
+    """从 data_json 还原项目。
+
+    get_project 与 list_projects 共用同一份：两处各自内联时，新字段只补一处
+    就会在列表接口上静默丢失（CLAUDE.md §5.4）。旧项目的 data_json 没有新字段，
+    全部走默认值。
+    """
+    return Project(
+        project_id=data["project_id"],
+        name=data["name"],
+        description=data.get("description", ""),
+        seed_texts=list(data.get("seed_texts", []) or []),
+        status=data.get("status", "initializing"),
+        narrative_goal=data.get("narrative_goal", ""),
+        ending_criteria=data.get("ending_criteria", ""),
+    )
+
+
 async def get_project(project_id: str) -> Project:
     async with db.connect() as conn:
         cur = await conn.execute(
@@ -72,14 +91,7 @@ async def get_project(project_id: str) -> Project:
         row = await cur.fetchone()
     if not row:
         raise ProjectNotFoundError(f"项目不存在: {project_id}")
-    data = json.loads(row[0])
-    return Project(
-        project_id=data["project_id"],
-        name=data["name"],
-        description=data.get("description", ""),
-        seed_texts=list(data.get("seed_texts", []) or []),
-        status=data.get("status", "initializing"),
-    )
+    return _deserialize_project(json.loads(row[0]))
 
 
 async def list_projects() -> list[Project]:
@@ -88,19 +100,7 @@ async def list_projects() -> list[Project]:
             "SELECT data_json FROM projects ORDER BY created_at DESC"
         )
         rows = await cur.fetchall()
-    projects = []
-    for (data_json,) in rows:
-        data = json.loads(data_json)
-        projects.append(
-            Project(
-                project_id=data["project_id"],
-                name=data["name"],
-                description=data.get("description", ""),
-                seed_texts=list(data.get("seed_texts", []) or []),
-                status=data.get("status", "initializing"),
-            )
-        )
-    return projects
+    return [_deserialize_project(json.loads(data_json)) for (data_json,) in rows]
 
 
 async def delete_project(project_id: str) -> None:
@@ -281,15 +281,12 @@ async def save_evaluation(evaluation: SceneEvaluation) -> None:
         await conn.commit()
 
 
-async def get_evaluation(scene_id: str) -> SceneEvaluation | None:
-    async with db.connect() as conn:
-        cur = await conn.execute(
-            "SELECT data_json FROM evaluations WHERE scene_id = ?", (scene_id,)
-        )
-        row = await cur.fetchone()
-    if not row:
-        return None
-    data = json.loads(row[0])
+def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
+    """从 data_json 还原评估。
+
+    旧记录没有主线度量字段，推进度必须退到 PROGRESS_UNAVAILABLE 而不是 0.0：
+    后者会把“没度量过”伪装成“一点没推进”，又会让后续场次被判成停滞。
+    """
     return SceneEvaluation(
         scene_id=data.get("scene_id", scene_id),
         synopsis=data.get("synopsis", ""),
@@ -299,7 +296,25 @@ async def get_evaluation(scene_id: str) -> SceneEvaluation | None:
         character_consistency_score=data.get("character_consistency_score", 0.0),
         recommended_decision=data.get("recommended_decision", "next_scene"),
         rollback_suggestion=data.get("rollback_suggestion"),
+        story_progress=data.get("story_progress", PROGRESS_UNAVAILABLE),
+        story_progress_raw=data.get("story_progress_raw", PROGRESS_UNAVAILABLE),
+        progress_stalled=bool(data.get("progress_stalled", False)),
+        goal_revision=data.get("goal_revision", ""),
+        is_ending_reached=bool(data.get("is_ending_reached", False)),
+        ending_reason=data.get("ending_reason", ""),
+        unresolved_threads=list(data.get("unresolved_threads", []) or []),
     )
+
+
+async def get_evaluation(scene_id: str) -> SceneEvaluation | None:
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "SELECT data_json FROM evaluations WHERE scene_id = ?", (scene_id,)
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return _deserialize_evaluation(json.loads(row[0]), scene_id)
 
 
 # ---------------------------------------------------------------------------

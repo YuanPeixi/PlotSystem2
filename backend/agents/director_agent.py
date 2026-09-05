@@ -8,12 +8,15 @@ temperature 默认 0.3（追求一致性）。
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import Counter
 
 from backend.config import settings
 from backend.knowledge_graph import GraphManager
 from backend.models import (
+    MAX_UNRESOLVED_THREADS,
+    PROGRESS_UNAVAILABLE,
     CharacterCard,
     CharacterState,
     DecisionType,
@@ -22,16 +25,26 @@ from backend.models import (
     Scene,
     SceneConfig,
     SceneEvaluation,
+    goal_revision,
 )
 from backend.services import inspection
-from backend.utils.context import ContextBudget, compact_lines
-from backend.utils.llm import chat_safe
+from backend.utils.context import TAIL_ONLY, ContextBudget, compact_lines, fit_lines
+from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
 logger = get_logger("agents.director")
 
 #: 评分为该值表示"评估未生成"，而不是"得分很低"
 SCORE_UNAVAILABLE = -1.0
+
+#: 结局判定用的前情提要预算。梯概每条 50-100 字，够装下十几场；
+#: 它不该与对白预算一样大，否则长线推演下整个评估请求会被历史吃掉。
+_HISTORY_BUDGET_TOKENS = 2000
+
+#: 未收束线索的总预算与单条上限。只限条数是不够的：它会被落库并逐场回喂，
+#: 20 条超长线索一旦写进去，后续每一次规划与评估都拖着它（PR #17：预算是硬约束）。
+_THREADS_BUDGET_TOKENS = 800
+_THREAD_ITEM_TOKENS = 60
 
 
 def unavailable_evaluation(scene_id: str) -> SceneEvaluation:
@@ -46,11 +59,19 @@ def unavailable_evaluation(scene_id: str) -> SceneEvaluation:
         dramatic_tension_score=SCORE_UNAVAILABLE,
         plot_deviation_score=SCORE_UNAVAILABLE,
         character_consistency_score=SCORE_UNAVAILABLE,
+        story_progress=PROGRESS_UNAVAILABLE,
+        story_progress_raw=PROGRESS_UNAVAILABLE,
         recommended_decision=DecisionType.NEXT_SCENE.value,
     )
 
 
 def is_evaluation_unavailable(evaluation: SceneEvaluation) -> bool:
+    """整份评估是否不可用。
+
+    故意不把 ``story_progress`` 纳入：它只是其中一项度量，LLM 漏返回这一个键
+    不应让四项正常分数整体作废、连带把决策打成保守默认。它自己的不可用
+    由 ``PROGRESS_UNAVAILABLE`` 单独表达。
+    """
     return min(
         evaluation.narrative_goal_score,
         evaluation.dramatic_tension_score,
@@ -80,18 +101,97 @@ def _extract_json(raw: str) -> tuple[dict, bool]:
     return (data, True) if isinstance(data, dict) else ({}, False)
 
 
+def _parse_number(value) -> float | None:
+    """解析成有限浮点数，否则 None。
+
+    两个坑都会静默变成满分/满进度：先钳后判的 ``max(0, min(1, nan))`` 返回上界，
+    而 ``json.loads`` 默认就接受裸的 ``NaN`` / ``Infinity``；``float(True)`` 也是 1.0。
+
+    ``OverflowError`` 必须一起接住：``json.loads`` 把裸的超大整数（``1`` 后面几百个
+    ``0``）解析成 Python int，``float()`` 对它抛的是 OverflowError 而非 ValueError。
+    漏接会穿过 ``_extract_json`` 那道防线，让整份本可解析的评估废在编排层的兜底里。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _parse_progress(value) -> float:
+    """把 LLM 给的推进度收进 0-1，无法解析时返回 PROGRESS_UNAVAILABLE。"""
+    parsed = _parse_number(value)
+    return PROGRESS_UNAVAILABLE if parsed is None else max(0.0, min(1.0, parsed))
+
+
+def _parse_bool(value) -> bool | None:
+    """严格布尔解析，无法判定时返回 None。
+
+    不能直接用 ``bool()``：LLM 完全可能输出合法 JSON 的字符串 ``"false"``，
+    而 ``bool("false") is True`` —— 故事就这么“结束”了。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "yes", "1"}:
+            return True
+        if text in {"false", "no", "0", ""}:
+            return False
+        return None
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    return None
+
+
+def _normalize_threads(value, fallback: list[str] | None = None) -> list[str]:
+    """未收束线索：去重保序，并同时受条数与 token 预算约束。
+
+    合并交给导演做（只有它知道哪条已被收束），后端只负责别让列表无限膨胀。
+    LLM 未给出该键时沿用上一场的列表，而不是当成"线索全部收束了"；
+    继承进来的列表同样要过预算，否则超长内容会沿着谱系一直传下去。
+    """
+    items = value if isinstance(value, list) else (fallback or [])
+    seen: set[str] = set()
+    threads: list[str] = []
+    used = 0
+    for item in items:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        text = fit_lines([text], ContextBudget(max_tokens=_THREAD_ITEM_TOKENS)).text
+        cost = estimate_tokens(text)
+        if threads and used + cost > _THREADS_BUDGET_TOKENS:
+            break
+        threads.append(text)
+        used += cost
+        if len(threads) >= MAX_UNRESOLVED_THREADS:
+            break
+    return threads
+
+
 _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个场景。
 
-【叙事目标】
-{goal}
+【主线目标（用户设定，不可更改）】
+{narrative_goal}
+
+【本场意图】
+{scene_intent}
 
 【已完成场景历史（最近 5 场）】
 {history}
 
+【最近场次的结果与未收束线索】
+{recent_results}
+
 【可用角色】
 {characters}
 
-请挑选 2-6 名最合适的角色，设定场景。严格输出 JSON（不要额外文字）：
+请挑选 2-6 名最合适的角色，设定场景。本场必须服务于主线目标；若本场意图与主线目标冲突，
+以主线目标为准。优先推进尚未收束的线索。严格输出 JSON（不要额外文字）：
 {{
   "name": "场景名",
   "description": "场景描述与期望走向（不强制结果）",
@@ -105,6 +205,21 @@ _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个�
 
 _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场景。
 
+【主线目标（用户设定，不可更改）】
+{narrative_goal}
+
+【结局判定标准】
+{ending_criteria}
+
+【本场开始前的主线推进度】
+{prior_progress}
+
+【前情提要（本场之前的因果谱系，按时间顺序）】
+{prior_synopses}
+
+【截至上一场的未收束线索】
+{prior_threads}
+
 【本场预设】
 {scene_brief}
 
@@ -114,8 +229,16 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
 【场景对白记录】
 {transcript}
 
-评分要求：角色一致性请对照上面的角色设定；若某角色说出了它本不该知道的信息
-（即上面标注的"不知道"项），应显著扣分。
+评分要求：
+- 角色一致性请对照上面的角色设定；若某角色说出了它本不该知道的信息，应显著扣分；
+- plot_deviation_score 请对照【主线目标】判断，越偏离分越高；
+- story_progress 是 0-1 的主线推进度（对照主线目标估算已走到哪里），必须不小于上面给出的
+  本场开始前的推进度；本场没有实质推进时给与之相同的值；
+- unresolved_threads 请输出**更新后的完整列表**：保留仍未收束的旧线索、删去本场已收束的、
+  追加本场新开的，最近提及的排在前面；
+- 结局判定只看【结局判定标准】与【主线目标】，并对照【前情提要】确认条件是否真的已在
+  前面的场次里完成（多条件的结局往往跨场次达成）；不得把本场演出来的任意告一段落
+  当成故事结局。
 
 请客观评估并严格输出 JSON（不要额外文字）：
 {{
@@ -124,6 +247,10 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   "dramatic_tension_score": 0-10,
   "plot_deviation_score": 0-10,
   "character_consistency_score": 0-10,
+  "story_progress": 0.0-1.0,
+  "is_ending_reached": true|false,
+  "ending_reason": "若已抵达结局，说明理由，否则空字符串",
+  "unresolved_threads": ["未收束的线索1", "未收束的线索2"],
   "recommended_decision": "continue|next_scene|rollback",
   "rollback_reason": "若建议回滚，说明原因，否则空字符串"
 }}
@@ -157,6 +284,8 @@ class DirectorAgent:
         narrative_goal: str,
         available_characters: list[CharacterCard],
         history_scenes: list[Scene] | None = None,
+        scene_intent: str = "",
+        recent_results: list[tuple[Scene, SceneEvaluation]] | None = None,
     ) -> SceneConfig:
         char_desc = "\n".join(self._describe_for_plan(c) for c in available_characters)
         history_text = "（暂无历史场景）"
@@ -165,7 +294,13 @@ class DirectorAgent:
             for s in history_scenes[-5:]:
                 lines.append(f"- 【{s.name}】@{s.location}：{s.description[:60]}（已完成 {s.turns_completed} 轮）")
             history_text = "\n".join(lines)
-        prompt = _PLAN_PROMPT.format(goal=narrative_goal, characters=char_desc, history=history_text)
+        prompt = _PLAN_PROMPT.format(
+            narrative_goal=narrative_goal or "（用户未设定主线目标，请依据历史场景自行把握大方向）",
+            scene_intent=scene_intent or "（未指定，由你依据主线目标与未收束线索决定）",
+            characters=char_desc,
+            history=history_text,
+            recent_results=self._describe_recent_results(recent_results or []),
+        )
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_PLAN_TEMPERATURE),
@@ -186,7 +321,7 @@ class DirectorAgent:
 
         return SceneConfig(
             name=data.get("name", "未命名场景"),
-            description=data.get("description", narrative_goal),
+            description=data.get("description") or scene_intent or narrative_goal,
             participating_characters=chosen_ids,
             location=data.get("location", "未知地点"),
             initial_conditions=data.get("initial_conditions", {}) or {},
@@ -201,9 +336,26 @@ class DirectorAgent:
         scene: Scene,
         dialogue_log: list[DialogueTurn],
         characters: list[CharacterCard] | None = None,
+        narrative_goal: str = "",
+        ending_criteria: str = "",
+        prior_progress: float = PROGRESS_UNAVAILABLE,
+        prior_threads: list[str] | None = None,
+        prior_synopses: list[str] | None = None,
     ) -> SceneEvaluation:
         transcript = await self._build_transcript(dialogue_log)
+        # 钳制基线：不可用（无历史评估）时按 0 起算，但仍要区分于"历史进度确实是 0"
+        baseline = prior_progress if prior_progress >= 0 else 0.0
+        revision = goal_revision(narrative_goal)
+        # 继承进来的线索也要过预算：库里可能存着本次预算之前写入的超长列表
+        prior = _normalize_threads(None, fallback=prior_threads)
         prompt = _EVAL_PROMPT.format(
+            narrative_goal=narrative_goal or "（用户未设定主线目标，plot_deviation_score 请保守给出）",
+            ending_criteria=ending_criteria or "（用户未给出明确的结局标准）",
+            prior_progress=f"{baseline:.2f}"
+            if prior_progress >= 0
+            else "（暂无历史评估，本场是主线的起点）",
+            prior_synopses=self._fit_synopses(prior_synopses or []),
+            prior_threads="\n".join(f"- {t}" for t in prior) or "（暂无）",
             scene_brief=self._scene_brief(scene),
             character_profiles=self._describe_for_eval(characters or []),
             transcript=transcript,
@@ -219,13 +371,13 @@ class DirectorAgent:
             logger.warning("场景 %s 的评估结果无法解析为 JSON：%s", scene.scene_id, raw[:300])
             result = unavailable_evaluation(scene.scene_id)
             result.synopsis = "（评估结果解析失败，分数不可信）"
+            result.unresolved_threads = _normalize_threads(None, fallback=prior)
+            result.goal_revision = revision
             return result
 
         def _score(key: str) -> float:
-            try:
-                return max(0.0, min(10.0, float(data.get(key, 5))))
-            except (TypeError, ValueError):
-                return 5.0
+            parsed = _parse_number(data.get(key, 5))
+            return 5.0 if parsed is None else max(0.0, min(10.0, parsed))
 
         rec = data.get("recommended_decision", DecisionType.NEXT_SCENE.value)
         if rec not in {d.value for d in DecisionType}:
@@ -234,6 +386,19 @@ class DirectorAgent:
         rollback_suggestion = None
         if rec == DecisionType.ROLLBACK.value:
             rollback_suggestion = {"reason": data.get("rollback_reason", "")}
+
+        raw_progress = _parse_progress(data.get("story_progress"))
+        if raw_progress < 0:
+            # 缺失/非法不能当成"进度 0"：那会伪造一次停滞信号，也会让进度条掉回去
+            logger.warning("场景 %s 的评估未给出可用的 story_progress", scene.scene_id)
+            progress, stalled = PROGRESS_UNAVAILABLE, False
+        else:
+            progress = max(raw_progress, baseline)
+            stalled = raw_progress <= baseline
+
+        ending_reached, ending_reason = self._resolve_ending(
+            data, scene.scene_id, narrative_goal, ending_criteria
+        )
 
         return SceneEvaluation(
             scene_id=scene.scene_id,
@@ -244,7 +409,49 @@ class DirectorAgent:
             character_consistency_score=_score("character_consistency_score"),
             recommended_decision=rec,
             rollback_suggestion=rollback_suggestion,
+            story_progress=progress,
+            story_progress_raw=raw_progress,
+            progress_stalled=stalled,
+            goal_revision=revision,
+            is_ending_reached=ending_reached,
+            ending_reason=ending_reason,
+            unresolved_threads=_normalize_threads(
+                data.get("unresolved_threads"), fallback=prior
+            ),
         )
+
+    @staticmethod
+    def _fit_synopses(synopses: list[str]) -> str:
+        """把因果谱系上的梯概装进预算。尾部（最近几场）优先保留。"""
+        if not synopses:
+            return "（本场之前没有已评估的场次）"
+        return fit_lines(
+            synopses, ContextBudget(max_tokens=_HISTORY_BUDGET_TOKENS, strategy=TAIL_ONLY)
+        ).text
+
+    @staticmethod
+    def _resolve_ending(
+        data: dict, scene_id: str, narrative_goal: str, ending_criteria: str
+    ) -> tuple[bool, str]:
+        """结局判定。没有任何用户锚点时一律判否。
+
+        既无主线目标又无结局标准时，导演唯一能对照的就是它自己刚演出来的内容 ——
+        那正是自评系统宣布"故事讲完了"的典型失效模式。
+        """
+        reached = _parse_bool(data.get("is_ending_reached", False))
+        if reached is None:
+            logger.warning(
+                "场景 %s 的 is_ending_reached 无法判定（%r），按未抵达结局处理",
+                scene_id,
+                data.get("is_ending_reached"),
+            )
+            reached = False
+        if reached and not (narrative_goal or ending_criteria):
+            logger.warning(
+                "场景 %s 的评估声称已抵达结局，但项目没有主线目标/结局标准，已忽略", scene_id
+            )
+            return False, ""
+        return reached, str(data.get("ending_reason", "") or "") if reached else ""
 
     # ---- 决策 ----
     async def make_decision(
@@ -321,6 +528,26 @@ class DirectorAgent:
             f"  已知：{facts}\n"
             f"  关系：{rel}"
         )
+
+    @staticmethod
+    def _describe_recent_results(results: list[tuple[Scene, SceneEvaluation]]) -> str:
+        """规划用的"上一场结果"块。
+
+        场景历史给的是**演之前的预设**，这里给的才是**演出来的结果**：导演自己写的
+        梗概与仍未收束的线索。没有它，导演规划下一场时看不到上一场究竟发生了什么。
+        """
+        if not results:
+            return "（暂无已评估的场次）"
+        blocks = []
+        for scene, ev in results:
+            synopsis = ev.synopsis or "（无梗概）"
+            blocks.append(f"- 【{scene.name}】{synopsis}")
+        latest = results[-1][1]
+        threads = _normalize_threads(None, fallback=latest.unresolved_threads)
+        if threads:
+            blocks.append("未收束线索：")
+            blocks.extend(f"  · {t}" for t in threads)
+        return "\n".join(blocks)
 
     @staticmethod
     def _describe_for_eval(characters: list[CharacterCard]) -> str:

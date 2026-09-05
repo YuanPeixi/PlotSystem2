@@ -8,6 +8,7 @@ import pytest
 
 from backend.agents import director_agent as da
 from backend.models import CharacterCard, DialogueTurn, Scene
+from backend.utils.llm import estimate_tokens
 
 
 def _cards() -> list[CharacterCard]:
@@ -247,3 +248,281 @@ async def test_long_transcript_keeps_last_turn(monkeypatch):
     prompt = sink[0][0]["content"]
     assert "第299句台词" in prompt  # 绝不截尾
     assert "省略" in prompt
+
+
+# --- 主线目标锚点与结局判定（工单28）-----------------------------------------
+
+
+def _eval_reply(**kw) -> str:
+    data = {
+        "synopsis": "梗概",
+        "narrative_goal_score": 7,
+        "dramatic_tension_score": 7,
+        "plot_deviation_score": 2,
+        "character_consistency_score": 8,
+    }
+    data.update(kw)
+    return json.dumps(data, ensure_ascii=False)
+
+
+async def test_eval_prompt_contains_narrative_goal(monkeypatch):
+    sink: list = []
+    _patch_chat(monkeypatch, _eval_reply(), sink)
+
+    agent = da.DirectorAgent("p1")
+    await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", ending_criteria="丞相伏法"
+    )
+
+    prompt = sink[0][0]["content"]
+    assert "扳倒丞相" in prompt
+    assert "丞相伏法" in prompt
+
+
+async def test_plan_prompt_keeps_goal_and_intent_separate(monkeypatch):
+    """主线目标是只读锚点，本场意图是第三层：两者必须并存，后者不得顶掉前者。"""
+    sink: list = []
+    _patch_chat(monkeypatch, json.dumps({"name": "夜谈", "participating_characters": ["王子"]}), sink)
+
+    agent = da.DirectorAgent("p1")
+    await agent.plan_scene("b1", "扳倒丞相", _cards(), scene_intent="让公主试探王子")
+
+    prompt = sink[0][0]["content"]
+    assert "扳倒丞相" in prompt
+    assert "让公主试探王子" in prompt
+
+
+async def test_story_progress_does_not_regress(monkeypatch):
+    """LLM 自评噪声大：新值低于历史最高值时钳制回历史值，并记一次停滞。"""
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.2))
+
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", prior_progress=0.6
+    )
+
+    assert result.story_progress == 0.6
+    assert result.story_progress_raw == 0.2
+    assert result.progress_stalled is True
+
+
+async def test_story_progress_advances(monkeypatch):
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.8))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", prior_progress=0.6
+    )
+    assert result.story_progress == 0.8
+    assert result.progress_stalled is False
+
+
+async def test_missing_story_progress_is_unavailable_not_zero(monkeypatch):
+    """缺失不能当成"进度 0"：那会伪造一次停滞信号，也会让进度条掉回去。"""
+    _patch_chat(monkeypatch, _eval_reply())
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", prior_progress=0.6
+    )
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert result.progress_stalled is False
+    # 单项缺失不得让整份评估作废、连带把决策打成保守默认
+    assert not da.is_evaluation_unavailable(result)
+
+
+async def test_unavailable_progress_does_not_poison_decision(monkeypatch):
+    _patch_chat(monkeypatch, _eval_reply(story_progress="不知道"))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    decision = await agent.make_decision(result)
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert decision.decision_type == "next_scene"
+
+
+async def test_ending_requires_user_anchor(monkeypatch):
+    """既无主线目标又无结局标准时，导演唯一能对照的只有它自己刚演出来的内容。"""
+    _patch_chat(monkeypatch, _eval_reply(is_ending_reached=True, ending_reason="都结束了"))
+    agent = da.DirectorAgent("p1")
+
+    without_anchor = await agent.evaluate_scene(_scene(), _log(), _cards())
+    assert without_anchor.is_ending_reached is False
+    assert without_anchor.ending_reason == ""
+
+    with_anchor = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相"
+    )
+    assert with_anchor.is_ending_reached is True
+    assert with_anchor.ending_reason == "都结束了"
+
+
+async def test_unresolved_threads_dedup_and_capped(monkeypatch):
+    threads = ["线索A", "线索A", *[f"线索{i}" for i in range(30)]]
+    _patch_chat(monkeypatch, _eval_reply(unresolved_threads=threads))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+
+    assert len(result.unresolved_threads) == da.MAX_UNRESOLVED_THREADS
+    assert result.unresolved_threads.count("线索A") == 1
+
+
+async def test_missing_threads_key_keeps_prior_list(monkeypatch):
+    """LLM 没提这个键 ≠ 线索全部收束了。"""
+    _patch_chat(monkeypatch, _eval_reply())
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="g", prior_threads=["旧线索"]
+    )
+    assert result.unresolved_threads == ["旧线索"]
+
+
+async def test_unparsable_evaluation_keeps_prior_threads(monkeypatch):
+    _patch_chat(monkeypatch, "不想输出 JSON")
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), prior_threads=["旧线索"]
+    )
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert result.unresolved_threads == ["旧线索"]
+
+
+# --- PR review 修复 -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(True, True), ("true", True), (1, True), (False, False), ("false", False), (0, False)],
+)
+async def test_ending_flag_parses_strictly(monkeypatch, raw, expected):
+    """`bool("false")` 是 True —— 模型输出合法 JSON 的字符串就能"结束"整个故事。"""
+    _patch_chat(monkeypatch, _eval_reply(is_ending_reached=raw, ending_reason="r"))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.is_ending_reached is expected
+
+
+async def test_unparsable_ending_flag_falls_back_to_false(monkeypatch, caplog):
+    _patch_chat(monkeypatch, _eval_reply(is_ending_reached="maybe"))
+    agent = da.DirectorAgent("p1")
+    with caplog.at_level("WARNING"):
+        result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.is_ending_reached is False
+    assert any("is_ending_reached" in r.message for r in caplog.records)
+
+
+async def test_eval_prompt_contains_prior_synopses(monkeypatch):
+    """结局条件常跨场次达成，只看本场判不出来。"""
+    sink: list = []
+    _patch_chat(monkeypatch, _eval_reply(), sink)
+
+    agent = da.DirectorAgent("p1")
+    await agent.evaluate_scene(
+        _scene(),
+        _log(),
+        _cards(),
+        narrative_goal="揭露叛徒并促成两家和解",
+        prior_synopses=["【第一场】王子当众揭穿了丞相"],
+    )
+
+    assert "王子当众揭穿了丞相" in sink[0][0]["content"]
+
+
+async def test_prior_synopses_are_budgeted(monkeypatch):
+    """前情提要也要受预算约束，且优先保留最近几场。"""
+    sink: list = []
+    _patch_chat(monkeypatch, _eval_reply(), sink)
+    monkeypatch.setattr(da, "_HISTORY_BUDGET_TOKENS", 60)
+
+    agent = da.DirectorAgent("p1")
+    await agent.evaluate_scene(
+        _scene(),
+        _log(),
+        _cards(),
+        narrative_goal="g",
+        prior_synopses=[f"【第{i}场】" + "梗概内容" * 20 for i in range(20)],
+    )
+
+    prompt = sink[0][0]["content"]
+    assert "第19场" in prompt
+    assert "第0场" not in prompt
+
+
+async def test_goal_revision_recorded(monkeypatch):
+    from backend.models import goal_revision
+
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.5))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="扳倒丞相")
+    assert result.goal_revision == goal_revision("扳倒丞相")
+
+
+# --- PR review 第二轮 ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity", True, False])
+async def test_non_finite_progress_is_unavailable(monkeypatch, raw):
+    """`max(0, min(1, nan))` 会返回上界 —— 一个 NaN 就把主线推成 100% 完成。
+
+    `json.loads` 默认接受裸 NaN/Infinity，`float(True)` 也是 1.0。
+    """
+    _patch_chat(monkeypatch, _eval_reply(story_progress=raw))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert result.progress_stalled is False
+
+
+async def test_bare_nan_in_json_is_unavailable(monkeypatch):
+    """模型直接吐裸 NaN（合法的 Python json，不是字符串）。"""
+    _patch_chat(monkeypatch, '{"synopsis": "x", "story_progress": NaN}')
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+
+
+async def test_non_finite_score_is_not_full_marks(monkeypatch):
+    """同族缺陷：NaN 分数会被钳成满分 10，再直接喂进 make_decision 的阈值规则。"""
+    _patch_chat(monkeypatch, '{"synopsis": "x", "narrative_goal_score": NaN}')
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+    assert result.narrative_goal_score == 5.0
+
+
+async def test_threads_respect_token_budget(monkeypatch):
+    """只限条数不够：线索会落库并逐场回喂，20 条超长线索会把导演上下文永久拖死。"""
+    long_threads = [f"线索{i}：" + "极其冗长的来龙去脉" * 80 for i in range(20)]
+    _patch_chat(monkeypatch, _eval_reply(unresolved_threads=long_threads))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+
+    assert result.unresolved_threads
+    assert len(result.unresolved_threads) <= da.MAX_UNRESOLVED_THREADS
+    total = sum(estimate_tokens(t) for t in result.unresolved_threads)
+    assert total <= da._THREADS_BUDGET_TOKENS
+    # 单条也不得超上限，否则一条就能吃掉整个预算
+    assert max(estimate_tokens(t) for t in result.unresolved_threads) <= da._THREAD_ITEM_TOKENS
+
+
+async def test_single_huge_thread_is_truncated_not_dropped(monkeypatch):
+    _patch_chat(monkeypatch, _eval_reply(unresolved_threads=["关键线索" * 500]))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards(), narrative_goal="g")
+
+    assert len(result.unresolved_threads) == 1
+    assert result.unresolved_threads[0].startswith("关键线索")
+    assert estimate_tokens(result.unresolved_threads[0]) <= da._THREAD_ITEM_TOKENS
+
+
+async def test_inherited_threads_also_budgeted(monkeypatch):
+    """继承路径同样要过预算：库里可能存着本次预算之前写入的超长列表。"""
+    _patch_chat(monkeypatch, _eval_reply())  # 未返回该键 → 走 fallback
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(),
+        _log(),
+        _cards(),
+        narrative_goal="g",
+        prior_threads=[f"旧线索{i}：" + "冗长" * 200 for i in range(20)],
+    )
+
+    total = sum(estimate_tokens(t) for t in result.unresolved_threads)
+    assert result.unresolved_threads
+    assert total <= da._THREADS_BUDGET_TOKENS

@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCharacterStore } from '@/stores/characters'
+import { useProjectStore } from '@/stores/project'
 import { useSceneStore } from '@/stores/scenes'
 import { useDirectorStore } from '@/stores/director'
 import { api } from '@/api/client'
@@ -16,10 +17,11 @@ const props = defineProps<{ projectId: string }>()
 const route = useRoute()
 const router = useRouter()
 const charStore = useCharacterStore()
+const projectStore = useProjectStore()
 const sceneStore = useSceneStore()
 const directorStore = useDirectorStore()
 
-const goal = ref('')
+const intent = ref('')
 const planning = ref(false)
 const draft = ref<SceneConfig | null>(null)
 const branchId = ref('')
@@ -52,7 +54,13 @@ const resumable = computed(
     ['pending', 'paused'].includes(sceneStore.currentScene.status),
 )
 
+/** 主线目标是只读锚点，导演页只展示、不提供编辑（编辑入口在工作台）。 */
+const narrativeGoal = computed(() => projectStore.current?.narrative_goal ?? '')
+
 onMounted(async () => {
+  if (projectStore.current?.project_id !== props.projectId) {
+    await projectStore.selectProject(props.projectId)
+  }
   await charStore.load(props.projectId)
   await directorStore.loadBranches(props.projectId)
 
@@ -115,10 +123,10 @@ async function resume() {
 }
 
 async function plan() {
-  if (!goal.value.trim()) return
   planning.value = true
   try {
-    draft.value = await sceneStore.plan(props.projectId, branchId.value, goal.value)
+    // 不再要求必填：主线目标已由后端从项目读，这里只是可选的本场意图
+    draft.value = await sceneStore.plan(props.projectId, branchId.value, intent.value)
   } finally {
     planning.value = false
   }
@@ -261,9 +269,12 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
         </div>
         <div class="card">
           <h3>规划场景</h3>
+          <p class="dim goal-anchor">
+            主线目标：{{ narrativeGoal || '尚未设定（可在工作台填写）' }}
+          </p>
           <div class="field" style="margin-top: 10px">
-            <label>叙事目标</label>
-            <textarea v-model="goal" placeholder="例如：让两位主角在雨夜的酒馆中第一次正面冲突"></textarea>
+            <label>本场意图（可留空）</label>
+            <textarea v-model="intent" placeholder="例如：让两位主角在雨夜的酒馆中第一次正面冲突"></textarea>
           </div>
           <button :disabled="planning" @click="plan">{{ planning ? '规划中...' : '🎬 让导演规划' }}</button>
 
@@ -322,6 +333,7 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
           :applied-decision="sceneStore.appliedDecision"
           :pending="sceneStore.decisionPending"
           @decision="onDecision"
+          @generate-output="router.push(`/output/${props.projectId}?branch=${sceneStore.currentScene?.branch_id || branchId}`)"
         />
         <div class="card">
           <h3>快照</h3>
@@ -453,6 +465,11 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.goal-anchor {
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 8px;
 }
 .tag.running {
   color: var(--highlight);

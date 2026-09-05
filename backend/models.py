@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,6 +22,23 @@ def now() -> datetime:
 def new_id() -> str:
     """生成新的 UUID 字符串。"""
     return str(uuid.uuid4())
+
+
+#: 主线推进度的"不可用"哨兵。0-1 的正常值域里没有负数，
+#: 因此它不会被误当成"进度为 0"参与钳制、停滞判定与前端展示。
+PROGRESS_UNAVAILABLE = -1.0
+
+#: 未收束线索的累积上限，超出会把导演上下文吃光（工单28）
+MAX_UNRESOLVED_THREADS = 20
+
+
+def goal_revision(narrative_goal: str) -> str:
+    """主线目标的版本指纹。
+
+    推进度是"离这个目标还有多远"，换了目标就换了尺子。没有它的话，用户
+    把目标改成完全不同的一个之后，旧目标下的 0.9 会把新目标的真实进度永久钳到顶。
+    """
+    return hashlib.sha256(narrative_goal.strip().encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +216,10 @@ class Project:
     description: str = ""
     seed_texts: list[str] = field(default_factory=list)
     status: str = ProjectStatus.INITIALIZING.value
+    # 主线目标：导演的只读锚点。只有用户能改（工单28）——它既是评分基准，
+    # 又允许被评方改写的话，导演会把目标改成自己刚演出来的东西，度量归零。
+    narrative_goal: str = ""
+    ending_criteria: str = ""  # 可选：结局判定标准（自然语言）
     created_at: datetime = field(default_factory=now)
     updated_at: datetime = field(default_factory=now)
 
@@ -298,6 +320,15 @@ class SceneEvaluation:
     character_consistency_score: float = 0.0  # 0-10
     recommended_decision: str = DecisionType.NEXT_SCENE.value
     rollback_suggestion: dict | None = None
+    # --- 主线度量（工单28）。负值 = 不可用，绝不能当成 0 参与比较 ---
+    story_progress: float = PROGRESS_UNAVAILABLE  # 0-1，沿因果谱系单调钳制后的值
+    story_progress_raw: float = PROGRESS_UNAVAILABLE  # 导演本场原始自评，仅供观测
+    progress_stalled: bool = False  # 本场自评未超过历史最高值
+    # 本场推进度是对照哪个版本的主线目标给出的（空 = 旧记录，不参与钳制）
+    goal_revision: str = ""
+    is_ending_reached: bool = False
+    ending_reason: str = ""
+    unresolved_threads: list[str] = field(default_factory=list)
 
 
 @dataclass

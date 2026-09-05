@@ -220,14 +220,14 @@ frontend/src/
 
 | 模型 | 作用 | 存放位置 |
 |------|------|---------|
-| `Project` | 推演项目 | SQLite `projects` |
+| `Project` | 推演项目（含**主线目标锚点** `narrative_goal` / `ending_criteria`） | SQLite `projects` |
 | `CharacterCard` | 角色卡（persona + 信息不对称 + 关系 + 当前状态） | **文件** `characters/{cid}.json` |
 | `CharacterState` | 角色在某时刻的快照态（含短期缓冲 / 事件摘要） | 快照目录 JSON |
 | `CharacterInspection` | Inspection 层的只读组装结果（**不落库**） | 运行时 |
 | `LoreEntry` | 世界观条目（keywords 触发、scope 控制可见范围、priority 排序） | 内嵌于角色卡 |
 | `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
-| `SceneEvaluation` | 四维评分 + 推荐决策 | SQLite `evaluations` |
+| `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 推荐决策 | SQLite `evaluations` |
 | `DirectorDecision` | 导演决策 + 人工覆盖字段 | SQLite `decisions` |
 | `Snapshot` / `Branch` / `BranchTree` | 快照与分支 | SQLite `snapshots`/`branches` + 快照目录 |
 | `MemoryChunk` / `MemorySnapshot` | 记忆检索与序列化载体 | 运行时 |
@@ -305,6 +305,52 @@ frontend/src/
 14. **`SceneEvaluation` 的四项分数为 `-1` 表示评估未生成**（LLM 返回内容无法解析为 JSON）。
     不要把它当成"很低的分"参与阈值比较——旧实现在解析失败时给全部维度填 5.0，
     产出一份看起来完全正常的评估，静默污染决策。前端按负值显式提示。
+
+15. **`Project.narrative_goal` 是只读锚点：只有用户能写**（工单28）。写入口只有
+    `POST /projects` 与 `PATCH /projects/{id}`；导演侧的任何路径都不得回写它。
+    自评系统的典型失效模式是把目标改成自己刚演出来的东西，然后分数变高。
+    第二层（分支级路线图）才是导演的可写空间，归工单18。
+
+16. **`story_progress` 的语义有四重约束**，动它之前四条都要保持：
+    - **`PROGRESS_UNAVAILABLE`（-1）表示"没度量到"**，与 `-1` 分同理，绝不能当成"进度 0"
+      参与钳制或停滞判定。但它**不进** `is_evaluation_unavailable()`：那个函数的语义是
+      "整份评估作废"，LLM 漏返回一个键不该连带把决策打成保守默认；
+    - **单调钳制**：落库值取 `max(本场自评, 谱系历史最高)`，原始自评另存
+      `story_progress_raw`，未超过历史值时置 `progress_stalled`。LLM 自评噪声大，
+      不钳制则进度条来回抖，基于它的决策规则跟着抖；
+    - **只在同一 `goal_revision` 内钳制**（`models.goal_revision()` = 主线目标的 sha256 前缀）。
+      推进度衡量的是"离这个目标还有多远"，用户改目标就是换了尺子；不比对版本的话，
+      旧目标下的 0.9 会把新目标的真实进度永久钳到顶。旧记录的 revision 为空串，
+      与任何现行目标都不相等，因此不参与继承；
+    - **谱系不是"同分支"而是 `parent_scene_id` 链**（`orchestrator._ancestor_scenes`）。
+      fork/rollback 的首场按不变量 I4 指向来源分支的场景，因此 IF 线天然继承分叉点的进度，
+      不必从 0 重爬；手工建的场景没有父场景，链会断，故并入同分支内更早的场景。
+      顺序只能用 `list_scenes` 的返回次序——`_deserialize_scene` 不还原 `created_at`。
+      但**从前置快照分叉时必须跳过分叉点那一场**（`_lineage_cutoff`）：I4 只保证血缘可
+      追溯，不区分分叉在那一场的 before 还是 after，而进度/线索/梗概都是**演完才有**的
+      度量。回滚（`apply_decision` 默认取 `scene.snapshot_id_before`）若继承了那一场演
+      出来的进度，这条 IF 线会被 `max()` 永久钳在一个从未发生过的高度上，还会被要求去
+      收束本线没埋过的伏笔。判据用来源场景的 `snapshot_id_before` 字段，**不要解析快照
+      `label` 前缀**（`before:{场景名}`，场景名可含冒号）；且必须是 `continue` 而非
+      `break`，否则更早的真实历史会被连带丢掉。
+
+17. **`unresolved_threads` 的合并由导演做，后端只去重截断**：只有导演知道哪条
+    线索本场被收束了。三处易错：
+    - LLM 未返回该键时沿用上一场的列表，**不是**"线索全部收束了"；
+    - 反过来，谱系上**最近一份评估的空列表是权威值**（表示上一场把线索都收束了），
+      `_story_context` 不得因为它是空的就继续往前找 —— 那会让已收束的旧线索复活，
+      并被提示词要求模型继续保留。空列表与"还没找到评估"必须用独立标志区分；
+    - **限条数（20）不等于限预算**。线索会落库并逐场回喂，20 条超长线索一旦写进去，
+      之后每次规划与评估都拖着它；`_normalize_threads` 同时限单条与总 token，
+      且**继承进来的列表也要过一遍**（库里可能存着立预算之前写入的内容）。
+
+18. **数值解析必须挡住 NaN / Infinity / bool / 超大整数**。`max(0.0, min(1.0, nan))` 返回的是**上界**，
+    而 `json.loads` 默认接受裸 `NaN` / `Infinity`，`float(True)` 也是 `1.0` ——
+    先钳后判会把一个 NaN 静默变成"满分 10 分"或"主线 100% 完成"，再直接喂进
+    `make_decision` 的阈值规则。统一走 `_parse_number()`（拒 bool + `math.isfinite`）。
+    它捕获的异常里 **`OverflowError` 不可省**：`json.loads` 把裸的超大整数（`1` 后跟几百个
+    `0`）解析成 Python `int`，`float()` 对它抛的是 `OverflowError` 而非 `ValueError`，
+    漏接会穿过 `_extract_json` 那道防线，把一份本可解析的评估废在编排层的兜底里。
 
 ---
 
@@ -430,6 +476,9 @@ graph TD
   `asyncio.create_task(run_scene)` 重跑。**不写 decisions 表**（开启新一轮生命周期）。
 - **next_scene**：调 `plan_scene` 生成配置 → 应用人工覆盖（角色/地点/初始条件）
   → 建新场景并记录 `parent_scene_id` → 写 decisions 表。
+  目标恒为 `project.narrative_goal`；用户填的 `next_scene_description` 作为**本场意图**
+  （`scene_intent`）单独传入。**不得再用 `f"延续上一场…"` 冒充目标**（工单28）：
+  那会让连跑几场后只剩动量、没有引力，`plot_deviation_score` 也就没了参照物。
 - **rollback**：**回滚是条件为空的分叉**（工单08 结论1），走唯一原语
   `orchestrator.fork_from_snapshot()`：只读目标快照 → 新建分支（`parent_branch_id`
   指向来源分支）→ 复制该时点的长期记忆到新分支的 collection → 建一个 pending 的
@@ -590,8 +639,9 @@ graph TD
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
-| POST / GET | `/projects` | 创建 / 列出项目 |
+| POST / GET | `/projects` | 创建（可带 `narrative_goal` / `ending_criteria`）/ 列出项目 |
 | GET / DELETE | `/projects/{project_id}` | 详情 / 删除（连带 `rmtree` 项目目录） |
+| PATCH | `/projects/{project_id}` | 人工编辑 name/description/**主线目标**/结局标准（字段为 null 则不改） |
 | POST | `/projects/{project_id}/seed` | 上传种子文本（multipart） |
 | POST | `/projects/{project_id}/build` | 触发构建（后台任务） |
 | GET | `/projects/{project_id}/build/status` | 构建进度 |
@@ -600,7 +650,7 @@ graph TD
 | GET / PATCH | `/projects/{project_id}/characters/{char_id}` | 角色详情 / 人工编辑 |
 | GET | `/projects/{project_id}/characters/{char_id}/memory` | 运行时记忆（短期缓冲 + 事件摘要），读自快照 |
 | GET | `/projects/{project_id}/characters/{char_id}/inspect` | 角色内部视图（人设 + 时点状态 + 三层记忆） |
-| POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**） |
+| POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**）。请求体只有 `branch_id` 与可选的 `scene_intent`；主线目标固定读 `project.narrative_goal` |
 | POST | `/projects/{project_id}/scenes` | 创建场景 |
 | GET | `/projects/{project_id}/scenes` | 列出场景（`?branch_id=` 可选），前端刷新后恢复导航用 |
 | GET | `/projects/{project_id}/scenes/{scene_id}` | 场景详情 |
@@ -633,7 +683,7 @@ graph TD
 
 | 页面 | 路由 | 功能 |
 |------|------|------|
-| `Workspace.vue` | `/` | 项目管理、种子上传、构建进度轮询、G6 图谱 |
+| `Workspace.vue` | `/` | 项目管理、**主线目标编辑**、种子上传、构建进度轮询、G6 图谱 |
 | `Director.vue` | `/director/:projectId` | 分支树、本分支场景列表、场景配置、SSE 实时日志、决策面板、快照面板 |
 | `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 预览导出 |
 
@@ -665,6 +715,9 @@ graph TD
 - `SceneTree.vue` 是纯 `h()` 渲染的嵌套列表（**不是 G6**），节点是 **Branch** 不是 Scene，
   仅 emit 选中的 `branch_id`。
 - 样式：暗色卡片风。主色 `#1a1a2e` / `#16213e` / `#0f3460`，高亮 `#e94560`。
+- **结局是提示不是闸门**：`is_ending_reached` 为真时 `DirectorPanel` 显示结局提示与
+  "生成结局输出"入口，但**三个决策按钮保持可用** —— 结局是导演的判断，用户完全可能
+  不认同（想继续演、想回滚）。别让 LLM 的一个布尔值锁死用户操作。
 - 数据模型变更需同步 `frontend/src/types/index.ts`。
 
 ---
@@ -879,4 +932,40 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
        sqlite/HNSW 启动维护改写权威快照；库存在却打不开时由静默空分支改为 MemoryError；
      - 补充空集合/缺失集合/二次分叉、快照逐字节不可变、inspection 真链路、打开失败、
        初始化凭据失败和无 Chroma 依赖的回归测试。
+-->
+<!-- 2026-09-04: 工单28（主线目标锚点 + 结局判定）落地。`Project` 新增只读锚点
+     `narrative_goal` / `ending_criteria`（写入口只有 POST /projects 与新增的
+     PATCH /projects/{id}，导演不得回写）；`SceneEvaluation` 新增 story_progress
+     （单调钳制，-1=不可用）/ story_progress_raw / progress_stalled /
+     is_ending_reached / ending_reason / unresolved_threads；
+     `apply_decision` 的 next_scene 不再用 f"延续上一场…" 冒充目标，用户输入改走
+     scene_intent；`POST /scenes/plan` 请求体 narrative_goal → scene_intent；
+     repository 把 Project / SceneEvaluation 的反序列化收敛成单一函数（原先两处内联）。
+     新增 4.2 陷阱 15–17 与 tests/test_narrative_goal.py。
+-->
+<!-- 2026-09-04: 工单28 的 PR review 修复（5 条）：
+     - `SceneEvaluation.goal_revision` + `models.goal_revision()`：推进度只在同一版本
+       主线目标内钳制，否则用户改目标后旧目标的 0.9 会把新目标永久钳到顶；
+     - `_story_context` 用独立的 threads_found 标志：导演显式给出的空线索表是权威值，
+       不得因为它是空的就继续往前取回已收束的旧线索；
+     - 评估 prompt 补【前情提要】（谱系上的 synopsis 经 fit_lines 压缩），
+       否则跨场次达成的结局条件根本判不出来；
+     - `is_ending_reached` 改严格布尔解析（`bool("false")` 是 True）；
+     - 前端目标编辑草稿绑定 editingProjectId，切项目时清空，避免把 A 的目标存进 B。
+-->
+<!-- 2026-09-04: 工单28 的二轮 review 修复（2 条）：
+     - `_normalize_threads` 补 token 预算（单条 + 总量），且继承进来的列表也要过一遍 ——
+       只限 20 条但每条可无限长，写进库后会逐场回喂、永久拖累导演上下文；
+     - 新增 `_parse_number()`（拒 bool + math.isfinite）统一 story_progress 与四维分数的
+       解析：`max(0, min(1, nan))` 返回的是上界，一个 NaN 会静默变成满分/满进度。
+     同步新增 4.2 陷阱 18。
+-->
+<!-- 2026-09-05: 工单28 的三轮 review 修复（3 条）：
+     - `orchestrator._lineage_cutoff`：从**前置快照**分叉时跳过分叉点那一场的评估。
+       契约 I4 只保证血缘可追溯、不区分 before/after，而 rollback 的默认目标恰好是
+       `snapshot_id_before`（主路径），不截断会让 IF 线继承一场从未发生过的进度与线索；
+     - `_parse_number` 的 except 补 `OverflowError`：`json.loads` 出的超大 int 让 float() 抛的
+       是它而非 ValueError，漏接会把一份本可解析的评估废在编排层兜底里；
+     - 导演台「生成结局输出」携带 `?branch=`，`Output.vue` 等分支列表回来后校验再预选。
+     同步更新 4.2 陷阱 16（第四点）与陷阱 18。
 -->
