@@ -326,6 +326,13 @@ frontend/src/
       fork/rollback 的首场按不变量 I4 指向来源分支的场景，因此 IF 线天然继承分叉点的进度，
       不必从 0 重爬；手工建的场景没有父场景，链会断，故并入同分支内更早的场景。
       顺序只能用 `list_scenes` 的返回次序——`_deserialize_scene` 不还原 `created_at`。
+      但**从前置快照分叉时必须跳过分叉点那一场**（`_lineage_cutoff`）：I4 只保证血缘可
+      追溯，不区分分叉在那一场的 before 还是 after，而进度/线索/梗概都是**演完才有**的
+      度量。回滚（`apply_decision` 默认取 `scene.snapshot_id_before`）若继承了那一场演
+      出来的进度，这条 IF 线会被 `max()` 永久钳在一个从未发生过的高度上，还会被要求去
+      收束本线没埋过的伏笔。判据用来源场景的 `snapshot_id_before` 字段，**不要解析快照
+      `label` 前缀**（`before:{场景名}`，场景名可含冒号）；且必须是 `continue` 而非
+      `break`，否则更早的真实历史会被连带丢掉。
 
 17. **`unresolved_threads` 的合并由导演做，后端只去重截断**：只有导演知道哪条
     线索本场被收束了。三处易错：
@@ -337,10 +344,13 @@ frontend/src/
       之后每次规划与评估都拖着它；`_normalize_threads` 同时限单条与总 token，
       且**继承进来的列表也要过一遍**（库里可能存着立预算之前写入的内容）。
 
-18. **数值解析必须挡住 NaN / Infinity / bool**。`max(0.0, min(1.0, nan))` 返回的是**上界**，
+18. **数值解析必须挡住 NaN / Infinity / bool / 超大整数**。`max(0.0, min(1.0, nan))` 返回的是**上界**，
     而 `json.loads` 默认接受裸 `NaN` / `Infinity`，`float(True)` 也是 `1.0` ——
     先钳后判会把一个 NaN 静默变成"满分 10 分"或"主线 100% 完成"，再直接喂进
     `make_decision` 的阈值规则。统一走 `_parse_number()`（拒 bool + `math.isfinite`）。
+    它捕获的异常里 **`OverflowError` 不可省**：`json.loads` 把裸的超大整数（`1` 后跟几百个
+    `0`）解析成 Python `int`，`float()` 对它抛的是 `OverflowError` 而非 `ValueError`，
+    漏接会穿过 `_extract_json` 那道防线，把一份本可解析的评估废在编排层的兜底里。
 
 ---
 
@@ -949,4 +959,13 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      - 新增 `_parse_number()`（拒 bool + math.isfinite）统一 story_progress 与四维分数的
        解析：`max(0, min(1, nan))` 返回的是上界，一个 NaN 会静默变成满分/满进度。
      同步新增 4.2 陷阱 18。
+-->
+<!-- 2026-09-05: 工单28 的三轮 review 修复（3 条）：
+     - `orchestrator._lineage_cutoff`：从**前置快照**分叉时跳过分叉点那一场的评估。
+       契约 I4 只保证血缘可追溯、不区分 before/after，而 rollback 的默认目标恰好是
+       `snapshot_id_before`（主路径），不截断会让 IF 线继承一场从未发生过的进度与线索；
+     - `_parse_number` 的 except 补 `OverflowError`：`json.loads` 出的超大 int 让 float() 抛的
+       是它而非 ValueError，漏接会把一份本可解析的评估废在编排层兜底里；
+     - 导演台「生成结局输出」携带 `?branch=`，`Output.vue` 等分支列表回来后校验再预选。
+     同步更新 4.2 陷阱 16（第四点）与陷阱 18。
 -->

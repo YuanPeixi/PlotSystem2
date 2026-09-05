@@ -106,12 +106,16 @@ def _parse_number(value) -> float | None:
 
     两个坑都会静默变成满分/满进度：先钳后判的 ``max(0, min(1, nan))`` 返回上界，
     而 ``json.loads`` 默认就接受裸的 ``NaN`` / ``Infinity``；``float(True)`` 也是 1.0。
+
+    ``OverflowError`` 必须一起接住：``json.loads`` 把裸的超大整数（``1`` 后面几百个
+    ``0``）解析成 Python int，``float()`` 对它抛的是 OverflowError 而非 ValueError。
+    漏接会穿过 ``_extract_json`` 那道防线，让整份本可解析的评估废在编排层的兜底里。
     """
     if value is None or isinstance(value, bool):
         return None
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return parsed if math.isfinite(parsed) else None
 
