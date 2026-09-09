@@ -494,3 +494,279 @@ async def test_huge_integer_score_does_not_break_evaluation():
     assert _parse_number(json.loads('{"v": Infinity}')["v"]) is None
     assert _parse_number(json.loads('{"v": NaN}')["v"]) is None
     assert _parse_number(True) is None
+
+
+# --- PR review 第四轮：截断只查头节点 / 评估行被续跑覆盖 -----------------------
+
+
+async def test_cutoff_survives_into_later_scenes_of_the_if_line():
+    """被回滚撤销的那一场，不能在 IF 线的第二场起死回生。
+
+    截断只查头节点时：IF 首场（有 restore_snapshot_id）判得对，但它演完后接的
+    next_scene 自己没有 restore_snapshot_id，被撤销的那一场就重回谱系，
+    且此后每一场都带着它。
+    """
+    project_id = "proj-cutoff-persist"
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+
+    undone = Scene(
+        scene_id="cp-undone",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="被撤销的第五场",
+        status="completed",
+        snapshot_id_before="cp-snap-before",
+        snapshot_id_after="cp-snap-after",
+    )
+    await repository.save_scene(undone)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=undone.scene_id,
+            story_progress=0.9,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["只有第五场才埋下的伏笔"],
+            synopsis="第五场演出来的结果",
+            evaluated_snapshot_id="cp-snap-after",
+        )
+    )
+
+    # 回滚分叉出的 IF 首场：锚在被撤销那一场的前置快照
+    first = Scene(
+        scene_id="cp-if-1",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=undone.scene_id,
+        name="IF 首场",
+        status="completed",
+        restore_snapshot_id="cp-snap-before",
+        snapshot_id_after="cp-if1-after",
+    )
+    await repository.save_scene(first)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=first.scene_id,
+            story_progress=0.15,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["IF 线自己的线索"],
+            synopsis="IF 首场的结果",
+            evaluated_snapshot_id="cp-if1-after",
+        )
+    )
+
+    # IF 线的第二场：正常承接首场，自己没有 restore_snapshot_id
+    second = Scene(
+        scene_id="cp-if-2",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=first.scene_id,
+        name="IF 第二场",
+    )
+    await repository.save_scene(second)
+
+    progress, threads, synopses = await orchestrator._story_context(second)
+    assert progress == 0.15, "被撤销那一场的 0.9 把 IF 线永久钳死了"
+    assert threads == ["IF 线自己的线索"]
+    assert not any("第五场演出来的结果" in s for s in synopses)
+
+
+async def test_cutoff_persists_when_if_line_has_no_evaluation_yet():
+    """IF 首场评估失败（自动评估是允许失败的降级路径）时，截断仍要生效。
+
+    这条路径最危险：首场没有自己的评估挡着，遍历会一路取到被撤销那一场。
+    """
+    project_id = "proj-cutoff-degraded"
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+
+    undone = Scene(
+        scene_id="cd-undone",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="被撤销的一场",
+        status="completed",
+        snapshot_id_before="cd-snap-before",
+        snapshot_id_after="cd-snap-after",
+    )
+    await repository.save_scene(undone)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=undone.scene_id,
+            story_progress=0.9,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["没发生过的伏笔"],
+            synopsis="没发生过的结果",
+            evaluated_snapshot_id="cd-snap-after",
+        )
+    )
+
+    first = Scene(
+        scene_id="cd-if-1",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=undone.scene_id,
+        name="IF 首场",
+        status="completed",
+        restore_snapshot_id="cd-snap-before",
+    )
+    await repository.save_scene(first)  # 刻意不写评估
+
+    second = Scene(
+        scene_id="cd-if-2",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=first.scene_id,
+        name="IF 第二场",
+    )
+    await repository.save_scene(second)
+
+    progress, threads, synopses = await orchestrator._story_context(second)
+    assert progress == PROGRESS_UNAVAILABLE
+    assert threads == []
+    assert synopses == []
+
+
+async def test_fork_ignores_evaluation_overwritten_by_continue_rerun():
+    """从结束态分叉后，来源场景被 continue 续跑并重新评估。
+
+    `evaluations` 以 scene_id 为主键 + INSERT OR REPLACE，一场只留最新一份。
+    IF 线锚的是续跑**之前**的结束态，却会读到描述续跑剧情的那份评估。
+    """
+    project_id = "proj-eval-overwritten"
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+
+    src = Scene(
+        scene_id="eo-src",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="来源场景",
+        status="completed",
+        snapshot_id_before="eo-before",
+        # 续跑后 snapshot_id_after 已被改写
+        snapshot_id_after="eo-after-rerun",
+    )
+    await repository.save_scene(src)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=src.scene_id,
+            story_progress=0.9,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["续跑那几轮才埋的线索"],
+            synopsis="续跑之后才发生的结果",
+            evaluated_snapshot_id="eo-after-rerun",
+        )
+    )
+
+    # 分叉发生在续跑之前，锚的是旧的结束态
+    fork = Scene(
+        scene_id="eo-fork",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=src.scene_id,
+        name="IF 首场",
+        restore_snapshot_id="eo-after-old",
+    )
+    await repository.save_scene(fork)
+
+    progress, threads, synopses = await orchestrator._story_context(fork)
+    assert progress == PROGRESS_UNAVAILABLE, "继承了续跑之后才产生的进度"
+    assert threads == []
+    assert synopses == []
+
+
+async def test_fork_from_matching_after_snapshot_still_inherits():
+    """锚点与评估记录的结束态一致：正常承接，不能被上面的判据误伤。"""
+    project_id = "proj-eval-matching"
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+
+    src = Scene(
+        scene_id="em-src",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="来源场景",
+        status="completed",
+        snapshot_id_before="em-before",
+        snapshot_id_after="em-after",
+    )
+    await repository.save_scene(src)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=src.scene_id,
+            story_progress=0.5,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["公主的身世"],
+            synopsis="来源场景的结果",
+            evaluated_snapshot_id="em-after",
+        )
+    )
+
+    fork = Scene(
+        scene_id="em-fork",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=src.scene_id,
+        name="IF 首场",
+        restore_snapshot_id="em-after",
+    )
+    await repository.save_scene(fork)
+
+    progress, threads, synopses = await orchestrator._story_context(fork)
+    assert progress == 0.5
+    assert threads == ["公主的身世"]
+    assert len(synopses) == 1
+
+
+async def test_legacy_evaluation_without_snapshot_stamp_still_inherits():
+    """旧评估没有 evaluated_snapshot_id：无从校验，不能凭空判定不可继承。
+
+    否则所有历史项目一分叉就丢掉全部进度与线索。
+    """
+    project_id = "proj-eval-legacy-stamp"
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+
+    src = Scene(
+        scene_id="el-src",
+        project_id=project_id,
+        branch_id="branch-main",
+        name="来源场景",
+        status="completed",
+        snapshot_id_before="el-before",
+        snapshot_id_after="el-after",
+    )
+    await repository.save_scene(src)
+    await repository.save_evaluation(
+        SceneEvaluation(
+            scene_id=src.scene_id,
+            story_progress=0.4,
+            goal_revision=goal_revision(""),
+            unresolved_threads=["旧线索"],
+            synopsis="旧梗概",
+            # evaluated_snapshot_id 留空 = 改造前写入的记录
+        )
+    )
+
+    fork = Scene(
+        scene_id="el-fork",
+        project_id=project_id,
+        branch_id="branch-if",
+        parent_scene_id=src.scene_id,
+        name="IF 首场",
+        restore_snapshot_id="el-after",
+    )
+    await repository.save_scene(fork)
+
+    progress, threads, _ = await orchestrator._story_context(fork)
+    assert progress == 0.4
+    assert threads == ["旧线索"]
+
+
+async def test_run_scene_stamps_evaluation_with_after_snapshot():
+    """评估落库时必须盖上结束态快照的戳，否则上面的判据永远拿不到依据。"""
+    evaluation = SceneEvaluation(scene_id="whatever")
+    assert evaluation.evaluated_snapshot_id == ""
+
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id="stamp-check", evaluated_snapshot_id="snap-xyz")
+    )
+    loaded = await repository.get_evaluation("stamp-check")
+    assert loaded is not None
+    # 走了 _deserialize_evaluation：漏改它字段会静默丢失（CLAUDE.md §5.4）
+    assert loaded.evaluated_snapshot_id == "snap-xyz"

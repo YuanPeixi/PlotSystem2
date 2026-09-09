@@ -303,6 +303,7 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         is_ending_reached=bool(data.get("is_ending_reached", False)),
         ending_reason=data.get("ending_reason", ""),
         unresolved_threads=list(data.get("unresolved_threads", []) or []),
+        evaluated_snapshot_id=data.get("evaluated_snapshot_id", ""),
     )
 
 

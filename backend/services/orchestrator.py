@@ -308,30 +308,62 @@ async def _recent_scene_results(
     return results
 
 
-async def _lineage_cutoff(scene: Scene) -> str:
-    """分叉起点若在某场**开演之前**，返回那一场的 scene_id，否则空串。
+async def _fork_edge_excludes_parent(child: Scene, parent: Scene) -> bool:
+    """分叉边指向的时点，是否让父场景的那份评估不属于本条时间线。
 
     `parent_scene_id` 只说"分叉自哪一场"，不说"分叉在那一场的哪个时点"（工单08 的
-    不变量 I4 只需要血缘可追溯，before/after 对它无差别）。但推进度/线索/梗概是
-    **演完才产生**的度量：从 `before:` 快照分叉时，那一场在本条时间线上根本没发生过，
-    它的评估必须整条排除。
+    不变量 I4 只需要血缘可追溯，before/after 对它无差别）。而推进度/线索/梗概都是
+    **演完才产生**的度量，`restore_snapshot_id` 才是本线真正的起点。两种不属于本线：
 
-    典型失效：用户对第 5 场不满意 → 从其前置快照回滚（`apply_decision` 的默认目标
-    就是 `scene.snapshot_id_before`）→ IF 线首场却继承了原线第 5 场演出来的进度与
-    线索。进度只升不降（`max(raw, baseline)`），于是这条线被永久钳在一个从未发生过
-    的高度上，还被提示词要求去收束本线没埋过的伏笔。
+    1. **锚在父场景的前置快照**：那一场在本线根本没演过。典型路径是回滚——
+       `apply_decision` 的默认目标就是 `scene.snapshot_id_before`（主路径，不是边角）。
+       不排除的话，"我不满意第 5 场"产生的 IF 线会继承第 5 场演出来的进度与线索；
+       进度只升不降（`max(raw, baseline)`），这条线被永久钳在一个从未发生过的高度上。
+    2. **锚在父场景某个已被取代的结束态**：`evaluations` 以 scene_id 为主键且
+       `INSERT OR REPLACE`，一场只留**最新**一份评估。父场景在分叉之后又被 continue
+       续跑并重新评估时，库里那份描述的是续跑才发生的剧情，而本线是从续跑前分出去的。
+       判据是评估自己记的 `evaluated_snapshot_id`：与本线锚点不一致即不可继承。
+       旧评估没有这个字段（空串），无从校验，按可继承处理——宁可沿用既有行为，
+       也不要让所有历史项目的分叉凭空丢掉进度。
 
-    判据用来源场景自己记的 `snapshot_id_before`，不用快照 label 前缀：label 是
-    展示字符串（`before:{场景名}`），场景名可含冒号，靠前缀解析会误判。
+    判据一律用场景/评估自己记的字段，**不解析快照 `label` 前缀**：label 是展示
+    字符串（`before:{场景名}`），场景名可含冒号，靠前缀解析会误判。
     """
-    if not scene.restore_snapshot_id or not scene.parent_scene_id:
-        return ""
-    try:
-        parent = await repository.get_scene(scene.parent_scene_id)
-    except PlotSystemError:
-        # 父场景已被删：血缘断了，无从判断分叉时点，按不截断处理（与下面的降级一致）
-        return ""
-    return parent.scene_id if scene.restore_snapshot_id == parent.snapshot_id_before else ""
+    anchor = child.restore_snapshot_id
+    if not anchor:
+        return False
+    if anchor == parent.snapshot_id_before:
+        return True
+    evaluation = await repository.get_evaluation(parent.scene_id)
+    if evaluation is None:
+        return False
+    evaluated_at = evaluation.evaluated_snapshot_id
+    return bool(evaluated_at) and evaluated_at != anchor
+
+
+async def _lineage_cutoffs(lineage: list[Scene]) -> set[str]:
+    """谱系上因分叉时点而不可继承其评估的场景 id 集合。
+
+    **必须逐节点判断整条谱系，不能只看头节点**：回滚分叉出的首场演完后，用户接着
+    `next_scene`，新场景自己没有 `restore_snapshot_id`（它是正常承接首场的），
+    只查头节点的话，被撤销的那一场就从第二场起重新回到谱系里——进度、线索、梗概
+    全部复活，而且此后每一场都带着它。
+    """
+    by_id = {s.scene_id: s for s in lineage}
+    cutoffs: set[str] = set()
+    for node in lineage:
+        if not node.restore_snapshot_id or not node.parent_scene_id:
+            continue
+        parent = by_id.get(node.parent_scene_id)
+        if parent is None:
+            try:
+                parent = await repository.get_scene(node.parent_scene_id)
+            except PlotSystemError:
+                # 父场景已被删：血缘断了，无从判断分叉时点，按不截断处理
+                continue
+        if await _fork_edge_excludes_parent(node, parent):
+            cutoffs.add(parent.scene_id)
+    return cutoffs
 
 
 async def _story_context(
@@ -347,19 +379,19 @@ async def _story_context(
       不是"还没找到线索状态"。把两者混为一谈会让已收束的旧线索被重新复活；
     - 梗概要多取几条：结局往往是跨场次达成的，只看本场判不出来。
 
-    从前置快照分叉时还要**跳过分叉点那一场**：见 `_lineage_cutoff`。
+    从分叉时点看不属于本线的场次要整条跳过：见 `_lineage_cutoffs`。
     """
     lineage = [scene, *await _ancestor_scenes(scene)]  # 新 → 旧
-    cutoff = await _lineage_cutoff(scene)
+    cutoffs = await _lineage_cutoffs(lineage)
     revision = goal_revision(narrative_goal)
     progress = PROGRESS_UNAVAILABLE
     threads: list[str] = []
     threads_found = False
     synopses: list[str] = []
     for node in lineage:
-        # 分叉点那一场在本条时间线上尚未发生，它的评估整条不可继承（含线索：
-        # 不跳过的话 threads_found 会被它锁死，反而挡住更早的真实线索状态）
-        if node.scene_id == cutoff:
+        # 这一场在本条时间线上没演过（或其现存评估描述的是别的时间线），整条不可
+        # 继承（含线索：不跳过的话 threads_found 会被它锁死，反而挡住更早的真实状态）
+        if node.scene_id in cutoffs:
             continue
         evaluation = await repository.get_evaluation(node.scene_id)
         if evaluation is None:
@@ -525,6 +557,11 @@ async def run_scene(scene_id: str) -> None:
                 prior_threads=prior_threads,
                 prior_synopses=prior_synopses,
             )
+            # 盖上"这份评估描述的是哪个结束态"的戳。必须在这里盖而不是在
+            # DirectorAgent 里：评估有多条返回路径（含解析失败的 unavailable），
+            # 而后置快照 id 只有编排层拿得到。分叉时靠它识别被 continue 续跑覆盖
+            # 掉的评估（`_fork_edge_excludes_parent`）。
+            evaluation.evaluated_snapshot_id = result.snapshot_id_after
             await repository.save_evaluation(evaluation)
             await events.publish(scene_id, "evaluation", to_dict(evaluation))
         except Exception as exc:  # noqa: BLE001

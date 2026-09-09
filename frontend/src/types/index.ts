@@ -146,6 +146,8 @@ export interface SceneEvaluation {
   is_ending_reached: boolean
   ending_reason: string
   unresolved_threads: string[]
+  /** 本场评估对应的结束态快照；分叉时用来识别被续跑覆盖的旧评估（空 = 旧记录） */
+  evaluated_snapshot_id: string
 }
 
 export interface Branch {
