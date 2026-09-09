@@ -95,6 +95,7 @@ class SceneEngine:
                 character_states=before_states,
                 scene_context=self._scene_context(),
                 label=f"before:{self.config.name}",
+                story_history=self.scene.inherited_story_history,
             )
             self.scene.snapshot_id_before = snap_before.snapshot_id
         self.scene.status = SceneStatus.RUNNING.value
@@ -171,6 +172,7 @@ class SceneEngine:
             character_states=after_states,
             scene_context=self._scene_context(),
             label=f"after:{self.config.name}",
+            story_history=self.scene.inherited_story_history,
         )
 
         self.scene.dialogue_log = turns

@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
-import { useDirectorStore } from '@/stores/director'
+import type { BranchTree } from '@/types'
 
 const props = defineProps<{ projectId: string }>()
-const directorStore = useDirectorStore()
+const branchTree = ref<BranchTree>({ project_id: '', roots: [] })
 const route = useRoute()
 
 const format = ref('web_novel')
 const branchId = ref('')
+const scopeReady = ref(false)
+const scopeError = ref('')
+let scopeRequest = 0
 const loading = ref(false)
 const result = ref('')
 
@@ -21,19 +24,31 @@ const FORMATS = [
   { value: 'raw', label: '原始日志(JSON)' },
 ]
 
-// 从导演台「生成结局输出」跳进来时带着 ?branch=：不预选就会按“全部分支”导出，
-// 用户在 IF 线上判定的结局，导出的却是另一条时间线的故事。
-// 必须等分支列表回来再校验：分支可能已被删，预选一个不在下拉框里的值会让
-// select 显示空白，而 branchId 仍是那个失效 id。
-onMounted(async () => {
-  await directorStore.loadBranches(props.projectId)
-  const wanted = String(route.query.branch || '')
-  if (wanted && flatten(directorStore.branchTree.roots).some((b) => b?.branch_id === wanted)) {
-    branchId.value = wanted
+// 分支范围完成校验前不得生成；失效的预选不能静默扩大成全部分支。
+async function loadScope() {
+  const request = ++scopeRequest
+  scopeReady.value = false
+  scopeError.value = ''
+  branchId.value = typeof route.query.branch === 'string' ? route.query.branch : ''
+  try {
+    const tree = await api.getBranches(props.projectId)
+    if (request !== scopeRequest) return
+    branchTree.value = tree
+    if (route.query.branch != null && typeof route.query.branch !== 'string') {
+      scopeError.value = '分支参数无效，请重新选择输出范围。'
+    } else if (branchId.value && !flatten(branchTree.value.roots).some(b => b.branch_id === branchId.value)) {
+      scopeError.value = '指定分支不存在，请重新选择输出范围。'
+    }
+    scopeReady.value = true
+  } catch {
+    if (request === scopeRequest) scopeError.value = '分支列表加载失败，请重试。'
   }
-})
+}
+
+watch(() => [props.projectId, route.query.branch], loadScope, { immediate: true })
 
 async function generate() {
+  if (!scopeReady.value || scopeError.value || loading.value) return
   loading.value = true
   result.value = ''
   try {
@@ -84,16 +99,18 @@ function flatten(roots: any[]): any[] {
         </div>
         <div class="field">
           <label>分支范围</label>
-          <select v-model="branchId">
+          <select v-model="branchId" :disabled="!scopeReady" @change="scopeError = ''">
             <option value="">全部分支</option>
             <option
-              v-for="b in flatten(directorStore.branchTree.roots)"
+              v-for="b in flatten(branchTree.roots)"
               :key="b.branch_id"
               :value="b.branch_id"
             >{{ b.name }}</option>
           </select>
         </div>
-        <button :disabled="loading" @click="generate">{{ loading ? '生成中...' : '✨ 生成' }}</button>
+        <p v-if="scopeError" role="alert">{{ scopeError }}</p>
+        <button v-if="scopeError && !scopeReady" class="ghost" @click="loadScope">重试</button>
+        <button :disabled="loading || !scopeReady || !!scopeError" @click="generate">{{ loading ? '生成中...' : '✨ 生成' }}</button>
         <button class="ghost" :disabled="!result" @click="download" style="margin-top: 8px">⬇ 下载</button>
       </section>
 
