@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
@@ -308,64 +309,6 @@ async def _recent_scene_results(
     return results
 
 
-async def _fork_edge_excludes_parent(child: Scene, parent: Scene) -> bool:
-    """分叉边指向的时点，是否让父场景的那份评估不属于本条时间线。
-
-    `parent_scene_id` 只说"分叉自哪一场"，不说"分叉在那一场的哪个时点"（工单08 的
-    不变量 I4 只需要血缘可追溯，before/after 对它无差别）。而推进度/线索/梗概都是
-    **演完才产生**的度量，`restore_snapshot_id` 才是本线真正的起点。两种不属于本线：
-
-    1. **锚在父场景的前置快照**：那一场在本线根本没演过。典型路径是回滚——
-       `apply_decision` 的默认目标就是 `scene.snapshot_id_before`（主路径，不是边角）。
-       不排除的话，"我不满意第 5 场"产生的 IF 线会继承第 5 场演出来的进度与线索；
-       进度只升不降（`max(raw, baseline)`），这条线被永久钳在一个从未发生过的高度上。
-    2. **锚在父场景某个已被取代的结束态**：`evaluations` 以 scene_id 为主键且
-       `INSERT OR REPLACE`，一场只留**最新**一份评估。父场景在分叉之后又被 continue
-       续跑并重新评估时，库里那份描述的是续跑才发生的剧情，而本线是从续跑前分出去的。
-       判据是评估自己记的 `evaluated_snapshot_id`：与本线锚点不一致即不可继承。
-       旧评估没有这个字段（空串），无从校验，按可继承处理——宁可沿用既有行为，
-       也不要让所有历史项目的分叉凭空丢掉进度。
-
-    判据一律用场景/评估自己记的字段，**不解析快照 `label` 前缀**：label 是展示
-    字符串（`before:{场景名}`），场景名可含冒号，靠前缀解析会误判。
-    """
-    anchor = child.restore_snapshot_id
-    if not anchor:
-        return False
-    if anchor == parent.snapshot_id_before:
-        return True
-    evaluation = await repository.get_evaluation(parent.scene_id)
-    if evaluation is None:
-        return False
-    evaluated_at = evaluation.evaluated_snapshot_id
-    return bool(evaluated_at) and evaluated_at != anchor
-
-
-async def _lineage_cutoffs(lineage: list[Scene]) -> set[str]:
-    """谱系上因分叉时点而不可继承其评估的场景 id 集合。
-
-    **必须逐节点判断整条谱系，不能只看头节点**：回滚分叉出的首场演完后，用户接着
-    `next_scene`，新场景自己没有 `restore_snapshot_id`（它是正常承接首场的），
-    只查头节点的话，被撤销的那一场就从第二场起重新回到谱系里——进度、线索、梗概
-    全部复活，而且此后每一场都带着它。
-    """
-    by_id = {s.scene_id: s for s in lineage}
-    cutoffs: set[str] = set()
-    for node in lineage:
-        if not node.restore_snapshot_id or not node.parent_scene_id:
-            continue
-        parent = by_id.get(node.parent_scene_id)
-        if parent is None:
-            try:
-                parent = await repository.get_scene(node.parent_scene_id)
-            except PlotSystemError:
-                # 父场景已被删：血缘断了，无从判断分叉时点，按不截断处理
-                continue
-        if await _fork_edge_excludes_parent(node, parent):
-            cutoffs.add(parent.scene_id)
-    return cutoffs
-
-
 async def _story_context(
     scene: Scene, narrative_goal: str = "", synopsis_limit: int = 12
 ) -> tuple[float, list[str], list[str]]:
@@ -378,71 +321,63 @@ async def _story_context(
     - 线索取**最近一份评估的列表原样**，哪怕它是空的 —— 空表示"上一场把线索都收束了"，
       不是"还没找到线索状态"。把两者混为一谈会让已收束的旧线索被重新复活；
     - 梗概要多取几条：结局往往是跨场次达成的，只看本场判不出来。
-
-    从分叉时点看不属于本线的场次要整条跳过：见 `_lineage_cutoffs`。
     """
-    lineage = [scene, *await _ancestor_scenes(scene)]  # 新 → 旧
-    cutoffs = await _lineage_cutoffs(lineage)
+    records = await _story_records(scene)
     revision = goal_revision(narrative_goal)
     progress = PROGRESS_UNAVAILABLE
     threads: list[str] = []
-    threads_found = False
     synopses: list[str] = []
-    for node in lineage:
-        # 这一场在本条时间线上没演过（或其现存评估描述的是别的时间线），整条不可
-        # 继承（含线索：不跳过的话 threads_found 会被它锁死，反而挡住更早的真实状态）
-        if node.scene_id in cutoffs:
-            continue
-        evaluation = await repository.get_evaluation(node.scene_id)
-        if evaluation is None:
-            continue
-        if (
-            progress < 0
-            and evaluation.story_progress >= 0
-            and evaluation.goal_revision == revision
-        ):
-            progress = evaluation.story_progress
-        if not threads_found:
-            threads = list(evaluation.unresolved_threads)
-            threads_found = True
-        if evaluation.synopsis and len(synopses) < synopsis_limit:
-            synopses.append(f"【{node.name or '未命名场景'}】{evaluation.synopsis}")
-        if progress >= 0 and threads_found and len(synopses) >= synopsis_limit:
-            break
-    synopses.reverse()  # 交给导演时按时间顺序读
+    for index, record in enumerate(reversed(records)):
+        ev = record["evaluation"]
+        if progress < 0 and ev.get("story_progress", -1) >= 0 and ev.get("goal_revision") == revision:
+            progress = ev["story_progress"]
+        if index == 0:
+            threads = list(ev.get("unresolved_threads", []))
+        if ev.get("synopsis") and len(synopses) < synopsis_limit:
+            synopses.append(f"【{record['name'] or '未命名场景'}】{ev['synopsis']}")
+    synopses.reverse()
     return progress, threads, synopses
 
 
-async def _ancestor_scenes(scene: Scene) -> list[Scene]:
-    """本场的因果祖先，从新到旧。
+def _story_record(scene: Scene, evaluation: SceneEvaluation) -> dict:
+    return {"scene_id": scene.scene_id, "name": scene.name, "evaluation": to_dict(evaluation)}
 
-    主链是 `parent_scene_id`：next_scene 会把它指向上一场，fork/rollback 的首场
-    按不变量 I4 指向来源分支的场景，因此这条链天然跨分支接上，IF 线不必从头爬。
-    手工建的场景没有父场景，链会断，故并入同分支内更早的场景。
 
-    顺序只能用 `list_scenes` 的返回次序（它按 created_at 列排序）：
-    `_deserialize_scene` 不还原 created_at，dataclass 上的值全是反序列化时刻。
+async def _story_records(scene: Scene, *, include_current: bool = True) -> list[dict]:
+    """按实际继承边界读取导演历史，旧数据才沿场景链回溯。
+
+    parent_scene_id 只表示来源；遇到分叉必须停在冻结副本处，不能越过快照
+    读取来源场景后来才完成/续跑产生的评估。空副本也是有效边界。
     """
     all_scenes = await repository.list_scenes(scene.project_id)
     by_id = {s.scene_id: s for s in all_scenes}
     order = {s.scene_id: i for i, s in enumerate(all_scenes)}
-
-    seen = {scene.scene_id}
-    ancestors: list[Scene] = []
-    cursor = by_id.get(scene.parent_scene_id or "")
+    records: list[dict] = []
+    seen: set[str] = set()
+    cursor: Scene | None = scene
     while cursor is not None and cursor.scene_id not in seen:
         seen.add(cursor.scene_id)
-        ancestors.append(cursor)
-        cursor = by_id.get(cursor.parent_scene_id or "")
-
-    position = order.get(scene.scene_id, len(all_scenes))
-    ancestors.extend(
-        s
-        for s in all_scenes[:position]
-        if s.branch_id == scene.branch_id and s.scene_id not in seen
-    )
-    ancestors.sort(key=lambda s: order.get(s.scene_id, -1), reverse=True)
-    return ancestors
+        if include_current or cursor.scene_id != scene.scene_id:
+            ev = await repository.get_evaluation(cursor.scene_id)
+            if ev is not None:
+                records.append(_story_record(cursor, ev))
+        inherited = cursor.inherited_story_history
+        if inherited is None and cursor.restore_snapshot_id:
+            snap = await SnapshotManager(scene.project_id).get_snapshot(cursor.restore_snapshot_id)
+            inherited = snap.story_history if snap else None
+            if inherited is None:
+                logger.warning("场景 %s 的旧分叉快照没有导演历史，停止跨分支继承", cursor.scene_id)
+                inherited = []
+        if inherited is not None:
+            return deepcopy(inherited) + list(reversed(records))
+        parent = by_id.get(cursor.parent_scene_id or "")
+        if parent is None:
+            # 手建场景也应继承本分支前情；保存场景不能改变其创建时间。
+            position = order.get(cursor.scene_id, len(all_scenes))
+            parent = next((s for s in reversed(all_scenes[:position])
+                           if s.branch_id == cursor.branch_id and s.scene_id not in seen), None)
+        cursor = parent
+    return list(reversed(records))
 
 
 async def create_scene_from_config(
@@ -509,6 +444,8 @@ async def run_scene(scene_id: str) -> None:
             speaker_mode=scene.speaker_mode,
             opening_narration=scene.initial_conditions.get("opening_narration", ""),
         )
+        if scene.inherited_story_history is None:
+            scene.inherited_story_history = await _story_records(scene, include_current=False)
         engine = SceneEngine(scene, config, agents, sm)
         # continue 续跑：注入历史 transcript，让角色知道之前说了什么
         if scene.dialogue_log:
@@ -557,12 +494,21 @@ async def run_scene(scene_id: str) -> None:
                 prior_threads=prior_threads,
                 prior_synopses=prior_synopses,
             )
-            # 盖上"这份评估描述的是哪个结束态"的戳。必须在这里盖而不是在
-            # DirectorAgent 里：评估有多条返回路径（含解析失败的 unavailable），
-            # 而后置快照 id 只有编排层拿得到。分叉时靠它识别被 continue 续跑覆盖
-            # 掉的评估（`_fork_edge_excludes_parent`）。
+            # 保留 9fe7e99 的快照归属戳；副本中同样留存，供追溯与审查。
             evaluation.evaluated_snapshot_id = result.snapshot_id_after
             await repository.save_evaluation(evaluation)
+            try:
+                await sm.record_story_history(
+                    result.snapshot_id_after,
+                    [*(scene.inherited_story_history or []), _story_record(scene, evaluation)],
+                )
+            except Exception as exc:  # noqa: BLE001
+                # 快照已被删除或补写失败不能丢掉有效评估，也不能阻断手动决策。
+                logger.warning("后置快照导演历史补写失败：%s", exc, exc_info=True)
+                await events.publish(scene_id, "scene_error", {
+                    "message": "后置快照历史补写失败；从该快照分叉可能缺少本场评估。",
+                    "fatal": False,
+                })
             await events.publish(scene_id, "evaluation", to_dict(evaluation))
         except Exception as exc:  # noqa: BLE001
             logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
@@ -674,6 +620,10 @@ async def fork_from_snapshot(
         snapshot_id, dict(conditions or {}), name, director_notes, branch_id=branch_id
     )
 
+    # 旧快照没有时点化评估，无法可靠还原（来源场景可能已被续跑覆盖）。
+    # 显式空历史优于把撤销的剧情当成已发生；不回填/篡改旧快照。
+    if snap.story_history is None:
+        logger.warning("快照 %s 没有导演历史副本，新分支以未评估历史开始", snapshot_id)
     base_conditions = dict(src.initial_conditions) if src else {}
     scene = Scene(
         scene_id=new_id(),
@@ -695,6 +645,7 @@ async def fork_from_snapshot(
         snapshot_id_before="",
         # 契约4：I1 的唯一正确实现
         restore_snapshot_id=snapshot_id,
+        inherited_story_history=deepcopy(snap.story_history or []),
     )
     await repository.save_scene(scene)
     logger.info(
@@ -849,6 +800,7 @@ async def apply_decision(
             new_scene = await create_scene_from_config(scene.project_id, scene.branch_id, config)
             # 记录父子关系
             new_scene.parent_scene_id = scene.scene_id
+            new_scene.inherited_story_history = await _story_records(scene)
             await repository.save_scene(new_scene)
             decision.next_scene_id = new_scene.scene_id
             # 持久化决策结果，后续重试将幂等重放同一个 next_scene_id

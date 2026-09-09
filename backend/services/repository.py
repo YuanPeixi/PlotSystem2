@@ -7,6 +7,7 @@ CharacterCard 以 JSON 文件存于项目目录（便于人工编辑与快照）
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from backend.config import settings
@@ -205,6 +206,8 @@ def _deserialize_scene(data: dict) -> Scene:
         snapshot_id_before=data.get("snapshot_id_before", ""),
         snapshot_id_after=data.get("snapshot_id_after"),
         restore_snapshot_id=data.get("restore_snapshot_id", ""),
+        inherited_story_history=data.get("inherited_story_history"),
+        created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else now(),
         turns_completed=data.get("turns_completed", 0),
         turns_consolidated=data.get("turns_consolidated", 0),
         speaker_mode=data.get("speaker_mode", SpeakerMode.ROUND_ROBIN.value),

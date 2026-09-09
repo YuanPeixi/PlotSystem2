@@ -10,6 +10,8 @@ import asyncio
 import json
 import shutil
 import tempfile
+from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +72,7 @@ class SnapshotManager:
         character_states: dict[str, CharacterState],
         scene_context: dict | None = None,
         label: str = "",
+        story_history: list[dict] | None = None,
     ) -> Snapshot:
         snap = Snapshot(
             snapshot_id=new_id(),
@@ -78,6 +81,7 @@ class SnapshotManager:
             label=label,
             character_states=character_states,
             scene_context=scene_context or {},
+            story_history=deepcopy(story_history),
         )
         snap_dir = _snapshots_dir(self.project_id) / snap.snapshot_id
         (snap_dir / "character_states").mkdir(parents=True, exist_ok=True)
@@ -374,7 +378,23 @@ class SnapshotManager:
             scene_context=data.get("scene_context", {}),
             graph_checkpoint=data.get("graph_checkpoint", ""),
             chroma_checkpoint=data.get("chroma_checkpoint", ""),
+            story_history=data.get("story_history"),
         )
+
+    async def record_story_history(self, snapshot_id: str, history: list[dict]) -> None:
+        """本轮评估完成后补齐对应后置快照；不改旧轮次的快照。"""
+        snap = await self.get_snapshot(snapshot_id)
+        if snap is None:
+            raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
+        snap.story_history = deepcopy(history)
+        meta = _snapshots_dir(self.project_id) / snapshot_id / "meta.json"
+        # 沿用原始时间，避免补评估把快照重新排到时间线末尾。
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        snap.created_at = datetime.fromisoformat(data["created_at"])
+        tmp = meta.with_suffix(".tmp")
+        tmp.write_text(to_json(snap), encoding="utf-8")
+        tmp.replace(meta)
+        await self._index_snapshot(snap)
 
     async def list_snapshots(self) -> list[dict]:
         async with db.connect() as conn:

@@ -268,6 +268,8 @@ class Scene:
     # 后者为空才能让 SceneEngine 为重演重新打快照，而这里需要记住
     # "运行时记忆（短期缓冲/事件摘要）应从哪个快照回填"。
     restore_snapshot_id: str = ""
+    # None = 旧数据尚未冻结；[] = 权威的空历史。只供导演，不进入角色上下文。
+    inherited_story_history: list[dict] | None = None
     turns_completed: int = 0
     # 已固化进长期记忆的轮次数（水位线）。固化只发生在场景正常结束时，
     # 崩溃/异常中断后续跑要靠它区分“哪些已落盘的轮次还没进过记忆”。
@@ -330,8 +332,8 @@ class SceneEvaluation:
     ending_reason: str = ""
     unresolved_threads: list[str] = field(default_factory=list)
     # 本场评估是针对哪个结束态快照给出的。`evaluations` 以 scene_id 为主键且
-    # INSERT OR REPLACE，一场只留最新一份：continue 续跑会覆盖掉旧评估。分叉时
-    # 靠它区分"我锚的那个结束态"与"这场后来又演了几轮的结束态"（空 = 旧记录）。
+    # INSERT OR REPLACE，一场只留最新一份：continue 续跑会覆盖掉旧评估。
+    # 归属戳随历史副本保留用于追溯；分叉实际继承快照的历史副本（空 = 旧记录）。
     evaluated_snapshot_id: str = ""
 
 
@@ -371,6 +373,8 @@ class Snapshot:
     scene_context: dict = field(default_factory=dict)
     graph_checkpoint: str = ""
     chroma_checkpoint: str = ""
+    # 时点化的导演评估副本。不能通过 scene_id 回读后来被 continue 覆盖的评估。
+    story_history: list[dict] | None = None
 
 
 @dataclass

@@ -414,6 +414,11 @@ async def _forked_scene(
             src.snapshot_id_before if from_before else src.snapshot_id_after
         ),
     )
+    # 单元夹具显式提供快照时点副本；真实快照写入/分叉由流程回归覆盖。
+    evaluation = await repository.get_evaluation(src.scene_id)
+    fork.inherited_story_history = (
+        [] if from_before else [orchestrator._story_record(src, evaluation)]
+    )
     await repository.save_scene(fork)
     return src, fork
 
@@ -476,6 +481,9 @@ async def test_rollback_fork_still_inherits_from_earlier_scenes():
         name="IF 首场",
         restore_snapshot_id="snap-b-before",
     )
+    fork.inherited_story_history = [
+        orchestrator._story_record(a, await repository.get_evaluation(a.scene_id))
+    ]
     await repository.save_scene(fork)
 
     progress, threads, _ = await orchestrator._story_context(fork)
@@ -706,6 +714,9 @@ async def test_fork_from_matching_after_snapshot_still_inherits():
         name="IF 首场",
         restore_snapshot_id="em-after",
     )
+    fork.inherited_story_history = [
+        orchestrator._story_record(src, await repository.get_evaluation(src.scene_id))
+    ]
     await repository.save_scene(fork)
 
     progress, threads, synopses = await orchestrator._story_context(fork)
@@ -714,11 +725,8 @@ async def test_fork_from_matching_after_snapshot_still_inherits():
     assert len(synopses) == 1
 
 
-async def test_legacy_evaluation_without_snapshot_stamp_still_inherits():
-    """旧评估没有 evaluated_snapshot_id：无从校验，不能凭空判定不可继承。
-
-    否则所有历史项目一分叉就丢掉全部进度与线索。
-    """
+async def test_legacy_evaluation_without_snapshot_stamp_does_not_guess_history():
+    """明确改变旧数据政策：无历史副本时，不用无归属戳的当前评估猜测过去。"""
     project_id = "proj-eval-legacy-stamp"
     await repository.save_project(Project(project_id=project_id, name=project_id))
 
@@ -754,8 +762,8 @@ async def test_legacy_evaluation_without_snapshot_stamp_still_inherits():
     await repository.save_scene(fork)
 
     progress, threads, _ = await orchestrator._story_context(fork)
-    assert progress == 0.4
-    assert threads == ["旧线索"]
+    assert progress == PROGRESS_UNAVAILABLE
+    assert threads == []
 
 
 async def test_run_scene_stamps_evaluation_with_after_snapshot():

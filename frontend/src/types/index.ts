@@ -103,6 +103,7 @@ export interface Scene {
   snapshot_id_before: string
   snapshot_id_after: string | null
   restore_snapshot_id: string
+  inherited_story_history?: Array<{ scene_id: string; name: string; evaluation: SceneEvaluation }> | null
   turns_completed: number
   speaker_mode: string
   dialogue_log: DialogueTurn[]
@@ -111,6 +112,7 @@ export interface Scene {
 
 /** 快照元信息（GET /projects/{id}/snapshots 的列表项，不含角色状态明细）。 */
 export interface SnapshotMeta {
+  story_history?: Array<{ scene_id: string; name: string; evaluation: SceneEvaluation }> | null
   snapshot_id: string
   scene_id: string
   branch_id: string
