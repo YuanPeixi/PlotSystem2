@@ -329,6 +329,10 @@ class SceneEvaluation:
     is_ending_reached: bool = False
     ending_reason: str = ""
     unresolved_threads: list[str] = field(default_factory=list)
+    # 本场评估是针对哪个结束态快照给出的。`evaluations` 以 scene_id 为主键且
+    # INSERT OR REPLACE，一场只留最新一份：continue 续跑会覆盖掉旧评估。分叉时
+    # 靠它区分"我锚的那个结束态"与"这场后来又演了几轮的结束态"（空 = 旧记录）。
+    evaluated_snapshot_id: str = ""
 
 
 @dataclass
