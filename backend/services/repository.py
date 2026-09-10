@@ -30,7 +30,10 @@ from backend.models import (
     now,
 )
 from backend.utils import db
+from backend.utils.logger import get_logger
 from backend.utils.serializer import to_json
+
+logger = get_logger("services.repository")
 
 
 def _characters_dir(project_id: str) -> Path:
@@ -175,6 +178,22 @@ async def list_characters(project_id: str) -> list[CharacterCard]:
 # ---------------------------------------------------------------------------
 
 
+def _parse_created_at(raw: object) -> datetime:
+    """还原创建时间，损坏值降级为当前时间。
+
+    本函数其余字段一律用 .get(默认值) 降级，创建时间不该是唯一的硬失败点：
+    手工编辑过 data_json、或早于本字段落地的旧行，会让整个 list_scenes 抛
+    ValueError 五百，而不是只让这一场的排序退化。
+    """
+    if not raw:
+        return now()
+    try:
+        return datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        logger.warning("场景创建时间无法解析，按当前时间处理：%r", raw)
+        return now()
+
+
 def _deserialize_scene(data: dict) -> Scene:
     log = [
         DialogueTurn(
@@ -207,7 +226,7 @@ def _deserialize_scene(data: dict) -> Scene:
         snapshot_id_after=data.get("snapshot_id_after"),
         restore_snapshot_id=data.get("restore_snapshot_id", ""),
         inherited_story_history=data.get("inherited_story_history"),
-        created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else now(),
+        created_at=_parse_created_at(data.get("created_at")),
         turns_completed=data.get("turns_completed", 0),
         turns_consolidated=data.get("turns_consolidated", 0),
         speaker_mode=data.get("speaker_mode", SpeakerMode.ROUND_ROBIN.value),

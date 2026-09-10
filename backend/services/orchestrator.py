@@ -343,6 +343,27 @@ def _story_record(scene: Scene, evaluation: SceneEvaluation) -> dict:
     return {"scene_id": scene.scene_id, "name": scene.name, "evaluation": to_dict(evaluation)}
 
 
+def _merge_story_records(inherited: list[dict], tail: list[dict]) -> list[dict]:
+    """拼接冻结副本与本次回溯，同一场景只保留较新的那份评估。
+
+    `while` 循环的 `seen` 只在回溯路径内去重，管不到冻结副本：场景 X 冻结进
+    inherited 后被 continue 续跑并重新评估，从 X 再分叉时 X 会在两边各出现一次，
+    同一场的梗概与线索被重复计入提示词。回溯得到的那份更新，因此它胜出；
+    保留 inherited 的相对次序，避免时间线被去重打乱。
+    """
+    fresher = {r.get("scene_id") for r in tail if r.get("scene_id")}
+    merged = [r for r in inherited if r.get("scene_id") not in fresher]
+    seen = {r.get("scene_id") for r in merged if r.get("scene_id")}
+    for record in tail:
+        sid = record.get("scene_id")
+        if sid and sid in seen:
+            continue
+        if sid:
+            seen.add(sid)
+        merged.append(record)
+    return merged
+
+
 async def _story_records(scene: Scene, *, include_current: bool = True) -> list[dict]:
     """按实际继承边界读取导演历史，旧数据才沿场景链回溯。
 
@@ -369,7 +390,7 @@ async def _story_records(scene: Scene, *, include_current: bool = True) -> list[
                 logger.warning("场景 %s 的旧分叉快照没有导演历史，停止跨分支继承", cursor.scene_id)
                 inherited = []
         if inherited is not None:
-            return deepcopy(inherited) + list(reversed(records))
+            return _merge_story_records(deepcopy(inherited), list(reversed(records)))
         parent = by_id.get(cursor.parent_scene_id or "")
         if parent is None:
             # 手建场景也应继承本分支前情；保存场景不能改变其创建时间。
@@ -775,6 +796,11 @@ async def apply_decision(
             extra = decision.extra_turns or 6
             scene.max_turns = scene.turns_completed + extra
             scene.status = SceneStatus.PENDING.value
+            # 作废上一轮的冻结副本，让 run_scene 按当前谱系重新冻结。
+            # 冻结的语义是"这一轮开演前已知的前情"，续跑是新一轮：期间祖先若被
+            # 重新评估（例如另一条路径上的 continue 把推进度从 0.2 提到 0.5），
+            # 沿用旧副本会让导演一直按过时基线钳制进度。
+            scene.inherited_story_history = None
             await repository.save_scene(scene)
             # 异步触发，调用方通过事件总线追踪进度
             import asyncio

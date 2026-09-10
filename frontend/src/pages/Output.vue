@@ -29,19 +29,25 @@ async function loadScope() {
   const request = ++scopeRequest
   scopeReady.value = false
   scopeError.value = ''
-  branchId.value = typeof route.query.branch === 'string' ? route.query.branch : ''
+  // 重置必须与响应一起落在竞态守卫之内：在 await 之前同步改写，会把用户
+  // 刚从下拉框选好的分支静默改回路由值，点生成就导出了全部分支。
+  const requested = typeof route.query.branch === 'string' ? route.query.branch : ''
   try {
     const tree = await api.getBranches(props.projectId)
     if (request !== scopeRequest) return
     branchTree.value = tree
+    branchId.value = requested
     if (route.query.branch != null && typeof route.query.branch !== 'string') {
       scopeError.value = '分支参数无效，请重新选择输出范围。'
-    } else if (branchId.value && !flatten(branchTree.value.roots).some(b => b.branch_id === branchId.value)) {
+    } else if (requested && !flatten(branchTree.value.roots).some(b => b.branch_id === requested)) {
       scopeError.value = '指定分支不存在，请重新选择输出范围。'
     }
     scopeReady.value = true
   } catch {
-    if (request === scopeRequest) scopeError.value = '分支列表加载失败，请重试。'
+    if (request === scopeRequest) {
+      branchId.value = requested
+      scopeError.value = '分支列表加载失败，请重试。'
+    }
   }
 }
 
@@ -109,7 +115,10 @@ function flatten(roots: any[]): any[] {
           </select>
         </div>
         <p v-if="scopeError" role="alert">{{ scopeError }}</p>
-        <button v-if="scopeError && !scopeReady" class="ghost" @click="loadScope">重试</button>
+        <!-- 每条错误路径都要有出口：分支不存在/参数无效会把 scopeReady 置真，
+             按 !scopeReady 显示等于这两种情况下没有重试按钮，而项目一个分支
+             都没有时下拉框只有"全部分支"，选它不触发 change，用户彻底卡死。 -->
+        <button v-if="scopeError" class="ghost" @click="loadScope">重试</button>
         <button :disabled="loading || !scopeReady || !!scopeError" @click="generate">{{ loading ? '生成中...' : '✨ 生成' }}</button>
         <button class="ghost" :disabled="!result" @click="download" style="margin-top: 8px">⬇ 下载</button>
       </section>
