@@ -266,6 +266,94 @@ def test_mark_fork_initialized_survives_path_that_broke_legacy_naming(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# #7 线索的"沿用上一场" vs "空列表是权威值"
+# ---------------------------------------------------------------------------
+
+
+def _ev_rec(scene_id: str, ev: dict) -> dict:
+    return {"scene_id": scene_id, "name": scene_id.upper(), "evaluation": ev}
+
+
+async def _threads_of(records: list[dict], monkeypatch) -> list[str]:
+    async def fake(scene, **kw):
+        return records
+
+    monkeypatch.setattr(orchestrator, "_story_records", fake)
+    _, threads, _ = await orchestrator._story_context(object(), "")
+    return threads
+
+
+async def test_missing_threads_key_falls_back_to_earlier_scene(monkeypatch):
+    """LLM 漏返回该键时继续往前找，不能当成"线索全部收束了"。
+
+    写入侧 director_agent._normalize_threads 一直是这么做的；读取侧原先用
+    ev.get(key, []) 把"漏键"和"空列表"压成同一个值。
+    """
+    records = [
+        _ev_rec("a", {"unresolved_threads": ["线索X"], "synopsis": "s1"}),
+        _ev_rec("b", {"synopsis": "s2"}),  # 漏键
+    ]
+    assert await _threads_of(records, monkeypatch) == ["线索X"]
+
+
+async def test_empty_threads_list_is_authoritative(monkeypatch):
+    """空列表表示"上一场把线索都收束了"，必须就此打住，不得复活旧线索。"""
+    records = [
+        _ev_rec("a", {"unresolved_threads": ["线索X"], "synopsis": "s1"}),
+        _ev_rec("b", {"unresolved_threads": [], "synopsis": "s2"}),
+    ]
+    assert await _threads_of(records, monkeypatch) == []
+
+
+async def test_threads_stop_at_first_present_key(monkeypatch):
+    """取最近一份带该键的评估，不继续向前合并。"""
+    records = [
+        _ev_rec("a", {"unresolved_threads": ["旧线索"]}),
+        _ev_rec("b", {"unresolved_threads": ["新线索"]}),
+    ]
+    assert await _threads_of(records, monkeypatch) == ["新线索"]
+
+
+async def test_threads_ignore_non_list_values(monkeypatch):
+    """损坏值（字符串/None）不是权威空列表，应继续回溯。"""
+    records = [
+        _ev_rec("a", {"unresolved_threads": ["线索X"]}),
+        _ev_rec("b", {"unresolved_threads": None}),
+        _ev_rec("c", {"unresolved_threads": "不是列表"}),
+    ]
+    assert await _threads_of(records, monkeypatch) == ["线索X"]
+
+
+async def test_no_evaluation_at_all_yields_empty(monkeypatch):
+    assert await _threads_of([], monkeypatch) == []
+
+
+# ---------------------------------------------------------------------------
+# #15 复用 SnapshotManager
+# ---------------------------------------------------------------------------
+
+
+async def test_story_records_reuses_passed_snapshot_manager(monkeypatch, request):
+    """传入的 sm 必须被复用，不得在循环里各自新建。"""
+    pid = request.node.name
+    await repository.save_project(Project(project_id=pid, name=pid))
+    scene = Scene(project_id=pid, branch_id="main", name="S")
+    await repository.save_scene(scene)
+
+    built = []
+    real = orchestrator.SnapshotManager
+
+    def spy(project_id):
+        built.append(project_id)
+        return real(project_id)
+
+    monkeypatch.setattr(orchestrator, "SnapshotManager", spy)
+    sm = real(pid)
+    await orchestrator._story_records(scene, sm=sm)
+    assert built == [], "传入 sm 后不应再构造 SnapshotManager"
+
+
+# ---------------------------------------------------------------------------
 # #3 continue 续跑重新冻结
 # ---------------------------------------------------------------------------
 

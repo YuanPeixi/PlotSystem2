@@ -253,6 +253,43 @@ PR review 又抓出三条（已随同一 PR 修复，值得记住）：
 
 ---
 
+<a id="pr18"></a>
+
+## PR #18 — 28 收尾的 review 教训
+
+落地内容：用 `Snapshot.story_history` / `Scene.inherited_story_history` 的**时点冻结副本**
+替换上一版 `_lineage_cutoff` 的逐边截断（旧实现要在每条谱系边上判断分叉发生在 before
+还是 after，语义脆弱）；`_deserialize_scene` 与 `get_snapshot` 还原 `created_at`。
+
+review 抓出的教训，四条值得记住：
+
+1. **新引入一个可继承字段，必须把它的每条写入/读取路径都走一遍。**
+   `inherited_story_history` 有三条：首次冻结、continue 续跑、并发改写。
+   patch 只把首次冻结想周全了，于是留下"续跑沿用陈旧副本"与"冻结副本和回溯之间
+   不去重"两个缺陷 —— 后者在 continue 重跑后再分叉时，让同一场评估进两次提示词。
+2. **写入侧做对了不等于读取侧也对。** `director_agent._normalize_threads` 的注释明确
+   写着"LLM 未给出该键时沿用上一场的列表"，但读取侧 `_story_context` 用
+   `ev.get(key, [])` 把"漏键"和"空列表"压成了同一个值 —— 而 §4.2 陷阱 17 恰恰要求
+   两者必须能区分（空列表是"线索都收束了"的权威值）。
+   **同一语义分散在读写两侧时，要成对检查。**
+3. **降级要成片，不要留唯一的硬失败点。** 新加的 `created_at` 解析是
+   `_deserialize_scene` 里唯一会抛 `ValueError` 的字段，一行坏数据能让整个
+   `list_scenes` 五百，而同函数其余字段一律 `.get(默认值)`。
+4. **写了测试不等于有测试。** 新增的 6 个前端测试没有任何 npm 脚本能选中它们
+   （`scripts` 只有 dev/build/preview），`node --test tests/` 目录入口解析还会失败。
+   已补 `npm test`。**新增测试必须确认它能被某条命令选中。**
+
+另有一条**存量**缺陷由本 PR 的新测试首次暴露：`branch_memory.mark_fork_initialized`
+的临时文件名叠加完整 marker 名 + 32 位 uuid，净增 38 字符，越过 Windows MAX_PATH(260)
+后抛出伪装成 `FileNotFoundError` 的错误，被 `except OSError` 升级成 `MemoryError`，
+**长项目名下每次 fork/rollback 都 500**。引入于工单 08，潜伏 9 天 ——
+本 PR 的 `test_story_snapshot_boundary` 是第一批真正走完整 fork 路径的测试。
+路径预算的整体约束已写进 `CLAUDE.md` §10.1。
+
+18 的三条前置约束见 [18-PREFACE.tmp.md](./18-PREFACE.tmp.md)。
+
+---
+
 <a id="t08"></a>
 
 ## 工单 08 — 两轮 review 的教训与实现期踩坑
@@ -289,6 +326,11 @@ PR review 又抓出三条（已随同一 PR 修复，值得记住）：
 分支/回滚时需向导演说明与原线的差异。这是"导演 Heavy Duty 却配套工具不足"的正面解法。
 
 **等 04 / 28 落地后再写工单文件**，接口会受其实现细节影响。
+
+28 收尾（PR #18）的 review 留下三条**前置技术约束**（导演历史的 N+1 读取、
+`story_history` 使快照列表 O(N²)、导演历史是裸 `list[dict]` 违反 §10.1），
+它们会影响 18 的接口与数据结构选型，暂存于
+[18-PREFACE.tmp.md](./18-PREFACE.tmp.md)，**建 18 的单时并入并删除该文件**。
 
 ---
 
