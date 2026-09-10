@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from backend.config import settings
 from backend.exceptions import MemoryError as MemoryCopyError
@@ -26,6 +28,7 @@ from backend.models import (
     RelationshipState,
     Snapshot,
     new_id,
+    now,
 )
 from backend.snapshot.branch_tree import build_branch_tree
 from backend.utils import db
@@ -40,6 +43,38 @@ def _snapshots_dir(project_id: str) -> Path:
     d = settings.project_dir(project_id) / "snapshots"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _parse_snapshot_time(raw: object) -> datetime:
+    """还原快照创建时间，损坏值降级为当前时间。"""
+    if not raw:
+        return now()
+    try:
+        return datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        logger.warning("快照创建时间无法解析，按当前时间处理：%r", raw)
+        return now()
+
+
+def _atomic_write_json(target: Path, payload: str) -> None:
+    """原子替换目标文件，临时名唯一且短于目标名。
+
+    `target.with_suffix('.tmp')` 会把 meta.json 变成 meta.tmp —— 同一快照目录下
+    两次并发补写（例如 continue 重跑与延迟到达的评估回调）会争用同一个临时名，
+    后写者的 replace 可能把半截内容挪成 meta.json。加唯一后缀隔离，并在 replace
+    前 fsync，避免断电后留下一个已改名但内容为空的 meta.json。
+    临时名不叠加目标全名，是为了不吃掉 Windows MAX_PATH 余量（见 branch_memory）。
+    """
+    tmp = target.with_name(f".{target.stem[:16]}.{uuid4().hex[:8]}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _deserialize_character_state(data: dict) -> CharacterState:
@@ -379,6 +414,10 @@ class SnapshotManager:
             graph_checkpoint=data.get("graph_checkpoint", ""),
             chroma_checkpoint=data.get("chroma_checkpoint", ""),
             story_history=data.get("story_history"),
+            # 不还原就等于每次读都换一个 now()：任何"读出来改一改再存回去"的
+            # 路径都会把快照重排到时间线末尾。调用点各自重读 meta.json 打补丁
+            # 只会让每个新调用方都复制一遍 workaround。
+            created_at=_parse_snapshot_time(data.get("created_at")),
         )
 
     async def record_story_history(self, snapshot_id: str, history: list[dict]) -> None:
@@ -388,12 +427,8 @@ class SnapshotManager:
             raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
         snap.story_history = deepcopy(history)
         meta = _snapshots_dir(self.project_id) / snapshot_id / "meta.json"
-        # 沿用原始时间，避免补评估把快照重新排到时间线末尾。
-        data = json.loads(meta.read_text(encoding="utf-8"))
-        snap.created_at = datetime.fromisoformat(data["created_at"])
-        tmp = meta.with_suffix(".tmp")
-        tmp.write_text(to_json(snap), encoding="utf-8")
-        tmp.replace(meta)
+        # 创建时间由 get_snapshot 还原，无需重读 meta.json（那会引入 TOCTOU 窗口）。
+        await asyncio.to_thread(_atomic_write_json, meta, to_json(snap))
         await self._index_snapshot(snap)
 
     async def list_snapshots(self) -> list[dict]:

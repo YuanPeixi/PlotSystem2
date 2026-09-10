@@ -329,8 +329,20 @@ frontend/src/
       [] 表示权威空历史；来源续跑、删除快照都不追写已有分支。
       分叉的 parent_scene_id 只负责溯源，不再据此回读来源的最新评估。
       旧快照没有副本时明确 warning 并按空历史降级，不猜测被覆盖的过去。
-      手建场景在首次运行前冻结本分支前情；场景反序列化还原 created_at，避免
-      读后保存改变历史排序。完整副本落库，提示词仍按既有梗概数量及 token 预算截断。
+      手建场景在首次运行前冻结本分支前情。完整副本落库，提示词仍按既有梗概
+      数量及 token 预算截断。
+      **冻结副本与回溯之间必须去重**（`_merge_story_records`）：`while` 循环的
+      `seen` 只在回溯路径内生效，管不到副本。场景冻结进副本后被 continue 续跑
+      并重新评估，从它再分叉时会在两边各出现一次，回溯得到的那份更新故胜出。
+      **continue 决策要把副本置回 None**（`apply_decision`），让 `run_scene` 按当前
+      谱系重新冻结：冻结的语义是"这一轮开演前已知的前情"，续跑是新一轮，
+      沿用旧副本会让导演一直按过时基线钳制进度。
+      **`created_at` 必须在反序列化时还原**——`repository._deserialize_scene` 与
+      `SnapshotManager.get_snapshot` 都还原，否则每次读都换一个 `now()`，任何
+      "读出来改一改再存回去"的路径（如 `record_story_history`）都会把记录重排到
+      时间线末尾。**不要在调用点重读文件打补丁**，那会让每个新调用方都复制一遍
+      workaround 并引入 TOCTOU 窗口。损坏值一律降级为 `now()` 并 warning，
+      不得抛异常——同函数其余字段都降级，创建时间不该是唯一的硬失败点。
 
 17. **`unresolved_threads` 的合并由导演做，后端只去重截断**：只有导演知道哪条
     线索本场被收束了。三处易错：
@@ -728,6 +740,12 @@ graph TD
 - 所有 IO（LLM / DB / 文件）必须 `async`；禁止 `time.sleep`。
 - 内部数据用 `@dataclass`（集中在 `models.py`），跨 API 边界用 Pydantic（`api/schemas.py`）。
 - 异常继承 `PlotSystemError`（`exceptions.py`），不要裸 `raise Exception`。
+- **原子写文件时，临时名必须唯一且不长于目标名**。这条已经踩过两次：
+  `f".{目标全名}.{uuid4().hex}.tmp"` 会净增 38 字符，目标名含 sha256 时
+  很容易越过 Windows MAX_PATH(260)，抛出伪装成 `FileNotFoundError` 的错误；
+  而 `path.with_suffix('.tmp')` 会让 `meta.json` 与 `meta.tmp` 共用一个名字，
+  并发写互相覆盖。参考 `snapshot_manager._atomic_write_json` 与
+  `branch_memory._pending_path`：短前缀 + 截断 uuid，replace 前 fsync，失败清理。
 - `ruff` 通过（配置见 `pyproject.toml`，已忽略 UP042）。
 
 ### 10.2 命名
@@ -740,6 +758,9 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
 - Conventional Commits：`feat(agents): ...` / `fix(scene): ...` / `docs: ...`。
 - 核心模块（agents / snapshot / memory / orchestrator）新功能需附单测。
 - `tests/conftest.py` 会把 `DATA_DIR` 指向临时目录，测试不会污染 `data/`。
+- 后端 `uv run pytest tests/`；前端 `cd frontend && npm test`
+  （`node --test tests/*.test.mjs`，无浏览器，直接编译 `.vue` 的 script 块跑）。
+  **新增前端测试必须能被这条命令选中**——写了测试却没有入口等于没写。
 - 端到端手测：`python -m scripts.run_demo`。
 
 ### 10.4 注释
