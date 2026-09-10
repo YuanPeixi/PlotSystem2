@@ -310,7 +310,10 @@ async def _recent_scene_results(
 
 
 async def _story_context(
-    scene: Scene, narrative_goal: str = "", synopsis_limit: int = 12
+    scene: Scene,
+    narrative_goal: str = "",
+    synopsis_limit: int = 12,
+    sm: SnapshotManager | None = None,
 ) -> tuple[float, list[str], list[str]]:
     """沿因果谱系取回 (可继承的推进度, 最近一次的未收束线索, 前情梗概)。
 
@@ -318,21 +321,26 @@ async def _story_context(
 
     - 推进度只继承**同一版本主线目标**下的度量。用户改了目标就是换了尺子，
       旧目标下的 0.9 会把新目标的真实进度永久钳到顶；
-    - 线索取**最近一份评估的列表原样**，哪怕它是空的 —— 空表示"上一场把线索都收束了"，
-      不是"还没找到线索状态"。把两者混为一谈会让已收束的旧线索被重新复活；
+    - 线索取**最近一份带该键的评估的列表原样**，哪怕它是空的 —— 空表示"上一场把
+      线索都收束了"，不是"还没找到线索状态"。把两者混为一谈会让已收束的旧线索被
+      重新复活。反过来，LLM 漏返回该键时要继续往前找，而不是当成"线索全部收束"：
+      `ev.get(key, [])` 会把这两种情况压成同一个值，因此必须用独立标志区分
+      （写入侧的 `director_agent._normalize_threads` 一直是这么做的）；
     - 梗概要多取几条：结局往往是跨场次达成的，只看本场判不出来。
     """
-    records = await _story_records(scene)
+    records = await _story_records(scene, sm=sm)
     revision = goal_revision(narrative_goal)
     progress = PROGRESS_UNAVAILABLE
     threads: list[str] = []
+    threads_found = False
     synopses: list[str] = []
-    for index, record in enumerate(reversed(records)):
+    for record in reversed(records):
         ev = record["evaluation"]
         if progress < 0 and ev.get("story_progress", -1) >= 0 and ev.get("goal_revision") == revision:
             progress = ev["story_progress"]
-        if index == 0:
-            threads = list(ev.get("unresolved_threads", []))
+        if not threads_found and isinstance(ev.get("unresolved_threads"), list):
+            threads = list(ev["unresolved_threads"])
+            threads_found = True
         if ev.get("synopsis") and len(synopses) < synopsis_limit:
             synopses.append(f"【{record['name'] or '未命名场景'}】{ev['synopsis']}")
     synopses.reverse()
@@ -364,15 +372,21 @@ def _merge_story_records(inherited: list[dict], tail: list[dict]) -> list[dict]:
     return merged
 
 
-async def _story_records(scene: Scene, *, include_current: bool = True) -> list[dict]:
+async def _story_records(
+    scene: Scene, *, include_current: bool = True, sm: SnapshotManager | None = None
+) -> list[dict]:
     """按实际继承边界读取导演历史，旧数据才沿场景链回溯。
 
     parent_scene_id 只表示来源；遇到分叉必须停在冻结副本处，不能越过快照
     读取来源场景后来才完成/续跑产生的评估。空副本也是有效边界。
+
+    `sm` 由调用方传入复用：orchestrator 其余部分一律复用同一个实例，此处若各自
+    新建，将来 SnapshotManager 一旦持有连接或缓存就会失配。
     """
     all_scenes = await repository.list_scenes(scene.project_id)
     by_id = {s.scene_id: s for s in all_scenes}
     order = {s.scene_id: i for i, s in enumerate(all_scenes)}
+    snapshots = sm or SnapshotManager(scene.project_id)
     records: list[dict] = []
     seen: set[str] = set()
     cursor: Scene | None = scene
@@ -384,7 +398,7 @@ async def _story_records(scene: Scene, *, include_current: bool = True) -> list[
                 records.append(_story_record(cursor, ev))
         inherited = cursor.inherited_story_history
         if inherited is None and cursor.restore_snapshot_id:
-            snap = await SnapshotManager(scene.project_id).get_snapshot(cursor.restore_snapshot_id)
+            snap = await snapshots.get_snapshot(cursor.restore_snapshot_id)
             inherited = snap.story_history if snap else None
             if inherited is None:
                 logger.warning("场景 %s 的旧分叉快照没有导演历史，停止跨分支继承", cursor.scene_id)
@@ -466,7 +480,9 @@ async def run_scene(scene_id: str) -> None:
             opening_narration=scene.initial_conditions.get("opening_narration", ""),
         )
         if scene.inherited_story_history is None:
-            scene.inherited_story_history = await _story_records(scene, include_current=False)
+            scene.inherited_story_history = await _story_records(
+                scene, include_current=False, sm=sm
+            )
         engine = SceneEngine(scene, config, agents, sm)
         # continue 续跑：注入历史 transcript，让角色知道之前说了什么
         if scene.dialogue_log:
@@ -503,7 +519,7 @@ async def run_scene(scene_id: str) -> None:
             )
             project = await repository.get_project(scene.project_id)
             prior_progress, prior_threads, prior_synopses = await _story_context(
-                scene, project.narrative_goal
+                scene, project.narrative_goal, sm=sm
             )
             evaluation = await director.evaluate_scene(
                 scene,
@@ -741,12 +757,13 @@ async def apply_decision(
 
     try:
         scene = await repository.get_scene(scene_id)
+        sm = SnapshotManager(scene.project_id)
         evaluation = await repository.get_evaluation(scene_id)
         if evaluation is None:
             # 裸的 SceneEvaluation() 四项分数是 0.0，会撞进导演的阈值规则被判成回滚
             evaluation = unavailable_evaluation(scene_id)
         director = DirectorAgent(
-            scene.project_id, GraphManager(scene.project_id), SnapshotManager(scene.project_id)
+            scene.project_id, GraphManager(scene.project_id), sm
         )
         decision = await director.make_decision(evaluation, human_override)
 
@@ -754,7 +771,6 @@ async def apply_decision(
             # 回滚：恢复到模拟前快照，并创建一个新场景重演
             target = decision.rollback_to_snapshot_id or scene.snapshot_id_before
             if target:
-                sm = SnapshotManager(scene.project_id)
                 # 只读快照，不调 restore_snapshot()：后者会 rmtree 并覆盖项目级的
                 # chroma_db 与 kuzu_db，等于抹掉回滚点之后所有分支已积累的长期记忆。
                 snap = await sm.get_snapshot(target)
@@ -826,7 +842,7 @@ async def apply_decision(
             new_scene = await create_scene_from_config(scene.project_id, scene.branch_id, config)
             # 记录父子关系
             new_scene.parent_scene_id = scene.scene_id
-            new_scene.inherited_story_history = await _story_records(scene)
+            new_scene.inherited_story_history = await _story_records(scene, sm=sm)
             await repository.save_scene(new_scene)
             decision.next_scene_id = new_scene.scene_id
             # 持久化决策结果，后续重试将幂等重放同一个 next_scene_id

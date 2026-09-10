@@ -746,6 +746,13 @@ graph TD
   而 `path.with_suffix('.tmp')` 会让 `meta.json` 与 `meta.tmp` 共用一个名字，
   并发写互相覆盖。参考 `snapshot_manager._atomic_write_json` 与
   `branch_memory._pending_path`：短前缀 + 截断 uuid，replace 前 fsync，失败清理。
+- **整个数据目录的路径预算约 65 字符**，别再挥霍。默认布局下最长的两条已达
+  195（分支初始化 marker，含 64 字符 sha256）与 205 字符
+  （`snapshots/{id}/chroma_collections/{uuid}/data_level0.bin`，**由 Chroma 生成、
+  我们控制不了**）。因此：新增路径层级前先量一量；**`DATA_DIR` 建议放浅目录**，
+  配到深目录会重新踩线。根治要么开注册表 `LongPathsEnabled`（每台机器都得改），
+  要么全路径加 `\\?\` 前缀（要统一所有构造点，且第三方库兼容性未验证）——
+  两者都是环境/架构决策，真踩到再上。
 - `ruff` 通过（配置见 `pyproject.toml`，已忽略 UP042）。
 
 ### 10.2 命名
@@ -806,6 +813,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 | `Branch.scenes` 恒为空数组 | 无写入方；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它 | 工单 03 可选目标 6 |
 | **场景内自动固化绕过水位线** | `MemoryManager.add_experience` 在短期缓冲满（`SHORT_TERM_BUFFER_SIZE`，默认 40）时会自动 `consolidate()`，但不推进 `turns_consolidated`。单次 `run()` 跑满 40 轮后崩溃，续跑会把前 40 轮二次写入长期记忆。默认 `max_turns=20` 碰不到，但 `max_turns` 可由导演/用户设定且无上限校验 | 工单 26 |
 | `pause` 的语义与 `SceneStatus.PAUSED` 无关 | `engine.interrupt()` 走的是正常终止路径，场景最终是 `completed`，但前端提示“已中断” | 待排期 |
+| **后置快照冻结的是内存副本** | `run_scene` 落 `record_story_history` 时用的 `scene` 是方法开头读的副本，中间隔着整场 LLM。若期间别的路径改写了库里的 `inherited_story_history`，落进快照的就是过时历史，从该快照分叉的分支据此起算 | 触发需在场景 `running` 时对它提交决策，而决策 CAS 只接 `completed`，正常路径进不来；构造不出可靠复现。真要修得在写快照前重读 scene（窗口只缩小、不消除）。待排期 |
 
 ### 12.2 Dead code（存在但零调用）
 
