@@ -257,13 +257,22 @@ frontend/src/
    它不可提交决策（CAS 只接 completed），但可以再次 `POST /scenes/{id}/start` 续跑
    （`snapshot_id_before` 已存在→不重打快照，`dialogue_log` 已逐轮落盘→注入历史续接）。
 9. **`Scene.turns_consolidated` 是记忆固化的水位线**，与 `turns_completed` 不同：
-   对话逐轮落盘，但固化（`consolidate`）只在场景正常结束时发生一次。崩溃/异常中断后
+   对话逐轮落盘，固化（`consolidate`）则按 `MEMORY_CONSOLIDATE_EVERY_TURNS` 周期发生，
+   外加场景结束时的收尾一次。崩溃/异常中断后
    续跑时，`SceneEngine.run()` 会把 `dialogue_log[turns_consolidated:]` 重新写回各角色记忆，
    否则就是“对话恢复了，但角色忘了这些对话”。**新增写入记忆的路径时必须跟上这个水位线**，
    否则会造成长期记忆重复写入（长期记忆按角色+分支隔离，但不随场景状态回滚，重复只会累积）。
    **且水位线必须与固化写入在同一次落盘内推进**（`run()` 的 `on_persist` 钩子）：
    内存里改完、等方法返回再存是不够的 —— 中间隔着后置快照拷贝几十兆的 kuzu/chroma，
    进程在该窗口被硬杀（走不到 orchestrator 的 `except`）就会整场二次写入。
+   **固化的触发权只在 `SceneEngine`**（工单26）：只有它同时知道"写了几轮"与"水位线该推到哪"，
+   并能把两者放进同一次 `on_persist`。`MemoryManager.add_experience` **不得**在缓冲写满时
+   自行 `consolidate()` —— 那会绕过水位线，跑满一个缓冲后崩溃就整段二次写入。
+   同理，`_consolidate_all` 的推进必须早于 `on_turn`（后者推 SSE，落盘先于推送）。
+   **重放循环也要走周期固化**：短期缓冲是定长 deque，一次补回上百轮会静默淘汰最早的内容。
+   兜底在写入层：长期记忆按正文内容寻址（`long_term.memory_id`，sha256），
+   同一集合内重复写入落在同一 ID 上，先 `get` 判存在再 `upsert`（`upsert` 会重算 embedding，
+   而 embedding 是远程计费调用）。代价是同一角色说出**完全相同**的一句话会合并成一条。
 10. **状态的作用域不是统一的**，这是 fork/rollback 语义分歧的根源：
 
     | 状态 | 实际作用域 | 分支隔离 |
@@ -463,14 +472,17 @@ graph TD
    叠加被点名加分与重复发言惩罚；兜底必须 warning 可见，不得静默选 `agents[0]`）
    → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 → 追加 transcript
    → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；写他人轮次时
-   剥离 `inner_thought`）→ SSE 推送；
-5. 终止后先固化记忆（`consolidate(force=True)`，唯一写入点在第4步，不重复写入）
-   → 立即通过 `on_persist` 把水位线落库 → 再打后置快照（此时短期缓冲已清空，
+   剥离 `inner_thought`）→ 每满 `MEMORY_CONSOLIDATE_EVERY_TURNS` 轮走一次
+   `_consolidate_all`（固化 + 推水位线 + `on_persist`，必须早于 SSE 推送）→ SSE 推送；
+5. 终止后做收尾固化（`_consolidate_all`：`consolidate(force=True)`，唯一写入点在第4步，不重复写入）
+   → 同一步内通过 `on_persist` 把水位线落库 → 再打后置快照（此时短期缓冲已清空，
    快照记录的是"已落库"的干净状态，供下一场 `prime()` 回填也不会重新引入已固化过的内容）。
    **三者顺序均不可颠倒**：若先打快照再固化，快照里的短期缓冲会带着"即将被固化"的原始文本，
    一旦该快照被 continue/rollback/next_scene 用于 `prime()` 回填，
    这批已写入长期记忆的台词会在新场景的下一次 consolidate 时被二次写入；
    若水位线等到 `run()` 返回后才落库，拷快照期间被硬杀就会整场二次写入（见 4.2 陷阱 9）；
+   崩溃续跑的重放循环（`dialogue_log[turns_consolidated:]`）同样按周期固化，
+   否则定长的短期缓冲会静默淘汰还没进过长期记忆的内容；
 
 6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库 → 推 evaluation 与 completed。
    **自动评估包在自己的 `try` 里**：这一场已经跑完并打了后置快照，评估的 LLM 失败
@@ -775,6 +787,9 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
   （`node --test tests/*.test.mjs`，无浏览器，直接编译 `.vue` 的 script 块跑）。
   **新增前端测试必须能被这条命令选中**——写了测试却没有入口等于没写。
 - 端到端手测：`python -m scripts.run_demo`。
+- 长期记忆重复排查：`python -m scripts.check_memory_dupes`（**只读**，按集合统计完全相同
+  的正文条目）。改造前沉淀的重复只评估不清理——无法区分"重复写入"与"角色确实说了两遍"；
+  确认严重时最干净的处理是删掉该项目的 `chroma_db/` 重跑（长期记忆可从 `dialogue_log` 重建）。
 
 ### 10.4 注释
 
@@ -817,7 +832,6 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 |------|------|------|
 | **Kuzu 图谱无分支隔离** | 图谱是项目级单文件。当前只在构建阶段写入一次、全程只读，所以“共享”与“隔离”等价，无实际影响 | 工单06（场景结束后动态回写图谱）的**前置约束**：它一落地图谱就变成可变状态，分支隔离立刻破 |
 | `Branch.scenes` 恒为空数组 | 无写入方；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它 | 工单 03 可选目标 6 |
-| **场景内自动固化绕过水位线** | `MemoryManager.add_experience` 在短期缓冲满（`SHORT_TERM_BUFFER_SIZE`，默认 40）时会自动 `consolidate()`，但不推进 `turns_consolidated`。单次 `run()` 跑满 40 轮后崩溃，续跑会把前 40 轮二次写入长期记忆。默认 `max_turns=20` 碰不到，但 `max_turns` 可由导演/用户设定且无上限校验 | 工单 26 |
 | `pause` 的语义与 `SceneStatus.PAUSED` 无关 | `engine.interrupt()` 走的是正常终止路径，场景最终是 `completed`，但前端提示“已中断” | 待排期 |
 | **后置快照冻结的是内存副本** | `run_scene` 落 `record_story_history` 时用的 `scene` 是方法开头读的副本，中间隔着整场 LLM。若期间别的路径改写了库里的 `inherited_story_history`，落进快照的就是过时历史，从该快照分叉的分支据此起算 | 触发需在场景 `running` 时对它提交决策，而决策 CAS 只接 `completed`，正常路径进不来；构造不出可靠复现。真要修得在写快照前重读 scene（窗口只缩小、不消除）。待排期 |
 
@@ -1016,3 +1030,20 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      编排层赋值，并增加真实 run_scene 的归属戳验证。逐边截断已由 9fe7e99 修复；
      当前用历史副本进一步保证旧评估可恢复。旧数据不再无条件信任无归属戳评估，
      缺少快照历史副本时按空历史降级，对应兼容性测试明确更新。 -->
+
+<!-- 2026-09-11: 工单26（记忆写入点与固化水位线统一）落地。
+     - 固化触发权从 `MemoryManager.add_experience`（缓冲写满即 consolidate，绕过水位线）
+       收归 `SceneEngine`：新增 `_consolidate_all`（固化 + 推水位线 + on_persist 三步原子）
+       与 `_should_consolidate`，按新配置 `MEMORY_CONSOLIDATE_EVERY_TURNS`（默认 20）周期触发，
+       主循环里必须早于 `on_turn`（落盘先于 SSE 推送）；崩溃重放循环同样按周期固化，
+       否则定长 deque 会静默淘汰还没进长期记忆的内容；
+     - 兜底：长期记忆改为内容寻址 ID（`long_term.memory_id`，sha256），
+       先 `get` 判存在再 `upsert`（upsert 会重算 embedding，是远程计费调用）；
+       降级路径用 `_fallback_ids` 保持同语义（契约6）。副作用：同一角色说出完全相同的
+       一句话会合并成一条；
+     - `ShortTermMemory.add` 在容量满仍写入时每实例 warning 一次（deque 淘汰原本完全静默）；
+     - `CharacterAgent.update_state_after_scene` → `consolidate_memory()`（去掉未使用的
+       scene_log 参数）：固化已不只发生在场景结束时，原名不再准确；
+     - 新增只读脚本 `scripts/check_memory_dupes.py`（只统计不清理，见红线 R3）。
+     同步更新 4.2 陷阱 9、6.2 第 4/5 步、10.3，删除 12.1 的对应条目。
+-->

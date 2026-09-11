@@ -14,7 +14,7 @@
 `✅ PR #N（合入 main：起始hash到结束hash）`。完整口径与 hash 填写规则见
 [CONVENTIONS.md](./CONVENTIONS.md)。**索引标注可能滞后于实际合并状态，以 git 为准。**
 
-**当前推进中**：工单 28（叙事目标与结局判定）已在分支 `feat/narrative-goal` 完成，等待 PR。
+**当前推进中**：工单 26（记忆写入点与固化水位线统一）已在分支 `fix/memory-write-watermark` 完成，等待 PR。
 
 ---
 
@@ -55,7 +55,7 @@
 | [27](./27-context-compaction.md) | 统一上下文压缩管线（27-A） | P1 | 无 | ✅ PR #17（合入 main：`973c350`到`71d6f24`；27-B 未做） | [落地与 review 教训](./NOTES.md#pr17) |
 | [04](./04-director-context.md) | 补全导演评估上下文 + P0 bug 清扫 | P1 | 17 ✅、27 ✅ | ✅ PR #17（同上） | [三层目标模型](./NOTES.md#director-goal) |
 | [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | ✅ PR #16（合入 main：`3f8d4d7`，阶段 A+B） | [两轮 review 教训](./NOTES.md#t08) |
-| [28](./28-narrative-goal-and-ending.md) | 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | **⏳ 等待 PR（feat/narrative-goal）** | [三层目标模型 + 两条禁令](./NOTES.md#director-goal) |
+| [28](./28-narrative-goal-and-ending.md) | 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | ✅ PR #18（合入 main：`82f4dd4`到`8e37a87`） | [三层目标模型 + 两条禁令](./NOTES.md#director-goal) |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 ✅ | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整展示） | — |
 | [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | 待处理 | [契约 3 补充条款待裁定](./NOTES.md#contract3) |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16 ✅（硬前置） | 待处理 | [硬前置已解除](./NOTES.md#t16) |
@@ -67,7 +67,7 @@
 | 编号 | 标题 | 优先级 | 依赖 | 状态 | 备注 |
 |---|---|---|---|---|---|
 | 18 | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 | 待建单 | [说明](./NOTES.md#t18) |
-| [26](./26-memory-write-watermark.md) | 记忆写入点与固化水位线统一 | P2 | 无 | 待处理（**须排在 09 之前**） | [说明](./NOTES.md#t26) |
+| [26](./26-memory-write-watermark.md) | 记忆写入点与固化水位线统一 | P2 | 无 | **⏳ 等待 PR（fix/memory-write-watermark）** | [说明](./NOTES.md#t26) |
 | [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 可选 | 待处理 | — |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 | 待处理 | [前置说明](./NOTES.md#t09) |
 
