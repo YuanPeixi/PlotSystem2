@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     # 写入量变为参演人数倍，适当调大以避免多人场景下缓冲区只能覆盖少数几轮。
     SHORT_TERM_BUFFER_SIZE: int = 40
     MEMORY_TOP_K: int = 5
+    # 场景内周期固化的轮次间隔（工单26）。触发权在 SceneEngine 而非缓冲容量：
+    # 缓冲只负责"最近上下文"，固化周期决定水位线推进粒度，两者是两件事。
+    # 应显著小于 SHORT_TERM_BUFFER_SIZE，给 prime() 回填进来的历史留出余量。
+    MEMORY_CONSOLIDATE_EVERY_TURNS: int = 20
 
     # --- 角色对话上下文窗口（工单14）---
     # 拼接长期记忆检索 query 时采样最近多少行对话

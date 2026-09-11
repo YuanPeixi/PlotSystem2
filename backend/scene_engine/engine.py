@@ -15,6 +15,7 @@ import re
 from collections.abc import Awaitable, Callable
 
 from backend.agents.character_agent import CharacterAgent
+from backend.config import settings
 from backend.models import (
     CharacterState,
     DialogueTurn,
@@ -113,13 +114,17 @@ class SceneEngine:
 
         # turn_number 从历史轮次末尾续接（continue 时不从 0 开始）
         turn_number = len(turns)
-        new_turns: list[DialogueTurn] = []  # 本次新增轮次（用于记忆固化）
 
         # 崩溃/异常中断后的续跑：这段轮次已逐轮落盘，但固化只在场景正常结束时
-        # 发生，它们还没进过任何一层记忆。不补回去就是“对话还在，但角色忘了”。
+        # 发生，它们还没进过任何一层记忆。不补回去就是"对话还在，但角色忘了"。
+        # 重放同样要走周期固化：短期缓冲是定长 deque，一次补回上百轮会静默淘汰
+        # 最早的内容（旧实现由 add_experience 的自动固化兜住，工单26 已移走）。
+        replayed = self.scene.turns_consolidated
         for past in turns[self.scene.turns_consolidated :]:
             await self._remember(past)
-            new_turns.append(past)
+            replayed += 1
+            if self._should_consolidate(replayed):
+                await self._consolidate_all(replayed, on_persist)
 
         terminated_reason = ""
         while True:
@@ -136,7 +141,6 @@ class SceneEngine:
             turn = self._parse_turn(raw, agent, turn_number)
             turn.selector_notice = selector_notice
             turns.append(turn)
-            new_turns.append(turn)
             transcript.append(self._turn_line(turn))
             await self._remember(turn)
 
@@ -144,24 +148,27 @@ class SceneEngine:
             # 中途刷新/断线/进程退出时已产生的轮次才不会丢（工单23）。
             self.scene.dialogue_log = list(turns)
             self.scene.turns_completed = turn_number
+
+            # 周期固化必须早于 on_turn：后者会推 SSE，而落盘必须先于推送（工单23），
+            # 所以走不推事件的 on_persist（工单26 红线 R1）。
+            if self._should_consolidate(len(turns)):
+                await self._consolidate_all(len(turns), on_persist)
+
             if on_turn:
                 await on_turn(turn)
 
-        # 4. 固化记忆（必须先于后置快照！只固化本次新增轮次，历史轮次在上次
-        # 结束时已固化）。consolidate 会清空 short_term 缓冲。若顺序颠倒——
+        # 4. 收尾固化（必须先于后置快照！）。consolidate 会清空 short_term 缓冲，
+        # 把周期固化之后剩下的尾巴写进长期记忆。若顺序颠倒——
         # 先打快照再固化——快照里的 short_term_buffer 会带着"即将被固化"的
         # 原始文本；一旦这份快照后续被 continue/rollback/next_scene 用于
         # prime() 回填新场景的记忆，这批本已写入长期记忆的台词会随新场景的
         # 下一次 consolidate 被二次写入长期记忆（跨场景重复，且长期记忆按
         # 角色+项目共享、不随分支回滚，重复只会累积不会自愈）。
-        for agent in self.agents:
-            await agent.update_state_after_scene(new_turns)
-        self.scene.turns_consolidated = len(turns)
+        #
         # 水位线必须与固化写入在同一次落盘内推进：下一步的后置快照要拷贝整个
         # kuzu/chroma（十几到二十多兆），进程若在这段窗口里被硬杀（非异常，走不到
         # orchestrator 的 except），库里仍是旧水位线，续跑会把整场对话二次写入长期记忆。
-        if on_persist:
-            await on_persist()
+        await self._consolidate_all(len(turns), on_persist)
 
         # 5. 模拟后快照（此时短期缓冲已清空，快照记录的是"已落库"的干净状态，
         # 供下一场 prime() 回填也不会重新引入已固化过的内容）
@@ -188,6 +195,26 @@ class SceneEngine:
             turns_completed=turn_number,
             terminated_reason=terminated_reason,
         )
+
+    # ---- 记忆固化 ----
+    def _should_consolidate(self, turns_done: int) -> bool:
+        """距上次固化是否已满一个周期。周期 <=0 视为只在场景结束时固化。"""
+        every = settings.MEMORY_CONSOLIDATE_EVERY_TURNS
+        if every <= 0:
+            return False
+        return turns_done - self.scene.turns_consolidated >= every
+
+    async def _consolidate_all(self, turns_done: int, on_persist: PersistCallback) -> None:
+        """写长期记忆 → 推进水位线 → 立即落盘。三步是一个原子单元，不可拆开。
+
+        中间任一步之后被硬杀，库里的 `turns_consolidated` 都必须与长期记忆里
+        实际已有的内容对齐，否则续跑的重放会二次写入（工单26）。
+        """
+        for agent in self.agents:
+            await agent.consolidate_memory()
+        self.scene.turns_consolidated = turns_done
+        if on_persist:
+            await on_persist()
 
     # ---- 记忆写入 ----
     async def _remember(self, turn: DialogueTurn) -> None:

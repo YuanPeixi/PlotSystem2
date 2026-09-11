@@ -56,6 +56,11 @@ class MemoryManager:
 
         from_self=False 表示记录"在场感知"到的他人轮次：剥离内心独白，
         并在 metadata 打上 speaker/self 标记供未来分层检索使用（工单15/09）。
+
+        **只写短期缓冲，不触发固化**（工单26）：缓冲写满时自行 consolidate() 会绕过
+        Scene.turns_consolidated 水位线，崩溃续跑就把已入库的轮次二次写入长期记忆。
+        固化的触发权在 SceneEngine —— 只有它同时知道"写了几轮"和"水位线该推到哪"，
+        并能在同一次落盘里把两者一起持久化。
         """
         text = _turn_to_text(turn, include_inner_thought=from_self)
         important = self.episodic.record(turn, include_inner_thought=from_self)
@@ -65,8 +70,6 @@ class MemoryManager:
             is_self=from_self,
             speaker=turn.character_name,
         )
-        if self.short_term.is_full():
-            await self.consolidate()
 
     async def retrieve(self, query: str, top_k: int | None = None) -> list[MemoryChunk]:
         """从长期记忆检索相关片段。"""

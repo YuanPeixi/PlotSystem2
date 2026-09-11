@@ -6,6 +6,9 @@ from collections import deque
 from typing import Any
 
 from backend.config import settings
+from backend.utils.logger import get_logger
+
+logger = get_logger("memory.short_term")
 
 
 class ShortTermMemory:
@@ -17,8 +20,21 @@ class ShortTermMemory:
         # 每条记忆的元数据（重要性/发言者/是否本人），仅进程内使用，
         # 不参与 dump()/load() 的快照契约（工单15：避免影响持久化格式）。
         self._meta: deque[dict[str, Any]] = deque(maxlen=self.capacity)
+        self._overflow_warned = False
 
     def add(self, text: str, **meta: Any) -> None:
+        # deque 满了会静默丢弃最早一条。工单26 之后缓冲只应涨到
+        # MEMORY_CONSOLIDATE_EVERY_TURNS 就被引擎清空，真发生淘汰说明固化链路
+        # 没跑到（周期配得比容量大、或引擎没调 _consolidate_all），此时被丢掉的
+        # 内容还没进过长期记忆。只警告一次，避免每轮刷屏。
+        if len(self._buffer) >= self.capacity and not self._overflow_warned:
+            self._overflow_warned = True
+            logger.warning(
+                "[memory] 短期缓冲已达容量 %d 仍在写入，最早的记录将被丢弃且未固化；"
+                "请检查 MEMORY_CONSOLIDATE_EVERY_TURNS(%d) 是否小于 SHORT_TERM_BUFFER_SIZE",
+                self.capacity,
+                settings.MEMORY_CONSOLIDATE_EVERY_TURNS,
+            )
         self._buffer.append(text)
         self._meta.append(meta)
 
