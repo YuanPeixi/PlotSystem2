@@ -334,9 +334,15 @@ frontend/src/
       **冻结副本与回溯之间必须去重**（`_merge_story_records`）：`while` 循环的
       `seen` 只在回溯路径内生效，管不到副本。场景冻结进副本后被 continue 续跑
       并重新评估，从它再分叉时会在两边各出现一次，回溯得到的那份更新故胜出。
-      **continue 决策要把副本置回 None**（`apply_decision`），让 `run_scene` 按当前
-      谱系重新冻结：冻结的语义是"这一轮开演前已知的前情"，续跑是新一轮，
-      沿用旧副本会让导演一直按过时基线钳制进度。
+      **continue 续跑不得改写继承的过去**（`apply_decision` 刻意**不动**
+      `inherited_story_history`）：副本是分叉那一刻的既成事实，`None` 是"旧数据，
+      请回溯推断"的**哨兵**，不是"请重算"的指令。把它置 `None` 等于把一条有权威
+      边界的分支降格成旧数据，于是重新去读**当前**的 `restore_snapshot_id` ——
+      来源快照已删就整份历史归零，来源后补了评估就越过边界读进来，正是本机制
+      要堵的两个洞。祖先后来的变化**不使**已继承的历史过期；本场续跑产生的新
+      评估可以更新，但不能顺带改写继承的过去。本场评估无需清副本即可刷新：
+      副本 `include_current=False` 本就不含本场，回溯时从 `evaluations` 表现读，
+      而 `save_evaluation` 是 `INSERT OR REPLACE`。
       **`created_at` 必须在反序列化时还原**——`repository._deserialize_scene` 与
       `SnapshotManager.get_snapshot` 都还原，否则每次读都换一个 `now()`，任何
       "读出来改一改再存回去"的路径（如 `record_story_history`）都会把记录重排到
