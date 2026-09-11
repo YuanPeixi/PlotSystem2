@@ -355,6 +355,25 @@ PR #15 已修掉同族的"水位线落盘时机"（`run()` 新增 `on_persist`�
 
 **必须排在工单 09 之前**：26 未做时长期记忆里可能混着重复条目，会直接干扰 09 的检索质量评估。
 
+**落地结论（分支 `fix/memory-write-watermark`）**：
+
+1. 固化触发权收归 `SceneEngine`。新增 `_consolidate_all`（固化 → 推水位线 → `on_persist`，
+   三步是一个原子单元）与配置 `MEMORY_CONSOLIDATE_EVERY_TURNS`（默认 20）。
+   主循环里这一步**必须早于 `on_turn`**（落盘先于 SSE 推送，工单 23 的既有约定）。
+2. **崩溃重放循环也要走周期固化** —— 这是移除自动固化后**新引入**的洞，不在原工单的判据里：
+   `ShortTermMemory._buffer` 是 `deque(maxlen=capacity)`，一次补回上百轮未固化轮次会**静默
+   淘汰**最早的那些，而它们还没进过长期记忆。旧代码恰好由 `add_experience` 的自动固化兜住。
+   另在 `ShortTermMemory.add` 加了容量满时每实例一次的 warning，让这条路不再无声。
+3. 写入幂等走内容寻址 ID（`long_term.memory_id`，sha256）+ **先 `get` 判存在再 `upsert`**。
+   前置判断不是优化：chromadb 0.5.20 的 `upsert` 会无条件重算 embedding，而 embedding 是
+   远程计费调用（工单 §3.2.3 要确认的正是这条）。降级路径用 `_fallback_ids` 保持同语义。
+4. 顺带改名 `CharacterAgent.update_state_after_scene` → `consolidate_memory()`：
+   它只是 `consolidate(force=True)` 的薄封装、`scene_log` 参数从未被用，而固化现在也发生在
+   场景中途，原名已不准确。不改名的另两个选项——让它成为死代码，或用一个说"after_scene"
+   的名字做周期调用——都更差。
+5. 历史重复数据只评估不清理（红线 R3）：`scripts/check_memory_dupes.py`，只读。
+   改造前写入的随机 ID 条目与新的内容寻址条目会共存，这是预期的。
+
 ---
 
 <a id="t09"></a>
