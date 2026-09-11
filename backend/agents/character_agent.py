@@ -16,7 +16,7 @@ from __future__ import annotations
 from backend.agents.base_agent import autogen_available, make_model_client
 from backend.config import settings
 from backend.memory import MemoryManager
-from backend.models import CharacterCard, DialogueTurn, LoreEntry
+from backend.models import CharacterCard, LoreEntry
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
@@ -251,10 +251,15 @@ class CharacterAgent:
         return f"{base}_{self.character_id[:8].replace('-', '')}"
 
     # ---- 状态更新 ----
-    async def update_state_after_scene(self, scene_log: list[DialogueTurn]) -> None:
-        """场景结束后固化记忆。
+    async def consolidate_memory(self) -> None:
+        """把短期缓冲固化进长期记忆。
 
         逐轮写入已在 SceneEngine.run() 循环里对全部参演角色实时完成（工单15），
         这里只做批量固化，不再重复 add_experience，避免同一句台词入库两次。
+
+        调用方只有 `SceneEngine._consolidate_all`（工单26）：固化时机由引擎掌握，
+        因为只有它能把"写入长期记忆"与"推进 Scene.turns_consolidated 水位线"
+        放进同一次落盘。原名 update_state_after_scene 已不再准确——固化现在也发生在
+        场景中途，不只是结束时。
         """
         await self.memory.consolidate(force=True)

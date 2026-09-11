@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections import deque
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from backend.agents.character_agent import CharacterAgent
+from backend.config import settings
 from backend.exceptions import LLMError
 from backend.memory import MemoryManager
 from backend.models import (
@@ -291,9 +293,162 @@ async def test_scene_run_after_snapshot_has_empty_short_term_buffer():
 
 
 # ---------------------------------------------------------------------------
-# 工单11：selector 独立评分选人
+# 工单26：场景内周期固化与水位线
 # ---------------------------------------------------------------------------
 
+
+@pytest.mark.asyncio
+async def test_periodic_consolidation_advances_watermark(monkeypatch):
+    """场景内每满一个固化周期就必须固化并推进水位线，且在同一次落盘内写库。
+
+    旧实现由 MemoryManager.add_experience 在缓冲写满时自行 consolidate，
+    水位线毫不知情：跑满一个缓冲后崩溃，续跑会把已入库的轮次二次写入长期记忆。
+    """
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 2)
+    agent = _make_agent("c1", "甲")
+    scene = Scene(
+        scene_id="s-periodic",
+        project_id="proj-se",
+        branch_id="b-periodic",
+        snapshot_id_before="snap-before-periodic",  # 已有前置快照，只打后置这一份
+    )
+    config = SceneConfig(name="长场", participating_characters=["c1"], max_turns=5)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+
+    persisted: list[tuple[int, int]] = []
+
+    async def _persist() -> None:
+        persisted.append((len(scene.dialogue_log), scene.turns_consolidated))
+
+    # 每轮内容必须不同：连续 4 轮重复会命中 check_termination 的"对话停滞"提前收场
+    replies = [f"第{i}句话。" for i in range(5)]
+    with patch.object(CharacterAgent, "respond", new=AsyncMock(side_effect=replies)):
+        await engine.run(on_persist=_persist)
+
+    # 2、4 轮时各固化一次，收尾再固化一次
+    assert len(persisted) >= 3
+    # 每次落盘时水位线都等于当时已产生的轮次——不允许"写了长期记忆但水位线落后"
+    for turns_done, watermark in persisted:
+        assert watermark == turns_done
+    assert scene.turns_consolidated == 5
+
+
+@pytest.mark.asyncio
+async def test_periodic_consolidation_persists_before_on_turn(monkeypatch):
+    """红线 R1：水位线落盘必须早于 on_turn（后者会推 SSE，落盘先于推送，工单23）。"""
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 2)
+    agent = _make_agent("c1", "甲")
+    scene = Scene(
+        scene_id="s-order26",
+        project_id="proj-se",
+        branch_id="b-order26",
+        snapshot_id_before="snap-before-order26",
+    )
+    config = SceneConfig(name="顺序", participating_characters=["c1"], max_turns=2)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+
+    seen: list[str] = []
+
+    async def _persist() -> None:
+        seen.append("persist")
+
+    async def _on_turn(_turn) -> None:
+        seen.append("turn")
+
+    with patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="一句话。")):
+        await engine.run(on_turn=_on_turn, on_persist=_persist)
+
+    # 第 2 轮触发周期固化：该轮的 persist 必须排在同轮的 turn 之前
+    assert seen[:3] == ["turn", "persist", "turn"]
+
+
+@pytest.mark.asyncio
+async def test_resume_replays_in_chunks_without_buffer_overflow(monkeypatch, caplog):
+    """崩溃重放也要走周期固化。
+
+    短期缓冲是定长 deque：一次补回远超容量的轮次会静默淘汰最早的内容，
+    而那些内容还没进过长期记忆。旧实现靠 add_experience 的自动固化兜住，
+    工单26 把触发权移走后，重放循环必须自己接上。
+    """
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 3)
+    agent = _make_agent("c1", "甲")
+    agent.memory.short_term.capacity = 4
+    agent.memory.short_term._buffer = deque(maxlen=4)
+    agent.memory.short_term._meta = deque(maxlen=4)
+
+    crashed = [
+        DialogueTurn(
+            scene_id="s-chunk",
+            turn_number=i + 1,
+            character_id="c1",
+            character_name="甲",
+            dialogue=f"崩溃前第{i + 1}句",
+        )
+        for i in range(9)
+    ]
+    scene = Scene(
+        scene_id="s-chunk",
+        project_id="proj-se",
+        branch_id="b-chunk",
+        status="paused",
+        snapshot_id_before="snap-before-chunk",
+        dialogue_log=crashed,
+        turns_completed=9,
+        turns_consolidated=0,  # 崩溃时一轮都没固化
+    )
+    config = SceneConfig(name="重放", participating_characters=["c1"], max_turns=9)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+    engine.inject_history(crashed)
+
+    written: list[str] = []
+
+    async def _capture(text, _meta=None):
+        written.append(text)
+
+    with (
+        caplog.at_level("WARNING"),
+        patch.object(agent.memory.long_term, "add", new=_capture),
+    ):
+        await engine.run()
+
+    # 9 轮全部进了长期记忆，没有任何一轮在 deque 里被静默淘汰
+    assert len(written) == 9
+    for i in range(9):
+        assert any(f"崩溃前第{i + 1}句" in t for t in written)
+    assert scene.turns_consolidated == 9
+    assert not [r for r in caplog.records if "短期缓冲已达容量" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_zero_period_falls_back_to_end_of_scene_only(monkeypatch):
+    """周期配成 0 表示关闭场景内固化，收尾那次仍必须发生。"""
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 0)
+    agent = _make_agent("c1", "甲")
+    scene = Scene(
+        scene_id="s-zero",
+        project_id="proj-se",
+        branch_id="b-zero",
+        snapshot_id_before="snap-before-zero",
+    )
+    config = SceneConfig(name="关闭周期", participating_characters=["c1"], max_turns=3)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+
+    persists = 0
+
+    async def _persist() -> None:
+        nonlocal persists
+        persists += 1
+
+    with patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="一句话。")):
+        await engine.run(on_persist=_persist)
+
+    assert persists == 1
+    assert scene.turns_consolidated == 3
+
+
+# ---------------------------------------------------------------------------
+# 工单11：selector 独立评分选人
+# ---------------------------------------------------------------------------
 
 def _selector(*agents: CharacterAgent) -> ScoringSpeakerSelector:
     return ScoringSpeakerSelector(list(agents))
