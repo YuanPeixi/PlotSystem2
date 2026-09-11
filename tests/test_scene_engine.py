@@ -327,9 +327,14 @@ async def test_periodic_consolidation_advances_watermark(monkeypatch):
 
     # 2、4 轮时各固化一次，收尾再固化一次
     assert len(persisted) >= 3
-    # 每次落盘时水位线都等于当时已产生的轮次——不允许"写了长期记忆但水位线落后"
+    # 水位线**绝不能超前**于已产生的轮次——那等于宣称没写过的内容已入库。
+    # 反向的落后是允许且有意的：固化前会先单独落一次日志（日志已到 N、水位线仍是
+    # 旧值），崩溃续跑时重放该轮由内容寻址的幂等兜底收敛（工单26 复盘·断言1）。
     for turns_done, watermark in persisted:
-        assert watermark == turns_done
+        assert watermark <= turns_done
+    # 每个固化周期结束时，必须存在一次"水位线追平轮次"的落盘
+    for expected in (2, 4):
+        assert (expected, expected) in persisted, persisted
     assert scene.turns_consolidated == 5
 
 
@@ -358,8 +363,11 @@ async def test_periodic_consolidation_persists_before_on_turn(monkeypatch):
     with patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="一句话。")):
         await engine.run(on_turn=_on_turn, on_persist=_persist)
 
-    # 第 2 轮触发周期固化：该轮的 persist 必须排在同轮的 turn 之前
-    assert seen[:3] == ["turn", "persist", "turn"]
+    # 第 2 轮触发周期固化，该轮里有两次 persist（工单26 复盘·断言1）：
+    # 先单独落对话日志，再固化+推水位线；两次都必须排在同轮的 turn 之前。
+    assert seen[:4] == ["turn", "persist", "persist", "turn"], seen
+    # 无论多少次 persist，最后一轮之后都不得再有 turn 插进固化与落盘之间
+    assert seen.index("turn", 1) > 2
 
 
 @pytest.mark.asyncio
@@ -444,6 +452,216 @@ async def test_zero_period_falls_back_to_end_of_scene_only(monkeypatch):
 
     assert persists == 1
     assert scene.turns_consolidated == 3
+
+
+def _shrink_buffer(agent: CharacterAgent, capacity: int) -> None:
+    """把短期缓冲容量改小，用于在少量轮次内复现溢出场景。"""
+    agent.memory.short_term.capacity = capacity
+    agent.memory.short_term._buffer = deque(maxlen=capacity)
+    agent.memory.short_term._meta = deque(maxlen=capacity)
+
+
+# ---------------------------------------------------------------------------
+# 工单26 复盘：PR review 查出的三个洞
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_consolidates_under_buffer_pressure_even_if_period_not_due(monkeypatch):
+    """缓冲逼近容量时必须强制固化，哪怕固化周期还没到点。
+
+    只看周期不看容量时：周期(20) > 容量(3) 的配置下跑 8 轮，前 5 轮会在到达
+    consolidate() 之前就被定长 deque 静默淘汰，而收尾固化照样把水位线推到 8 ——
+    宣称"8 轮都已入库"，实际只进了 3 条，且无痕（不像重复写入还能被
+    check_memory_dupes 查出来）。这比工单26 原本要修的重复写入更糟。
+    """
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 20)
+    agent = _make_agent("c1", "甲")
+    _shrink_buffer(agent, 4)
+
+    scene = Scene(
+        scene_id="s-pressure",
+        project_id="proj-se",
+        branch_id="b-pressure",
+        snapshot_id_before="snap-before-pressure",
+    )
+    config = SceneConfig(name="超长场", participating_characters=["c1"], max_turns=8)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+
+    written: list[str] = []
+
+    async def _capture(text, _meta=None):
+        written.append(text)
+
+    replies = [f"第{i}句话。" for i in range(8)]
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(side_effect=replies)),
+        patch.object(agent.memory.long_term, "add", new=_capture),
+    ):
+        await engine.run()
+
+    # 8 轮一条不少地进了长期记忆，水位线才配说"已入库 8 轮"
+    assert len(written) == 8, f"漏写了 {8 - len(written)} 条：{written}"
+    for i in range(8):
+        assert any(f"第{i}句话。" in t for t in written)
+    assert scene.turns_consolidated == 8
+
+
+@pytest.mark.asyncio
+async def test_zero_period_still_guards_buffer_capacity(monkeypatch):
+    """周期=0（关闭场景内固化）时跨度是整场 max_turns，同样不能溢出缓冲。"""
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 0)
+    agent = _make_agent("c1", "甲")
+    _shrink_buffer(agent, 4)
+
+    scene = Scene(
+        scene_id="s-zero-guard",
+        project_id="proj-se",
+        branch_id="b-zero-guard",
+        snapshot_id_before="snap-before-zero-guard",
+    )
+    config = SceneConfig(name="关周期长场", participating_characters=["c1"], max_turns=8)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+
+    written: list[str] = []
+
+    async def _capture(text, _meta=None):
+        written.append(text)
+
+    replies = [f"第{i}句话。" for i in range(8)]
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(side_effect=replies)),
+        patch.object(agent.memory.long_term, "add", new=_capture),
+    ):
+        await engine.run()
+
+    assert len(written) == 8
+    assert scene.turns_consolidated == 8
+
+
+@pytest.mark.asyncio
+async def test_resume_rebuilds_episodic_below_watermark(monkeypatch):
+    """续跑必须补回水位线**之前**那段的事件摘要，但不得重写它们的正文。
+
+    事件摘要是纯内存的独立一层：不随长期记忆持久化，也不受 turns_consolidated
+    保护。按水位线切重放会让 [0, watermark) 的重要事件在续跑后彻底消失。
+    这个洞在工单26 之前就存在，只是那时水位线中途不推进、崩溃时通常为 0，
+    重放恰好覆盖全部而掩盖了它。
+    """
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 2)
+    agent = _make_agent("c1", "甲")
+
+    # "发誓"是 episodic 的重要关键词，4 轮全部命中
+    crashed = [
+        DialogueTurn(
+            scene_id="s-epi",
+            turn_number=i + 1,
+            character_id="c1",
+            character_name="甲",
+            dialogue=f"我发誓第{i}件事。",
+        )
+        for i in range(4)
+    ]
+    scene = Scene(
+        scene_id="s-epi",
+        project_id="proj-se",
+        branch_id="b-epi",
+        status="paused",
+        snapshot_id_before="snap-before-epi",
+        dialogue_log=crashed,
+        turns_completed=4,
+        turns_consolidated=2,  # 前 2 轮已固化，崩在第 3、4 轮
+    )
+    config = SceneConfig(name="续跑摘要", participating_characters=["c1"], max_turns=4)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+    engine.inject_history(crashed)
+
+    written: list[str] = []
+
+    async def _capture(text, _meta=None):
+        written.append(text)
+
+    with patch.object(agent.memory.long_term, "add", new=_capture):
+        await engine.run()
+
+    # 4 轮的重要事件一条不少
+    summary = agent.memory.episodic.dump()
+    for i in range(4):
+        assert f"我发誓第{i}件事。" in summary, f"第{i}轮的事件摘要丢了：{summary}"
+
+    # 但水位线之前的两轮**不得**重新写进长期记忆——它们已经在库里了
+    for i in range(2):
+        assert not any(f"我发誓第{i}件事。" in t for t in written), (
+            f"第{i}轮被二次写入长期记忆：{written}"
+        )
+    # 水位线之后的两轮必须补写
+    for i in (2, 3):
+        assert any(f"我发誓第{i}件事。" in t for t in written)
+
+
+@pytest.mark.asyncio
+async def test_dialogue_log_persisted_before_consolidation(monkeypatch):
+    """固化前先落一次对话日志，把跨库不一致导向"已有幂等兜底"的那一侧。
+
+    Chroma 与 SQLite 没有跨库事务，写完长期记忆到水位线落盘之间必然有窗口。
+    不先落日志的话，窗口内崩溃会留下"角色记得一句日志里还没有的台词"；
+    先落日志则变成"日志有、水位线旧"，续跑重放该轮时撞上内容寻址的幂等兜底
+    （long_term.memory_id）收敛成一条。后者有兜底，前者没有。
+    """
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 3)
+    agent = _make_agent("c1", "甲")
+    scene = Scene(
+        scene_id="s-window",
+        project_id="proj-se",
+        branch_id="b-window",
+        snapshot_id_before="snap-before-window",
+    )
+    config = SceneConfig(name="窗口", participating_characters=["c1"], max_turns=3)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+
+    # 记录每次 on_persist 时"库里"会有几轮日志、水位线是多少
+    persisted: list[tuple[int, int]] = []
+    consolidated_at: list[int] = []
+
+    async def _persist() -> None:
+        persisted.append((len(scene.dialogue_log), scene.turns_consolidated))
+
+    async def _capture(text, _meta=None):
+        consolidated_at.append(len(scene.dialogue_log))
+
+    replies = [f"第{i}句话。" for i in range(3)]
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(side_effect=replies)),
+        patch.object(agent.memory.long_term, "add", new=_capture),
+    ):
+        await engine.run(on_persist=_persist)
+
+    # 第 3 轮触发周期固化：固化前有一次"日志已到 3、水位线仍是 0"的落盘
+    assert (3, 0) in persisted, persisted
+    # 长期记忆写入时，日志里已经有这一轮了——不存在"记得日志里没有的台词"
+    assert consolidated_at and all(n >= 3 for n in consolidated_at)
+    # 落盘顺序：日志先行，水位线随后
+    log_first = persisted.index((3, 0))
+    assert any(wm == 3 for _, wm in persisted[log_first:])
+
+
+def test_consolidate_period_must_leave_buffer_headroom():
+    """固化周期与缓冲容量的耦合必须是机制，不能只是一句注释。
+
+    原实现把"应显著小于 SHORT_TERM_BUFFER_SIZE"写在 config.py 的注释里，
+    但没有任何代码强制它 —— 配成等于容量就静默丢记忆。这类约束应当启动即失败
+    （与 DEFAULT_SPEAKER_MODE 同理），而不是靠运行时 warning。
+    """
+    from backend.config import Settings
+
+    with pytest.raises(ValueError, match="MEMORY_CONSOLIDATE_EVERY_TURNS"):
+        Settings(SHORT_TERM_BUFFER_SIZE=40, MEMORY_CONSOLIDATE_EVERY_TURNS=40)
+    with pytest.raises(ValueError, match="MEMORY_CONSOLIDATE_EVERY_TURNS"):
+        Settings(SHORT_TERM_BUFFER_SIZE=40, MEMORY_CONSOLIDATE_EVERY_TURNS=60)
+    # 默认配置必须合法，否则所有人启动即失败
+    assert Settings().MEMORY_CONSOLIDATE_EVERY_TURNS > 0
+    # 0 是合法的（关闭周期固化），由引擎的缓冲压力兜底
+    assert Settings(MEMORY_CONSOLIDATE_EVERY_TURNS=0).MEMORY_CONSOLIDATE_EVERY_TURNS == 0
 
 
 # ---------------------------------------------------------------------------
