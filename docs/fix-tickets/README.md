@@ -14,7 +14,7 @@
 `✅ PR #N（合入 main：起始hash到结束hash）`。完整口径与 hash 填写规则见
 [CONVENTIONS.md](./CONVENTIONS.md)。**索引标注可能滞后于实际合并状态，以 git 为准。**
 
-**当前推进中**：工单 26（记忆写入点与固化水位线统一）已在分支 `fix/memory-write-watermark` 完成，等待 PR。
+**当前推进中**：工单 26（记忆写入点与固化水位线统一）已提 PR #19，审核中。
 
 ---
 
@@ -67,7 +67,7 @@
 | 编号 | 标题 | 优先级 | 依赖 | 状态 | 备注 |
 |---|---|---|---|---|---|
 | 18 | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 | 待建单 | [说明](./NOTES.md#t18) |
-| [26](./26-memory-write-watermark.md) | 记忆写入点与固化水位线统一 | P2 | 无 | **⏳ 等待 PR（fix/memory-write-watermark）** | [说明](./NOTES.md#t26) |
+| [26](./26-memory-write-watermark.md) | 记忆写入点与固化水位线统一 | P2 | 无 | **🔍 审核中（PR #19）** | [说明](./NOTES.md#t26) |
 | [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 可选 | 待处理 | — |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 | 待处理 | [前置说明](./NOTES.md#t09) |
 
