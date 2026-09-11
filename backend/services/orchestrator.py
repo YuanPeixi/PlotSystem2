@@ -812,11 +812,13 @@ async def apply_decision(
             extra = decision.extra_turns or 6
             scene.max_turns = scene.turns_completed + extra
             scene.status = SceneStatus.PENDING.value
-            # 作废上一轮的冻结副本，让 run_scene 按当前谱系重新冻结。
-            # 冻结的语义是"这一轮开演前已知的前情"，续跑是新一轮：期间祖先若被
-            # 重新评估（例如另一条路径上的 continue 把推进度从 0.2 提到 0.5），
-            # 沿用旧副本会让导演一直按过时基线钳制进度。
-            scene.inherited_story_history = None
+            # 刻意**不动** inherited_story_history：它是分叉那一刻的既成事实，
+            # 续跑只增加本场对白，不该改写继承来的过去。置 None 会把一条有权威
+            # 边界的分支降格成"旧数据"，重新去读当前的 restore_snapshot_id ——
+            # 来源快照已删就归零，来源后补了评估就越过边界读进来，正是冻结机制
+            # 要堵的两个洞。本场自己的评估无需清副本即可刷新：副本 include_current
+            # =False 本就不含本场，回溯时从 evaluations 表现读，而 save_evaluation
+            # 是 INSERT OR REPLACE，续跑后拿到的自然是新值。
             await repository.save_scene(scene)
             # 异步触发，调用方通过事件总线追踪进度
             import asyncio

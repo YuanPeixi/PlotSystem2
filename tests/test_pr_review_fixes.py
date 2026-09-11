@@ -354,13 +354,18 @@ async def test_story_records_reuses_passed_snapshot_manager(monkeypatch, request
 
 
 # ---------------------------------------------------------------------------
-# #3 continue 续跑重新冻结
+# #3 continue 续跑不得改写继承的过去
+#
+# 曾经把 inherited_story_history 置 None 让 run_scene "重新冻结"，方向是错的：
+# 副本是分叉那一刻的既成事实，None 是"旧数据请回溯推断"的哨兵而非"请重算"的
+# 指令。置 None 会把有权威边界的分支降格成旧数据，重新去读当前的
+# restore_snapshot_id —— 下面两场景就是由此打开的两个洞。
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def continued(monkeypatch, request):
-    """跑完一场并留在 completed，可对其提交 continue。"""
+async def forked(monkeypatch, request):
+    """跑完来源场景并从其后置快照分叉出一条 IF 线，IF 首场也已跑完。"""
     pid = request.node.name
     await repository.save_project(Project(project_id=pid, name=pid, narrative_goal=GOAL))
     await repository.save_character(CharacterCard(project_id=pid, character_id="c", name="甲"))
@@ -373,68 +378,81 @@ async def continued(monkeypatch, request):
         # 必须回填 scene_id：save_evaluation 以它为键，留空会让所有场景
         # 共用一条空 id 的评估，历史里什么也读不到。
         return SceneEvaluation(
-            scene_id=scene.scene_id, story_progress=0.4, goal_revision=goal_revision(GOAL)
+            scene_id=scene.scene_id,
+            story_progress=0.4,
+            synopsis=f"梗概-{scene.name}",
+            goal_revision=goal_revision(GOAL),
         )
 
     monkeypatch.setattr(DirectorAgent, "evaluate_scene", evaluate)
-    parent = Scene(
+    src = Scene(
         project_id=pid, branch_id="main", name="P", participating_characters=["c"], max_turns=1
     )
-    await repository.save_scene(parent)
-    await orchestrator.run_scene(parent.scene_id)
-    child = Scene(
-        project_id=pid,
-        branch_id="main",
-        parent_scene_id=parent.scene_id,
-        name="C",
-        participating_characters=["c"],
-        max_turns=1,
-    )
-    await repository.save_scene(child)
-    await orchestrator.run_scene(child.scene_id)
-    return pid, parent, await repository.get_scene(child.scene_id)
+    await repository.save_scene(src)
+    await orchestrator.run_scene(src.scene_id)
+    return pid, await repository.get_scene(src.scene_id)
 
 
-async def test_continue_clears_frozen_history_for_refreeze(continued, monkeypatch):
-    """续跑是新一轮：期间祖先若被重新评估，不能继续按旧基线钳制。"""
-    pid, parent, child = continued
-    assert child.inherited_story_history is not None
-
+async def _continue_and_read(scene: Scene, monkeypatch) -> list[str]:
     _suppress_rerun(monkeypatch)
     await orchestrator.apply_decision(
-        child.scene_id, DirectorDecision(decision_type="continue", extra_turns=2)
+        scene.scene_id, DirectorDecision(decision_type="continue", extra_turns=2)
     )
-
-    reloaded = await repository.get_scene(child.scene_id)
-    assert reloaded.status == "pending"
-    # 作废后由 run_scene 按当时的谱系重新冻结
-    assert reloaded.inherited_story_history is None
+    reloaded = await repository.get_scene(scene.scene_id)
+    records = await orchestrator._story_records(reloaded, include_current=False)
+    return [r["name"] for r in records]
 
 
-async def test_refrozen_history_picks_up_new_ancestor_evaluation(continued, monkeypatch):
-    """父场景在续跑前被重新评估，续跑后的冻结副本应反映新值。"""
-    pid, parent, child = continued
-    before = [
-        r["evaluation"]["story_progress"]
-        for r in child.inherited_story_history
-        if r["scene_id"] == parent.scene_id
-    ]
-    assert before == [0.4]
+async def test_continue_keeps_frozen_history_after_source_snapshot_deleted(forked, monkeypatch):
+    """来源快照被删不影响已冻结的分支：历史是既成事实，不随来源消失而归零。"""
+    pid, src = forked
+    sm = SnapshotManager(pid)
+    _, if0 = await orchestrator.fork_from_snapshot(pid, src.snapshot_id_after, "IF")
+    await orchestrator.run_scene(if0.scene_id)
+    if0 = await repository.get_scene(if0.scene_id)
+    assert [r["name"] for r in if0.inherited_story_history] == ["P"]
 
+    await sm.delete_snapshot(src.snapshot_id_after)
+    assert await _continue_and_read(if0, monkeypatch) == ["P"]
+
+
+async def test_continue_does_not_absorb_post_fork_ancestor_evaluation(forked, monkeypatch):
+    """分叉后来源才补写的评估不得越过边界渗入 IF 线。"""
+    pid, src = forked
+    sm = SnapshotManager(pid)
+    # 分叉发生在来源评估补写进快照之前
+    await sm.record_story_history(src.snapshot_id_after, [])
+    _, if0 = await orchestrator.fork_from_snapshot(pid, src.snapshot_id_after, "IF")
+    await orchestrator.run_scene(if0.scene_id)
+    if0 = await repository.get_scene(if0.scene_id)
+    assert if0.inherited_story_history == []
+
+    await sm.record_story_history(
+        src.snapshot_id_after,
+        [{"scene_id": src.scene_id, "name": "P", "evaluation": {"story_progress": 0.9}}],
+    )
+    assert await _continue_and_read(if0, monkeypatch) == []
+
+
+async def test_continue_refreshes_own_evaluation_without_clearing_copy(forked, monkeypatch):
+    """本场重新评估后取到的是新值——无需作废副本，副本本就不含本场。"""
+    pid, src = forked
+    assert src.inherited_story_history == []
+    before = await orchestrator._story_records(src)
+    assert [r["evaluation"]["story_progress"] for r in before] == [0.4]
+
+    # 续跑后的重新评估走 INSERT OR REPLACE，回溯时现读即为新值
     await repository.save_evaluation(
         SceneEvaluation(
-            scene_id=parent.scene_id, story_progress=0.75, goal_revision=goal_revision(GOAL)
+            scene_id=src.scene_id, story_progress=0.8, goal_revision=goal_revision(GOAL)
         )
     )
     _suppress_rerun(monkeypatch)
     await orchestrator.apply_decision(
-        child.scene_id, DirectorDecision(decision_type="continue", extra_turns=2)
+        src.scene_id, DirectorDecision(decision_type="continue", extra_turns=2)
     )
-    reloaded = await repository.get_scene(child.scene_id)
-    records = await orchestrator._story_records(reloaded, include_current=False)
-    after = [
-        r["evaluation"]["story_progress"]
-        for r in records
-        if r["scene_id"] == parent.scene_id
-    ]
-    assert after == [0.75]
+    reloaded = await repository.get_scene(src.scene_id)
+    assert reloaded.status == "pending"
+    assert reloaded.inherited_story_history == []  # 副本原样保留
+    after = await orchestrator._story_records(reloaded)
+    assert [r["evaluation"]["story_progress"] for r in after] == [0.8]
