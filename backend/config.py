@@ -104,7 +104,9 @@ class Settings(BaseSettings):
     MEMORY_TOP_K: int = 5
     # 场景内周期固化的轮次间隔（工单26）。触发权在 SceneEngine 而非缓冲容量：
     # 缓冲只负责"最近上下文"，固化周期决定水位线推进粒度，两者是两件事。
-    # 应显著小于 SHORT_TERM_BUFFER_SIZE，给 prime() 回填进来的历史留出余量。
+    # 但两者之间有一条硬约束：固化跨度一旦超过缓冲容量，超出部分会被定长 deque
+    # 静默淘汰，而水位线照推 —— 等于宣称已入库、实际永久丢失。见下方校验器。
+    # =0 表示只在场景结束时固化，此时跨度是整场 max_turns，同样受这条约束。
     MEMORY_CONSOLIDATE_EVERY_TURNS: int = 20
 
     # --- 角色对话上下文窗口（工单14）---
@@ -150,6 +152,32 @@ class Settings(BaseSettings):
         if v not in allowed:
             raise ValueError(
                 f"DIRECTOR_TRANSCRIPT_STRATEGY 必须是 {allowed} 之一，收到 {v!r}"
+            )
+        return v
+
+    @field_validator("MEMORY_CONSOLIDATE_EVERY_TURNS")
+    @classmethod
+    def _validate_consolidate_period(cls, v: int, info) -> int:
+        """固化周期不得达到短期缓冲容量，否则会静默丢记忆（工单26 复盘）。
+
+        长期记忆的唯一入口是 short_term 缓冲，而它是 `deque(maxlen=capacity)`：
+        一次固化跨度超过容量时，超出的部分在到达 consolidate() 之前就被挤出队列，
+        之后 `_consolidate_all` 照样把水位线推到当前轮次 —— 宣称"这些都已入库"，
+        实际永久丢失，且无痕（不像重复写入还能被 check_memory_dupes 查出来）。
+
+        这里只挡住"配置本身必然溢出"这一类。跨度不只由本配置决定（prime() 会从
+        快照回填历史缓冲，场景开跑时缓冲就非空；周期 =0 时跨度是整场 max_turns），
+        剩余情况由 `SceneEngine._buffer_under_pressure` 在运行时兜底。
+        建议留一倍余量，即周期 <= 容量的一半。
+        """
+        capacity = (info.data or {}).get("SHORT_TERM_BUFFER_SIZE")
+        # 字段声明顺序保证 capacity 先于本字段校验；真取不到就跳过，
+        # 交给 SceneEngine 的运行时钳制兜底，不因校验器自身的假设失败而拦停启动。
+        if capacity and v >= capacity:
+            raise ValueError(
+                f"MEMORY_CONSOLIDATE_EVERY_TURNS({v}) 必须小于 "
+                f"SHORT_TERM_BUFFER_SIZE({capacity})，否则超出缓冲容量的轮次会在"
+                f"固化前被静默丢弃；建议不超过 {capacity // 2}"
             )
         return v
 

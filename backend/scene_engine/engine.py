@@ -119,12 +119,14 @@ class SceneEngine:
         # 发生，它们还没进过任何一层记忆。不补回去就是"对话还在，但角色忘了"。
         # 重放同样要走周期固化：短期缓冲是定长 deque，一次补回上百轮会静默淘汰
         # 最早的内容（旧实现由 add_experience 的自动固化兜住，工单26 已移走）。
-        replayed = self.scene.turns_consolidated
-        for past in turns[self.scene.turns_consolidated :]:
-            await self._remember(past)
-            replayed += 1
-            if self._should_consolidate(replayed):
-                await self._consolidate_all(replayed, on_persist)
+        #
+        # 两个起点不能合并（工单26 复盘）：
+        # - 长期记忆从 turns_consolidated 起补，早于水位线的已经入库，重放会重复；
+        # - 事件摘要（episodic）是**独立的内存层**，快照之外无处续命，水位线跟它
+        #   毫无关系。按水位线切会让 [0, turns_consolidated) 这段的重要事件在
+        #   续跑后彻底消失。这个洞在工单26 之前就有，只是那时水位线中途不推进、
+        #   崩溃时通常为 0，重放恰好覆盖全部而掩盖了它。
+        await self._replay_unconsolidated(turns, on_persist)
 
         terminated_reason = ""
         while True:
@@ -152,6 +154,17 @@ class SceneEngine:
             # 周期固化必须早于 on_turn：后者会推 SSE，而落盘必须先于推送（工单23），
             # 所以走不推事件的 on_persist（工单26 红线 R1）。
             if self._should_consolidate(len(turns)):
+                # 固化前先把对话日志单独落一次盘（工单26 复盘）。Chroma 与 SQLite
+                # 是两个库、没有跨库事务，写完长期记忆到水位线落盘之间必然存在
+                # 一个窗口；能选的只是**往哪边失衡**：
+                # - 不落这一次：窗口内崩溃 → 角色记得一句日志里还没有的台词；
+                # - 先落日志：窗口内崩溃 → 日志有、水位线旧 → 续跑重放该轮 →
+                #   撞上内容寻址的幂等兜底（long_term.memory_id），收敛成一条。
+                # 后者把一个没有兜底的失败模式换成了一个已有兜底的，故取后者。
+                # 不能改成"固化挪到 on_turn 之后"：那会让 SSE 推送插进固化与落盘
+                # 之间，破坏 R1。
+                if on_persist:
+                    await on_persist()
                 await self._consolidate_all(len(turns), on_persist)
 
             if on_turn:
@@ -197,8 +210,29 @@ class SceneEngine:
         )
 
     # ---- 记忆固化 ----
+    # 缓冲占用率超过此值就强制固化，不等固化周期到点。定长 deque 写满后会静默
+    # 淘汰最早的条目，而那些内容还没进过长期记忆 —— 配置校验挡不住全部情况
+    # （周期=0 时跨度是整场 max_turns；prime() 回填会让场景开跑时缓冲就非空），
+    # 所以运行时必须再兜一道。0.75 留出一个周期左右的余量。
+    _BUFFER_PRESSURE_LIMIT = 0.75
+
+    def _buffer_under_pressure(self) -> bool:
+        """是否有角色的短期缓冲逼近容量上限，再不固化就要丢内容了。"""
+        return any(
+            agent.memory.short_term.pressure() >= self._BUFFER_PRESSURE_LIMIT
+            for agent in self.agents
+        )
+
     def _should_consolidate(self, turns_done: int) -> bool:
-        """距上次固化是否已满一个周期。周期 <=0 视为只在场景结束时固化。"""
+        """是否该固化了。两个独立闸门，任一满足即触发。
+
+        1. 距上次固化已满一个周期（正常节奏）；
+        2. 有角色的缓冲逼近容量（兜底）—— 周期 <=0 或周期配得过大时，
+           只看第 1 条会让超出容量的轮次在固化前就被 deque 淘汰，
+           而水位线照推，等于宣称已入库、实际永久丢失（工单26 复盘）。
+        """
+        if self._buffer_under_pressure():
+            return True
         every = settings.MEMORY_CONSOLIDATE_EVERY_TURNS
         if every <= 0:
             return False
@@ -217,6 +251,34 @@ class SceneEngine:
             await on_persist()
 
     # ---- 记忆写入 ----
+    async def _replay_unconsolidated(
+        self, turns: list[DialogueTurn], on_persist: PersistCallback
+    ) -> None:
+        """续跑时把已落盘但未进记忆的轮次补回去，两层各按自己的起点。"""
+        watermark = self.scene.turns_consolidated
+        # 水位线之前的轮次：长期记忆里已经有了，只补事件摘要。
+        for past in turns[:watermark]:
+            self._replay_episodic(past)
+        # 水位线之后的轮次：三层都没有，走完整写入 + 周期固化。
+        replayed = watermark
+        for past in turns[watermark:]:
+            await self._remember(past)
+            replayed += 1
+            if self._should_consolidate(replayed):
+                await self._consolidate_all(replayed, on_persist)
+
+    def _replay_episodic(self, turn: DialogueTurn) -> None:
+        """只重建事件摘要，不碰短期缓冲。
+
+        这批轮次的正文已在长期记忆里，再写一遍缓冲就会被下一次固化二次写入
+        （工单26 主线要修的正是这个）。但 episodic 是纯内存的独立一层，
+        不补就永久缺失这一段的重要事件。
+        """
+        for participant in self.agents:
+            participant.memory.replay_episodic(
+                turn, from_self=(participant.character_id == turn.character_id)
+            )
+
     async def _remember(self, turn: DialogueTurn) -> None:
         """在场即记忆（工单15）：本场全部参演角色都感知这一轮，不只是发言者。
 

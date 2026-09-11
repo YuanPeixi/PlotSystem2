@@ -71,6 +71,18 @@ class MemoryManager:
             speaker=turn.character_name,
         )
 
+    def replay_episodic(self, turn: DialogueTurn, *, from_self: bool = True) -> None:
+        """只把一轮补进事件摘要，不写短期缓冲（工单26 复盘）。
+
+        用于崩溃续跑时重放**水位线之前**的轮次：它们的正文已经在长期记忆里，
+        再进一次缓冲就会被下一次固化二次写入；但事件摘要是纯内存的独立一层，
+        既不随长期记忆持久化、也不受水位线保护，不补就永久缺这一段。
+
+        与 add_experience 共用 episodic.record，因此重要性判定与内心独白的
+        剥离规则完全一致（契约1）。
+        """
+        self.episodic.record(turn, include_inner_thought=from_self)
+
     async def retrieve(self, query: str, top_k: int | None = None) -> list[MemoryChunk]:
         """从长期记忆检索相关片段。"""
         await self.connect()

@@ -47,6 +47,18 @@ class ShortTermMemory:
     def is_full(self) -> bool:
         return len(self._buffer) >= self.capacity
 
+    def pressure(self) -> float:
+        """缓冲占用率（0.0~1.0+）。供 SceneEngine 判断是否必须提前固化。
+
+        长期记忆的唯一入口是本缓冲，而它是定长 deque：写满后继续 append 会静默
+        淘汰最早的条目，那些内容还没进过长期记忆就永久消失了（工单26 复盘）。
+        因此"还能装多少"必须是可查询的，不能只靠配置期的静态假设 —— `prime()`
+        回填、多角色写入倍率都会让实际占用偏离固化周期的预期。
+        """
+        if self.capacity <= 0:
+            return 1.0
+        return len(self._buffer) / self.capacity
+
     def clear(self) -> None:
         self._buffer.clear()
         self._meta.clear()
