@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import shutil
 from pathlib import Path
 
 from backend.config import settings
 from backend.memory.embeddings import RemoteEmbeddingFunction
-from backend.models import MemoryChunk, new_id
+from backend.models import MemoryChunk
 from backend.utils.branch_memory import is_fork_initialized
 from backend.utils.logger import get_logger
 
@@ -104,6 +105,20 @@ def copy_collection(src_col, dst_col, batch_size: int) -> int:
     return total
 
 
+def memory_id(text: str) -> str:
+    """长期记忆条目的内容寻址 ID（工单26）。
+
+    集合名已经含 character_id + branch_id，所以同一集合内只需按正文寻址：
+    同一段文本重复写入落在同一个 ID 上，检索结果自然只有一条。这是与
+    `Scene.turns_consolidated` 水位线无关的兜底 —— 未来每新增一个写入点
+    （世界变量回写、裁决落档、动态图谱写回）都靠"记得维护水位线"是维持不住的。
+
+    已接受的副作用：同一角色在不同场次说出**完全相同**的一句话会被合并成一条
+    （方向与工单15 的同句去重一致）。
+    """
+    return "mem_" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class LongTermMemory:
     """单个角色的长期记忆库。"""
 
@@ -117,8 +132,9 @@ class LongTermMemory:
         self.collection_name = collection_name_for(character_id, branch_id)
         self._client = None
         self._collection = None
-        # 降级时的内存存储
+        # 降级时的内存存储（与 Chroma 路径同语义：按 memory_id 去重，契约6）
         self._fallback: list[dict] = []
+        self._fallback_ids: set[str] = set()
 
     async def connect(self) -> None:
         if not _CHROMA_AVAILABLE:
@@ -189,17 +205,31 @@ class LongTermMemory:
         if self._collection is not None:
             await asyncio.to_thread(self._add_sync, text, meta)
         else:
-            self._fallback.append({"text": text, "metadata": meta})
+            self._add_fallback(text, meta)
+
+    def _add_fallback(self, text: str, meta: dict) -> None:
+        """降级路径的写入，与 Chroma 路径同样按 memory_id 幂等（契约6 / 工单26）。"""
+        mid = memory_id(text)
+        if mid in self._fallback_ids:
+            return
+        self._fallback_ids.add(mid)
+        self._fallback.append({"id": mid, "text": text, "metadata": meta})
 
     def _add_sync(self, text: str, meta: dict) -> None:
+        mid = memory_id(text)
         try:
+            # 先查存在性再写：upsert 会无条件重算 embedding，而 embedding 走远程
+            # 计费接口（memory/embeddings.py）。include=[] 只回 ids，不触发 embedding。
+            if (self._collection.get(ids=[mid], include=[]).get("ids") or []):
+                return
             # chromadb 校验 metadata 不允许空 dict，兜底填充一个占位字段
             safe_meta = meta or {"source": "unknown"}
-            self._collection.add(documents=[text], metadatas=[safe_meta], ids=[new_id()])
+            # upsert 而非 add：并发/重试下撞同一 ID 时不抛错，结果仍是一条
+            self._collection.upsert(documents=[text], metadatas=[safe_meta], ids=[mid])
         except Exception as exc:  # noqa: BLE001
             logger.warning("写入 ChromaDB 失败，转入降级：%s", exc)
             self._collection = None
-            self._fallback.append({"text": text, "metadata": meta})
+            self._add_fallback(text, meta)
 
     async def retrieve(self, query: str, top_k: int = 5) -> list[MemoryChunk]:
         if self._collection is not None:
