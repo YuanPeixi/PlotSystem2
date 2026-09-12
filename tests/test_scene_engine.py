@@ -698,6 +698,65 @@ def test_episodic_replay_is_idempotent_and_keeps_order():
     assert ep._events == []
 
 
+def test_episodic_entry_survives_dump_load_roundtrip():
+    """`record → dump → load → replay` 的往返必须恒等，含多行动作（工单26 复盘）。
+
+    摘要是"一行一条"序列化的（dump 用 \\n join、load 用 \\n split），而
+    `SceneEngine._parse_turn` 的动作正则带 `re.DOTALL` —— 跨行的 *动作* 会产出
+    含 \\n 的 `action`（对白已被 `re.sub(r"\\s+", " ")` 规整过，只有动作漏了）。
+    条目正文一旦带换行，存进快照再恢复就裂成多条：既与重放生成的单条对不上
+    （去重失效、条目净膨胀），又多占 `_events[-10:]` 的保留窗口挤掉更早的事件。
+    """
+    from backend.memory.episodic import EpisodicMemory
+
+    turn = DialogueTurn(
+        turn_number=1,
+        character_id="c1",
+        character_name="甲",
+        action="拔出剑\n指向门口",  # _parse_turn 的 re.DOTALL 会这样产出
+        dialogue="我发誓要走。",
+    )
+
+    ep = EpisodicMemory("c1")
+    assert ep.record(turn) is True
+    assert len(ep._events) == 1
+    assert "\n" not in ep._events[0], f"条目正文里残留换行：{ep._events[0]!r}"
+
+    restored = EpisodicMemory("c1")
+    restored.load(ep.dump())
+    assert restored._events == ep._events, "dump→load 不是恒等变换"
+
+    # 正常 continue：快照恢复后再重放同一轮，必须收敛成同一条而不是累加
+    restored.replay([turn], self_character_id="c1")
+    assert restored._events == ep._events, f"重放后条目膨胀：{restored._events}"
+
+
+def test_episodic_load_merges_legacy_multiline_entry():
+    """改造前落盘的快照里存着多行条目，load 必须并回单条（无需迁移脚本）。
+
+    并回后与 `_snippet` 的规整结果一致，因此老快照恢复出来的条目能与重放生成的
+    条目对上，去重照常生效。
+    """
+    from backend.memory.episodic import EpisodicMemory
+
+    turn = DialogueTurn(
+        turn_number=1,
+        character_id="c1",
+        character_name="甲",
+        action="拔出剑\n指向门口",
+        dialogue="我发誓要走。",
+    )
+    legacy = "[重要] 甲: （拔出剑\n指向门口） 我发誓要走。\n[重要] 乙: 我恨你。"
+
+    ep = EpisodicMemory("c1")
+    ep.load(legacy)
+    assert len(ep._events) == 2, f"多行条目没有并回：{ep._events}"
+    assert all("\n" not in e for e in ep._events)
+
+    ep.replay([turn], self_character_id="c1")
+    assert len(ep._events) == 2, f"老条目与重放的新条目没对上：{ep._events}"
+
+
 def test_episodic_replay_strips_others_inner_thought():
     """契约1：重放他人轮次时，内心独白不得参与判定、更不得进摘要。"""
     from backend.memory.episodic import EpisodicMemory

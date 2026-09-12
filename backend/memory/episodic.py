@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from backend.models import DialogueTurn
 from backend.utils.logger import get_logger
 
 logger = get_logger("memory.episodic")
+
+# 摘要以"一行一条"序列化（dump 用 \n join、load 用 \n split），因此条目正文里
+# 绝不能出现换行：`SceneEngine._parse_turn` 的动作正则带 re.DOTALL，跨行的
+# *动作* 会产出含 \n 的 action。留着它，一条事件存进快照再恢复就裂成多条、
+# 与重放生成的单条对不上，去重失效、条目净膨胀，并挤掉更早的事件（工单26 复盘）。
+# 对白在 _parse_turn 里已被同样规整，这里是给动作与角色名补上同一道。
+_ENTRY_WS_RE = re.compile(r"\s+")
+
+# 条目行首标记。`load()` 靠它区分"新条目"与"上一条的续行"（老快照里的多行条目）。
+_ENTRY_PREFIX = "[重要] "
+
+
+def _normalize_entry(text: str) -> str:
+    """把一条事件摘要规整成单行：换行/连续空白塌成一个空格。
+
+    条目的序列化格式是"一行一条"，正文里出现 \\n 会破坏 dump/load 的往返一致性。
+    """
+    return _ENTRY_WS_RE.sub(" ", text).strip()
+
 
 # 触发重要事件的关键词（简单启发式，可被 LLM 检测增强）
 _IMPORTANT_KEYWORDS = [
@@ -80,6 +100,8 @@ class EpisodicMemory:
         """渲染一条事件摘要；不构成重要事件时返回 None。
 
         内心独白只参与重要性判定、不进正文——摘要会被他人可见的路径读取（契约1）。
+        换行在此处塌成空格：条目是"一行一条"序列化的，正文带 \\n 会在 dump→load
+        之后裂成多条（工单26 复盘）。
         """
         if not self.is_important(turn, include_inner_thought=include_inner_thought):
             return None
@@ -88,7 +110,7 @@ class EpisodicMemory:
             parts.append(f"（{turn.action}）")
         if turn.dialogue:
             parts.append(turn.dialogue)
-        return f"[重要] {turn.character_name}: {' '.join(parts)}".strip()
+        return _normalize_entry(f"{_ENTRY_PREFIX}{turn.character_name}: {' '.join(parts)}")
 
     def build_summary(self) -> str:
         """汇总所有重要事件为摘要文本。"""
@@ -101,6 +123,23 @@ class EpisodicMemory:
         return self.build_summary()
 
     def load(self, summary: str) -> None:
+        """从摘要文本恢复条目列表，是 `dump()` 的逆操作。
+
+        按行切分后，**不以条目前缀开头的行并回上一条**：改造前写入的快照里可能
+        存着含换行的条目（`_parse_turn` 的动作正则带 re.DOTALL），直接 split 会
+        把一条裂成多条，既与重放生成的单条对不上（去重失效、条目净膨胀），也会
+        多占 `_events[-10:]` 的保留窗口。并回后与 `_snippet` 的规整结果一致，
+        老数据因此能收敛到同一条，无需迁移脚本。
+        """
         self.summary = summary or ""
-        if summary:
-            self._events = summary.split("\n")
+        if not summary:
+            return
+        events: list[str] = []
+        for line in summary.split("\n"):
+            if not line.strip():
+                continue
+            if events and not line.startswith(_ENTRY_PREFIX):
+                events[-1] = _normalize_entry(f"{events[-1]} {line}")
+            else:
+                events.append(_normalize_entry(line))
+        self._events = events
