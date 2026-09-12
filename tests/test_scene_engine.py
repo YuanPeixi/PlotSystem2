@@ -600,6 +600,127 @@ async def test_resume_rebuilds_episodic_below_watermark(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_continue_replay_does_not_evict_earlier_episodes(monkeypatch):
+    """正常 continue 的重放不得重复追加事件摘要，挤掉更早场次的重要事件。
+
+    契约4 的四级优先级里，正常 continue 命中的是 `snapshot_id_after` —— 本场
+    上次跑完时打的快照，其 `episodic_summary` 已经含了水位线之前的全部事件，
+    `build_character_agents` 又已 `prime()` 载入。此时若逐轮 append 重放，
+    这段就在 `_events` 里出现两遍；而 `build_summary()` 只保留末 10 条，
+    等于把**更早场次**的重要事件挤出窗口。episodic 不落盘、无处可查，
+    一旦挤掉就是永久丢失。
+
+    修法不是"判断快照来源"：continue 跑到一半再崩时，`snapshot_id_after` 只
+    覆盖前半段，按来源判断会漏掉后半段。整批按正文去重后重建，三种来源收敛
+    到同一结果。
+    """
+    monkeypatch.setattr(settings, "MEMORY_CONSOLIDATE_EVERY_TURNS", 20)
+    agent = _make_agent("c1", "甲")
+
+    # prime 的摘要 = 上一场留下的 4 条 + 本场已固化的 6 条，正好填满保留窗口
+    prior = [f"[重要] 甲: 上一场的关键决定{i}。" for i in range(4)]
+    current = [f"[重要] 甲: 我发誓第{i}件事。" for i in range(6)]
+    agent.memory.prime(None, "\n".join(prior + current))
+
+    log = [
+        DialogueTurn(
+            scene_id="s-cont-epi",
+            turn_number=i + 1,
+            character_id="c1",
+            character_name="甲",
+            dialogue=f"我发誓第{i}件事。",
+        )
+        for i in range(6)
+    ]
+    scene = Scene(
+        scene_id="s-cont-epi",
+        project_id="proj-se",
+        branch_id="b-cont-epi",
+        snapshot_id_before="snap-before-cont-epi",
+        snapshot_id_after="snap-after-cont-epi",  # 跑完过一次 → 正常 continue
+        dialogue_log=log,
+        turns_completed=6,
+        turns_consolidated=6,  # 全部已固化，重放只该补摘要
+    )
+    config = SceneConfig(name="续跑", participating_characters=["c1"], max_turns=8)
+    engine = SceneEngine(scene, config, [agent], SnapshotManager("proj-se"))
+    engine.inject_history(log)
+
+    with patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="继续说。")):
+        await engine.run()
+
+    lines = agent.memory.episodic.dump().splitlines()
+    assert len(lines) == len(set(lines)), f"事件摘要出现重复行：{lines}"
+    for i in range(4):
+        assert any(f"上一场的关键决定{i}。" in ln for ln in lines), (
+            f"上一场的第{i}条重要事件被挤出窗口：{lines}"
+        )
+    for i in range(6):
+        assert any(f"我发誓第{i}件事。" in ln for ln in lines)
+
+
+def test_episodic_replay_is_idempotent_and_keeps_order():
+    """`EpisodicMemory.replay` 的去重语义：重复调用不增长，且保持日志顺序。
+
+    三种续跑来源（after 全含 / before 全不含 / 半途崩溃只含前半段）都会落到
+    同一个终态，引擎因此不必去判断"prime 载入了多少"。
+    """
+    from backend.memory.episodic import EpisodicMemory
+
+    turns = [
+        DialogueTurn(
+            turn_number=i + 1,
+            character_id="c1",
+            character_name="甲",
+            dialogue=f"我发誓第{i}件事。",
+        )
+        for i in range(4)
+    ]
+
+    def _final(preloaded: int) -> list[str]:
+        ep = EpisodicMemory("c1")
+        ep.load("\n".join(f"[重要] 甲: 我发誓第{i}件事。" for i in range(preloaded)))
+        ep.replay(turns, self_character_id="c1")
+        ep.replay(turns, self_character_id="c1")  # 重复调用不得增长
+        return ep._events
+
+    baseline = _final(4)
+    assert len(baseline) == 4
+    assert _final(0) == baseline  # 崩溃续跑：一条都没载入
+    assert _final(2) == baseline  # 半途崩溃：只载入了前半段
+
+    # 不重要的轮次不进摘要，也不会顶掉已有条目
+    ep = EpisodicMemory("c1")
+    ep.replay(
+        [DialogueTurn(turn_number=1, character_id="c1", character_name="甲", dialogue="今天天气不错")],
+        self_character_id="c1",
+    )
+    assert ep._events == []
+
+
+def test_episodic_replay_strips_others_inner_thought():
+    """契约1：重放他人轮次时，内心独白不得参与判定、更不得进摘要。"""
+    from backend.memory.episodic import EpisodicMemory
+
+    turn = DialogueTurn(
+        turn_number=1,
+        character_id="c2",
+        character_name="乙",
+        dialogue="今天天气不错",
+        inner_thought="我要背叛他",  # 只有独白里含重要关键词
+    )
+
+    others = EpisodicMemory("c1")
+    others.replay([turn], self_character_id="c1")  # c1 视角：这是别人的轮次
+    assert others._events == [], others._events
+
+    owner = EpisodicMemory("c2")
+    owner.replay([turn], self_character_id="c2")  # c2 视角：自己的轮次
+    assert len(owner._events) == 1
+    assert "背叛" not in owner._events[0], "内心独白泄露进了摘要正文"
+
+
+@pytest.mark.asyncio
 async def test_dialogue_log_persisted_before_consolidation(monkeypatch):
     """固化前先落一次对话日志，把跨库不一致导向"已有幂等兜底"的那一侧。
 

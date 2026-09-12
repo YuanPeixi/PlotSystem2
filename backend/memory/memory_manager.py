@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from backend.config import settings
@@ -71,17 +72,23 @@ class MemoryManager:
             speaker=turn.character_name,
         )
 
-    def replay_episodic(self, turn: DialogueTurn, *, from_self: bool = True) -> None:
-        """只把一轮补进事件摘要，不写短期缓冲（工单26 复盘）。
+    def replay_episodic(self, turns: Sequence[DialogueTurn]) -> None:
+        """按场景日志重建这批轮次的事件摘要，不写短期缓冲（工单26 复盘）。
 
-        用于崩溃续跑时重放**水位线之前**的轮次：它们的正文已经在长期记忆里，
+        用于续跑时补**水位线之前**的那段：它们的正文已经在长期记忆里，
         再进一次缓冲就会被下一次固化二次写入；但事件摘要是纯内存的独立一层，
         既不随长期记忆持久化、也不受水位线保护，不补就永久缺这一段。
 
-        与 add_experience 共用 episodic.record，因此重要性判定与内心独白的
-        剥离规则完全一致（契约1）。
+        **必须整批传入、不能逐轮调用**：`prime()` 可能已经载入过其中一部分
+        （正常 continue 命中的 `snapshot_id_after` 含全部，崩溃续跑命中的
+        `snapshot_id_before` 一条不含），逐轮追加会让正常 continue 把整段翻倍，
+        把更早场次的重要事件挤出 `_events` 的保留窗口。去重语义见
+        `EpisodicMemory.replay`。
+
+        重要性判定与内心独白的剥离规则与 add_experience 完全一致（契约1）：
+        只有本角色自己的那几轮才带内心独白。
         """
-        self.episodic.record(turn, include_inner_thought=from_self)
+        self.episodic.replay(turns, self_character_id=self.character_id)
 
     async def retrieve(self, query: str, top_k: int | None = None) -> list[MemoryChunk]:
         """从长期记忆检索相关片段。"""

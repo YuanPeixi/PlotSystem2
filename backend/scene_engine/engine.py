@@ -256,9 +256,10 @@ class SceneEngine:
     ) -> None:
         """续跑时把已落盘但未进记忆的轮次补回去，两层各按自己的起点。"""
         watermark = self.scene.turns_consolidated
-        # 水位线之前的轮次：长期记忆里已经有了，只补事件摘要。
-        for past in turns[:watermark]:
-            self._replay_episodic(past)
+        # 水位线之前的轮次：长期记忆里已经有了，只补事件摘要。整批交给
+        # replay_episodic 去重重建 —— prime() 可能已载入其中一部分（工单26 复盘·
+        # 断言4），逐轮追加会让正常 continue 把这段翻倍并挤掉更早场次的事件。
+        self._replay_episodic(turns[:watermark])
         # 水位线之后的轮次：三层都没有，走完整写入 + 周期固化。
         replayed = watermark
         for past in turns[watermark:]:
@@ -267,17 +268,17 @@ class SceneEngine:
             if self._should_consolidate(replayed):
                 await self._consolidate_all(replayed, on_persist)
 
-    def _replay_episodic(self, turn: DialogueTurn) -> None:
+    def _replay_episodic(self, turns: list[DialogueTurn]) -> None:
         """只重建事件摘要，不碰短期缓冲。
 
         这批轮次的正文已在长期记忆里，再写一遍缓冲就会被下一次固化二次写入
         （工单26 主线要修的正是这个）。但 episodic 是纯内存的独立一层，
         不补就永久缺失这一段的重要事件。
         """
+        if not turns:
+            return
         for participant in self.agents:
-            participant.memory.replay_episodic(
-                turn, from_self=(participant.character_id == turn.character_id)
-            )
+            participant.memory.replay_episodic(turns)
 
     async def _remember(self, turn: DialogueTurn) -> None:
         """在场即记忆（工单15）：本场全部参演角色都感知这一轮，不只是发言者。
