@@ -14,7 +14,8 @@
 `✅ PR #N（合入 main：起始hash到结束hash）`。完整口径与 hash 填写规则见
 [CONVENTIONS.md](./CONVENTIONS.md)。**索引标注可能滞后于实际合并状态，以 git 为准。**
 
-**当前推进中**：无。工单 26 已随 PR #19 合入 main。
+**当前推进中**：无。上一单（26 记忆写入点与固化水位线统一）已随 PR #19 合入 main，
+工单 09 的前置依赖随之解除。
 
 ---
 
@@ -28,6 +29,7 @@
 | [13](./13-decision-idempotency-and-scope.md) | 决策接口幂等 + "下一场"可编辑范围 | ✅ PR #5 |
 | [14](./14-continuity-memory-context.md) | 续跑/回滚运行时记忆丢失 + 上下文窗口 | ✅ PR #7（合入 main：`0d17d2c`到`d96bee1`） |
 | [15](./15-perceived-memory-and-dedup.md) | 记忆写入范围改为「在场感知」+ 同句去重 | ✅ PR #9（合入 main：`4b55561`到`9e3b444`） |
+| [26](./26-memory-write-watermark.md) | 记忆写入点与固化水位线统一 | ✅ PR #19（合入 main：`39df642`到`06b8ee5`） |
 | GH#13 | 角色情感/目标/位置/关系在快照还原时未同步到智能体 ¹ | ✅ PR #14（合入 main：合并提交 `7707248`，内容提交 `875fe25`，外部贡献者 ParaNoite） |
 
 ¹ 工单 14 / 17 上线后发现的遗漏，**不属于本索引 01–22 编号**，用 GitHub Issue 号区分，
@@ -67,9 +69,8 @@
 | 编号 | 标题 | 优先级 | 依赖 | 状态 | 备注 |
 |---|---|---|---|---|---|
 | 18 | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 ✅ | 待建单 | [说明](./NOTES.md#t18) |
-| [26](./26-memory-write-watermark.md) | 记忆写入点与固化水位线统一 | P2 | 无 | ✅ PR #19（合入 main：`39df642`到`06b8ee5`） | [说明](./NOTES.md#t26) |
 | [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 可选 | 待处理 | — |
-| [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 ✅ | 待处理 | [前置说明](./NOTES.md#t09) |
+| [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 ✅ | 待处理（前置已齐） | [前置说明](./NOTES.md#t09) |
 
 ---
 
