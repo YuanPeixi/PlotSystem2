@@ -62,11 +62,18 @@ class SceneEngine:
         scene_config: SceneConfig,
         character_agents: list[CharacterAgent],
         snapshot_manager: SnapshotManager,
+        world_variables: dict[str, str] | None = None,
     ):
         self.scene = scene
         self.config = scene_config
         self.agents = character_agents
         self.snapshot_manager = snapshot_manager
+        # 分支级世界变量（工单07）。开场即冻结、整场不变，因此可以安全地进 system
+        # 消息而不破坏 prefix cache（契约3 补充条款）。场景内会变的环境状态归工单20，
+        # 那条通道必须走 user 消息，两者不得混用。
+        # 走构造参数而非 SceneConfig 字段：SceneConfig 是导演的规划产物，
+        # 世界变量是运行期注入的，混进去会让 /scenes/plan 多返回一个恒空字段。
+        self.world_variables = dict(world_variables or {})
         self._interrupt = False
         self._history_transcript: list[str] = []  # continue 时注入的历史
         self._selector: ScoringSpeakerSelector | None = None
@@ -97,6 +104,7 @@ class SceneEngine:
                 scene_context=self._scene_context(),
                 label=f"before:{self.config.name}",
                 story_history=self.scene.inherited_story_history,
+                world_state_variables=self.world_variables,
             )
             self.scene.snapshot_id_before = snap_before.snapshot_id
         self.scene.status = SceneStatus.RUNNING.value
@@ -193,6 +201,9 @@ class SceneEngine:
             scene_context=self._scene_context(),
             label=f"after:{self.config.name}",
             story_history=self.scene.inherited_story_history,
+            # 本场评估产生的 world_state_delta 此刻还不存在（评估在后置快照之后），
+            # 由 orchestrator 在 delta 落盘后经 record_world_state 补写（工单07 B3）。
+            world_state_variables=self.world_variables,
         )
 
         self.scene.dialogue_log = turns
@@ -345,11 +356,21 @@ class SceneEngine:
 
     # ---- 上下文/状态 ----
     def _scene_context(self) -> dict:
+        """本场的静态上下文。整场不变（契约3）。
+
+        世界变量作为**默认值**垫在最底下，场景自己的 initial_conditions 覆盖同名项 ——
+        "场景局部覆盖全局"是工单07 指定的优先级：导演为这一场专门设定的条件，
+        比跨场次沿用的世界层默认值更贴近当下。
+
+        合并只发生在这里，**不写回** `Scene.initial_conditions`：写回并落库会让分叉
+        不变量 I5 把此刻的世界快照当成场景局部条件永久带下去，从此永远覆盖真实世界状态。
+        """
         return {
             "name": self.config.name,
             "description": self.config.description,
             "location": self.config.location,
             "opening_narration": self.config.opening_narration,
+            **self.world_variables,
             **self.config.initial_conditions,
         }
 

@@ -267,6 +267,7 @@ class _FakeDirectorForDecision:
         history_scenes=None,
         scene_intent="",
         recent_results=None,
+        world_state=None,
     ):
         if self.plan_delay:
             await asyncio.sleep(self.plan_delay)

@@ -148,8 +148,18 @@ export interface SceneEvaluation {
   is_ending_reached: boolean
   ending_reason: string
   unresolved_threads: string[]
+  /** 本场对分支世界变量的增量修改；值为 null 表示该变量已失效被删除 */
+  world_state_delta: Record<string, string | null>
   /** 本场评估对应的结束态快照；分叉时用来识别被续跑覆盖的旧评估（空 = 旧记录） */
   evaluated_snapshot_id: string
+}
+
+/** 分支级世界变量（GET /projects/{pid}/branches/{bid}/world-state）。 */
+export interface WorldState {
+  project_id: string
+  branch_id: string
+  variables: Record<string, string>
+  updated_at: string
 }
 
 export interface Branch {

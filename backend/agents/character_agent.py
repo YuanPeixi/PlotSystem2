@@ -112,9 +112,21 @@ class CharacterAgent:
             )
         return "\n".join(lines)
 
-    @staticmethod
-    def _scene_brief(scene_context: dict) -> str:
-        """场景静态简介。整场不变，放进 system 以稳定 prompt 前缀。"""
+    #: `_scene_brief` 单独成句的键，其余键一律进"当前情境"清单
+    _BRIEF_KEYS = ("name", "location", "description", "opening_narration")
+
+    @classmethod
+    def _scene_brief(cls, scene_context: dict) -> str:
+        """场景静态简介。整场不变，放进 system 以稳定 prompt 前缀。
+
+        除四个成句的键之外，其余上下文项（场景初始条件 + 分支世界变量，后者由
+        SceneEngine 垫在底下）按"一行一条"列出。**这些必须逐条渲染**：旧实现只读那
+        四个键，导演写的初始条件与世界变量都只参与 lore 关键词匹配，从不进角色视野 ——
+        "季节已入冬"存进了世界状态，角色却照旧在雪地里谈论酷暑（工单07）。
+
+        契约1：进入这里的内容对本场全部在场角色可见。世界变量因此只允许存放公开事实，
+        私密信息不得走这条通道（约束写在导演的评估提示词里）。
+        """
         lines = []
         name = scene_context.get("name", "")
         location = scene_context.get("location", "")
@@ -124,6 +136,14 @@ class CharacterAgent:
             lines.append(str(scene_context["description"]))
         if scene_context.get("opening_narration"):
             lines.append(f"开场：{scene_context['opening_narration']}")
+        conditions = [
+            f"- {k}：{v}"
+            for k, v in scene_context.items()
+            if k not in cls._BRIEF_KEYS and str(v).strip()
+        ]
+        if conditions:
+            lines.append("当前情境：")
+            lines.extend(conditions)
         return "\n".join(lines) or "（场景信息待补充）"
 
     def build_system_prompt(self, scene_context: dict, memory_context: list[str] | None = None) -> str:

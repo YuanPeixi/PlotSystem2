@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.api.schemas import ApiResponse, ForkBranchRequest
-from backend.services import orchestrator
+from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
 from backend.utils.serializer import to_dict
 
@@ -30,6 +30,15 @@ async def get_branches(project_id: str) -> ApiResponse:
             "roots": [_serialize_tree_node(n) for n in tree.roots],
         }
     )
+
+
+@project_router.get("/branches/{branch_id}/world-state")
+async def get_world_state(project_id: str, branch_id: str) -> ApiResponse:
+    """读取分支的世界变量（工单07）。分支没有记录时返回空变量，不是 404 ——
+    "这条分支还没积累世界层事实"是正常状态，不是资源不存在。
+    """
+    state = await repository.get_world_state(project_id, branch_id)
+    return ApiResponse.ok(to_dict(state))
 
 
 @project_router.get("/snapshots")

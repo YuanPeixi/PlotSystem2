@@ -92,6 +92,9 @@ PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项�
 
 - **信息不对称是第一性的**：角色只能看到自己的 `known_facts`。公主不在朝堂，
   就该在与王子对话后才自然地表现出惊讶。这是本项目区别于普通群聊模拟的核心。
+  与之互补的是 **`WorldState`（分支级世界变量）**：信息不对称管"不该知道的不知道"，
+  世界状态管"该传播的能传播"——季节、势力态度这类**所有人都能感知**的世界层事实，
+  跨场次持续演进并注入每个在场角色。两者的边界就是"这件事是不是公开的"。
 - **快照不追求确定性重放**：LLM 有随机性，回到快照重跑不会 100% 复现。
   快照的目的是 **"我能回到这里分叉 IF 线"** 和 **"演得不好能回来调"** ，不是版本控制。
 - **导演宏观、角色微观**：导演不写台词，只搭场景、选人、评估、决策。
@@ -145,7 +148,7 @@ backend/
 │
 ├── services/           ★★ 编排层：找业务逻辑先看这里
 │   ├── orchestrator.py   唯一跨模块编排点（构建/规划/运行/决策/输出/对账）
-│   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON）
+│   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON + 分支世界变量 JSON）
 │   ├── inspection.py     ★ 角色内部状态的唯一只读查询层（面板/导演/总结共用）
 │   └── events.py         SSE 内存事件总线（asyncio.Queue）
 │
@@ -225,6 +228,7 @@ frontend/src/
 | `CharacterState` | 角色在某时刻的快照态（含短期缓冲 / 事件摘要） | 快照目录 JSON |
 | `CharacterInspection` | Inspection 层的只读组装结果（**不落库**） | 运行时 |
 | `LoreEntry` | 世界观条目（keywords 触发、scope 控制可见范围、priority 排序） | 内嵌于角色卡 |
+| `WorldState` | **分支级**世界变量（跨场次演进的公开世界层事实） | **文件** `world_state/{branch_id}.json` |
 | `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
 | `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 推荐决策 | SQLite `evaluations` |
@@ -303,6 +307,7 @@ frontend/src/
     |------|-----------|---------|
     | 快照里的 `CharacterState` | 分支/时点级 | ✅ |
     | 角色卡 `current_*` | 项目级单值（只当**展示缓存**） | ❌ |
+    | `WorldState`（`world_state/{branch_id}.json`） | 分支级（工单07） | ✅ |
     | Chroma 长期记忆（collection = `char_{cid}__{branch_id}`） | 角色+分支级（工单08） | ✅ |
     | Kuzu 图谱 | 项目级单文件 | ❌（只读，暂无影响；工单06 落地前必须先解决） |
 
@@ -401,6 +406,30 @@ frontend/src/
     `0`）解析成 Python `int`，`float()` 对它抛的是 `OverflowError` 而非 `ValueError`，
     漏接会穿过 `_extract_json` 那道防线，把一份本可解析的评估废在编排层的兜底里。
 
+19. **`WorldState` 有四条不可分割的语义**（工单07），少一条就会静默退化：
+    - **合并只发生在运行时**：`SceneEngine._scene_context()` 按
+      `{**世界变量, **scene.initial_conditions}` 合并（场景局部覆盖全局默认），
+      **绝不写回 `Scene.initial_conditions`**。写回并落库会让分叉不变量 I5 把此刻的
+      世界快照当成**场景局部条件**永久带下去，从此这条分支上的同名世界变量再也改不动；
+    - **预算是硬约束**，与 `unresolved_threads` 同一条教训但更紧迫：世界变量进的是
+      **每一场、每个角色、每一轮**的 system prompt。`merge_world_variables` 同时限
+      条数（`MAX_WORLD_VARIABLES`）与总 token，超限淘汰**最久未更新**的键并 warning ——
+      静默丢弃世界事实比丢弃线索更难发现，它不落在任何列表里，只表现为下一场角色
+      忽然不知道某件事了；
+    - **`delta` 里 value 为 `None` = 删除该变量**，这是唯一的收束手段。没有它变量只增
+      不减，迟早占满预算，之后每一条新的世界事实都会被挤掉。空串按同义处理；
+      评估解析失败时 `world_state_delta` 必须为空 dict，绝不能让一次失败的 LLM 调用
+      伪装成一次真实的世界更新；
+    - **后置快照要补写**（`record_world_state`）：delta 出自评估，而后置快照在评估
+      之前就打好了。不补写的话，从该快照分叉出的分支会缺掉本场对世界的改动 ——
+      而它的角色状态与导演历史都已包含本场。
+
+20. **角色的 system prompt 会逐条渲染 `scene_context` 里的非成句键**（工单07）。
+    旧实现只读 `name`/`location`/`description`/`opening_narration` 四个键，导演写的
+    `initial_conditions` 与世界变量都只参与 lore 关键词匹配、从不进角色视野
+    （"已入冬"存进了世界状态，角色照旧在雪地里谈论酷暑）。因此**往 `scene_context`
+    里塞任何键都等于把它公开给本场全部角色**，内部记账用的字段不要走这个 dict。
+
 ---
 
 ## 5. 持久化契约 ★
@@ -424,6 +453,7 @@ frontend/src/
 
 ```
 characters/{character_id}.json    ★ 角色卡不入库，走文件系统
+world_state/{branch_id}.json      ★ 分支级世界变量，同样不入库（工单07）
 seed_texts/                       原始种子文本
 kuzu_db                           ⚠️ 当前 Kuzu 版本下是【单个文件】，不是目录
 chroma_db/                        向量库
@@ -488,7 +518,8 @@ graph TD
 ### 6.2 运行场景（`run_scene`）
 
 1. `_active_scenes` 并发守卫（检查与写入之间无 `await`，依赖单线程事件循环原子性）；
-2. `_load_inherited_states` 取运行时记忆；
+2. `_load_inherited_states` 取运行时记忆；`get_world_state` 取本分支的世界变量
+   （每次运行都重读，但整场冻结 —— 契约3 补充条款）；
 3. `build_character_agents`：**每场新建** `CharacterAgent` + `MemoryManager`（无跨场复用），
    用 `prime()` 回填短期缓冲与事件摘要；长期记忆靠 ChromaDB 目录天然连续；
 4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
@@ -512,8 +543,9 @@ graph TD
    不受水位线保护，按水位线切会让那段的重要事件在续跑后彻底消失，而逐轮追加又会在正常
    continue（`prime()` 已载入同一段）上把它翻倍、挤出保留窗口；
 
-6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库 → 推 evaluation 与 completed。
-   **自动评估包在自己的 `try` 里**：这一场已经跑完并打了后置快照，评估的 LLM 失败
+6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库
+   → 世界变量合并落盘并补写后置快照（`_apply_world_delta`）→ 推 evaluation 与 completed。
+   **自动评估与世界变量更新各包一个 `try`**：这一场已经跑完并打了后置快照，它们的失败
    不得把状态打回 `paused`——决策 CAS 只接 `completed`，退回了用户就再也无法对这场决策。
 
 **运行中的可恢复性（工单23）**：开跑前先把 `status=running` 落库；引擎每产生一轮就先把
@@ -552,7 +584,7 @@ graph TD
 |------|------|------|
 | I1 | 起点一致 | `Scene₀.restore_snapshot_id = S`，靠契约4 懒承接，**绝不 restore_snapshot()** |
 | I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景；Chroma `PersistentClient` 会在打开时维护文件，因此只能打开 checkpoint 的临时副本，不能直接打开权威快照目录（代价：分叉期间向量库占用的磁盘峰值翻倍，用空间换快照不可变，向量库变大后可再优化） |
-| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进 `char_{cid}__{新分支}`，分页读 + 按客户端 `max_batch_size` 分批写；另以分支级初始化文件封住快照中不存在 collection 的角色和空起点 |
+| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进 `char_{cid}__{新分支}`，分页读 + 按客户端 `max_batch_size` 分批写；另以分支级初始化文件封住快照中不存在 collection 的角色和空起点。**世界变量同理**：`S.world_state_variables` 写进新分支的 `world_state/{新分支}.json`（工单07）——它是分支级文件、不随快照目录走，不搬就是"一分叉世界重置" |
 | I4 | 可追溯 | `Branch.parent_branch_id = S.branch_id`；`Scene₀.parent_scene_id = S.scene_id` |
 | I5 | 条件生效 | `Scene₀.initial_conditions = {**来源场景条件, **C}` |
 
@@ -560,7 +592,8 @@ graph TD
 来源场景已被删时降级：参演角色取自 `S.character_states`。
 `Branch.fork_conditions` 仅为溯源元数据，权威值在 `Scene₀.initial_conditions`。
 **记忆先搬、分支后建**：复制用预生成的 `branch_id` 在 `fork_branch` 之前执行，失败
-（`MemoryError` → 500）就不会留下一条无记忆的孤儿分支。Chroma 不可用 / 快照不含向量库
+（`MemoryError` → 500）就不会留下一条无记忆的孤儿分支。世界变量的落盘同样排在
+`fork_branch` 之前，同一理由：不留下一条"世界被重置"的分支。Chroma 不可用 / 快照不含向量库
 仍按契约6 只 warning 并记录空起点；Chroma 已安装且快照库存在但复制/打开失败则必须中止。
 
 ### 6.4 启动对账
@@ -606,7 +639,12 @@ graph TD
 - 角色不在场的场次里发生的信息（跨场次传播应走【设想】里的世界状态通道，不是直接给）。
 
 **不该隔离的**：同一场景中在场角色的**公开发言与动作**。这些是共享感知，
-每个在场角色都应该记住。
+每个在场角色都应该记住。**分支世界变量（`WorldState`）同理**：它会进入本场全部在场
+角色的 system prompt，因此**只允许存放所有角色都可感知的公开世界层事实**
+（季节、某势力的公开态度、某公开事件是否已发生）。把只有部分角色知道的秘密写进去，
+等于一次性向全体角色泄密 —— 这条约束写在导演的评估提示词里，后端无法代为判断。
+未来的环境智能体（工单20）最容易违反它：动作裁决的结果天然带私密性
+（"只有他看见水盆亮了"），落地时必须先想清楚哪些结果进世界变量、哪些只进当事人记忆。
 
 > ⚠️ 早期文档只写"角色只持有已知信息"，被误读成"不该记录他人发言"，
 > 曾是"记忆只写发言者"那个 bug（工单15，已修复：`SceneEngine.run()` 现在对本场
@@ -626,6 +664,17 @@ graph TD
 
 目的：同一角色在同一场景内的 prompt 前缀保持稳定，命中服务端 prefix cache。
 **任何"优化"都不得把变化内容塞回 system，也不得改成逐行滑窗。**
+
+**补充条款（工单07 裁定，世界状态专用）**：世界状态分两类，**两者不得混用**——
+
+| 类别 | 何时变 | 放哪 | 现状 |
+|------|--------|------|------|
+| **场景常量** | 只在场次**之间**变，开场即冻结 | system（`scene_brief` 的"当前情境"块） | ✅ 工单07 已落地 |
+| **场景内变量** | 场景**进行中**由环境裁决改变 | user 消息里独立的"当前环境"块 | 【设想】工单20 |
+
+工单07 的 `WorldState` 属于前者，所以进 system 不破契约；工单11 §2.2 曾写的
+"更新后的环境状态在下一轮 `build_system_prompt` 中体现"属于后者，**那样做会每轮击穿
+prefix cache**，落地时必须改走 user 块。
 
 ### 契约 4 — 运行时记忆继承链
 
@@ -718,6 +767,7 @@ graph TD
 | GET | `/scenes/{scene_id}/evaluation` | 导演评估 |
 | GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
 | GET | `/projects/{project_id}/branches` | 分支树 |
+| GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404 |
 | GET | `/projects/{project_id}/snapshots` | 快照列表（只返回元信息，不带角色状态明细） |
 | POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}` |
 | DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**，且按项目约束） |
@@ -874,7 +924,9 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
   `SceneEngine._collect_states()` 直接读 `short_term.dump()` / `episodic.dump()`，
   恢复路径是 `_load_inherited_states()` + `MemoryManager.prime()`。
 - `SnapshotManager.restore_snapshot()` —— 自 rollback 改走 `get_snapshot` 后已无生产调用方
-  （仅剩 `tests/test_snapshot_manager.py`）。**不要把它接回任何写路径**，它是破坏性的（见 4.2 陷阱 10）。
+  （仅剩 `tests/test_snapshot_manager.py`）。**不要把它接回任何写路径**，它是破坏性的（见 4.2 陷阱 10），
+  且不恢复分支级世界变量，恢复出来的项目状态是**半对的**。工单07 已给它加上
+  `confirm_destructive=True` 路障，不显式传就抛 `RuntimeError`。
 - `CharacterState.long_term_memory_snapshot` —— 恒为空字符串。
 - `settings.GRAPHRAG_LLM_MODEL` —— 从不读取。
 - `scene_engine/scene_config.py`、`snapshot/models.py` —— 仅从 `models.py` 再导出，
@@ -889,8 +941,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 
 | 设想 | 想解决什么 | 工单 / 状态 |
 |------|-----------|------------|
-| **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen** | `11-...`；会改动 SceneEngine 对话循环本身，建议作为独立大提案最后做 |
-| **世界状态 / 事件变量** | 跨场次的信息传递通道。信息不对称保证"角色不该知道的不知道"，世界状态负责"该传播的能传播"（含环境层跨场景广播） | `07-world-state.md` |
+| **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen**。⚠️ 两条已定的线：裁决结果若要沉淀成世界变量，必须先过契约1 的"公开可见"判据（裁决天然带私密性）；场景**进行中**变化的环境状态必须走 user 消息块，不得塞回 system（契约3 补充条款） | `11-...`；会改动 SceneEngine 对话循环本身，建议作为独立大提案最后做 |
 | **私有内心 OS** | 角色输出前的自适应思考，**不入档**——与现在会落档的 `inner_thought` 是两回事 | 未立项 |
 | **分镜稿（storyboard）** | 导演当前只有提示词 + 压缩后的既往剧情，长线维持能力弱。设想给导演一份可读写的持久化文件（类似 AI 的记忆文件），随快照一起版本化；分支时需向导演说明差异 | 未立项 |
 | **AutoPilot 模式** | 自动采纳导演建议的决策，无人值守连跑多场 | `12-auto-pilot-director.md`（依赖工单 13，已完成） |
@@ -1130,3 +1181,16 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      **教训：「按内容去重」隐含「内容有唯一规范形式」这个前提。** 长期记忆的 sha256 寻址
      同样吃这个前提，只是它的输入 _turn_to_text 恰好没有换行问题。去重键的规范化必须和
      序列化格式一起定。同步更新 4.2 陷阱 9。 -->
+
+<!-- 2026-09-17: 工单07 分支级世界变量落地。跨场次的公开世界层事实（季节、势力态度、
+     公开事件）终于有了载体，随快照冻结、随分叉继承，导演在评估时以 delta 更新。
+     三处与工单原文的偏离都记在 NOTES.md#t07：不走 restore_snapshot（它是 dead code
+     且禁止接回写路径，回滚语义改由分叉原语承担）、合并不写回 initial_conditions
+     （否则分叉不变量 I5 会把世界快照当成场景局部条件永久带下去）、后置快照需要补写
+     （delta 出自评估，而快照在评估之前就打好了）。
+     **实现过程中发现的真问题**：CharacterAgent._scene_brief 只渲染四个键，
+     导演写的 initial_conditions 从来就没进过角色视野 —— 世界变量若不改它，
+     工单的验收条件根本达不到。已改为逐条渲染，见 4.2 陷阱 20。
+     同步：契约1（世界状态是公共可见层）、契约3（场景常量 vs 场景内变量补充条款，
+     原 NOTES#contract3 的待裁定已落锤）、4.1/4.2/5.2/6.2/6.3.1/8/12.2，
+     并把 §13 的"世界状态 / 事件变量"条目升格进正文。 -->

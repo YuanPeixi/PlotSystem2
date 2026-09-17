@@ -108,6 +108,7 @@ class SnapshotManager:
         scene_context: dict | None = None,
         label: str = "",
         story_history: list[dict] | None = None,
+        world_state_variables: dict[str, str] | None = None,
     ) -> Snapshot:
         snap = Snapshot(
             snapshot_id=new_id(),
@@ -117,6 +118,7 @@ class SnapshotManager:
             character_states=character_states,
             scene_context=scene_context or {},
             story_history=deepcopy(story_history),
+            world_state_variables=dict(world_state_variables or {}),
         )
         snap_dir = _snapshots_dir(self.project_id) / snap.snapshot_id
         (snap_dir / "character_states").mkdir(parents=True, exist_ok=True)
@@ -176,7 +178,9 @@ class SnapshotManager:
             await conn.commit()
 
     # ---- 恢复 ----
-    async def restore_snapshot(self, snapshot_id: str) -> dict[str, CharacterState]:
+    async def restore_snapshot(
+        self, snapshot_id: str, *, confirm_destructive: bool = False
+    ) -> dict[str, CharacterState]:
         """就地恢复项目级图谱与向量库，并返回快照里的角色状态。
 
         ⚠️ **破坏性操作**：kuzu_db 与 chroma_db 按项目共享、不随分支隔离，
@@ -184,7 +188,20 @@ class SnapshotManager:
         只想让某一场从快照接上运行时记忆的，走 `Scene.restore_snapshot_id`
         的懒承接（契约4，`inspection.resolve_scene_states`），不要调本方法。
         目前无生产调用方。
+
+        `confirm_destructive` 是给未来的调用方设的路障（工单07）：本方法还漏掉了
+        分支级的世界变量，恢复完的项目状态是**半对的**，而半对比全错更难发现。
+        抛 RuntimeError 而不是 PlotSystemError —— 后者被全局处理器映射成 404，
+        但这属于"调用方用错了"的程序错误，不是业务上的资源不存在。
         """
+        if not confirm_destructive:
+            raise RuntimeError(
+                "restore_snapshot() 会就地覆盖项目级 kuzu/chroma，抹掉其他分支已积累的"
+                "长期记忆，且不恢复分支级世界变量。要从快照接上运行时记忆请走契约4 的"
+                "懒承接（Scene.restore_snapshot_id），要开新时间线请走 "
+                "orchestrator.fork_from_snapshot()。确实需要破坏性恢复时显式传 "
+                "confirm_destructive=True。"
+            )
         snap_dir = _snapshots_dir(self.project_id) / snapshot_id
         if not snap_dir.exists():
             raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
@@ -414,6 +431,7 @@ class SnapshotManager:
             graph_checkpoint=data.get("graph_checkpoint", ""),
             chroma_checkpoint=data.get("chroma_checkpoint", ""),
             story_history=data.get("story_history"),
+            world_state_variables=dict(data.get("world_state_variables") or {}),
             # 不还原就等于每次读都换一个 now()：任何"读出来改一改再存回去"的
             # 路径都会把快照重排到时间线末尾。调用点各自重读 meta.json 打补丁
             # 只会让每个新调用方都复制一遍 workaround。
@@ -422,12 +440,34 @@ class SnapshotManager:
 
     async def record_story_history(self, snapshot_id: str, history: list[dict]) -> None:
         """本轮评估完成后补齐对应后置快照；不改旧轮次的快照。"""
+        snap = await self._load_for_patch(snapshot_id)
+        snap.story_history = deepcopy(history)
+        await self._persist_patch(snap)
+
+    async def record_world_state(
+        self, snapshot_id: str, variables: dict[str, str]
+    ) -> None:
+        """把评估产生的世界变量补写进对应的后置快照（工单07 B3）。
+
+        delta 出自评估，而后置快照在评估之前就打好了。不补写的话，从这个快照分叉出的
+        新分支会缺掉本场对世界的改动 —— 而它的角色状态与导演历史都已包含本场。
+        """
+        snap = await self._load_for_patch(snapshot_id)
+        snap.world_state_variables = dict(variables)
+        await self._persist_patch(snap)
+
+    async def _load_for_patch(self, snapshot_id: str) -> Snapshot:
         snap = await self.get_snapshot(snapshot_id)
         if snap is None:
             raise SnapshotNotFoundError(f"快照不存在: {snapshot_id}")
-        snap.story_history = deepcopy(history)
-        meta = _snapshots_dir(self.project_id) / snapshot_id / "meta.json"
-        # 创建时间由 get_snapshot 还原，无需重读 meta.json（那会引入 TOCTOU 窗口）。
+        return snap
+
+    async def _persist_patch(self, snap: Snapshot) -> None:
+        """把改过字段的快照写回 meta.json 与索引。
+
+        创建时间由 get_snapshot 还原，无需重读 meta.json（那会引入 TOCTOU 窗口）。
+        """
+        meta = _snapshots_dir(self.project_id) / snap.snapshot_id / "meta.json"
         await asyncio.to_thread(_atomic_write_json, meta, to_json(snap))
         await self._index_snapshot(snap)
 
