@@ -118,12 +118,14 @@ class _CapturingDirector:
         history_scenes=None,
         scene_intent="",
         recent_results=None,
+        world_state=None,
     ):
         type(self).calls.append(
             {
                 "goal": narrative_goal,
                 "intent": scene_intent,
                 "recent": list(recent_results or []),
+                "world_state": dict(world_state or {}),
             }
         )
         return SceneConfig(

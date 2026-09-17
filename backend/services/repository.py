@@ -1,7 +1,7 @@
-"""持久化仓储：Project / Character / Scene / Evaluation 的读写。
+"""持久化仓储：Project / Character / Scene / Evaluation / WorldState 的读写。
 
 Project / Scene / Evaluation 元数据存 SQLite；
-CharacterCard 以 JSON 文件存于项目目录（便于人工编辑与快照）。
+CharacterCard 与分支世界变量以 JSON 文件存于项目目录（便于人工编辑与快照）。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from backend.models import (
     Scene,
     SceneEvaluation,
     SpeakerMode,
+    WorldState,
     now,
 )
 from backend.utils import db
@@ -38,6 +39,12 @@ logger = get_logger("services.repository")
 
 def _characters_dir(project_id: str) -> Path:
     d = settings.project_dir(project_id) / "characters"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _world_state_dir(project_id: str) -> Path:
+    d = settings.project_dir(project_id) / "world_state"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -178,8 +185,8 @@ async def list_characters(project_id: str) -> list[CharacterCard]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_created_at(raw: object) -> datetime:
-    """还原创建时间，损坏值降级为当前时间。
+def _parse_created_at(raw: object, label: str = "场景创建时间") -> datetime:
+    """还原时间戳，损坏值降级为当前时间。
 
     本函数其余字段一律用 .get(默认值) 降级，创建时间不该是唯一的硬失败点：
     手工编辑过 data_json、或早于本字段落地的旧行，会让整个 list_scenes 抛
@@ -190,7 +197,7 @@ def _parse_created_at(raw: object) -> datetime:
     try:
         return datetime.fromisoformat(str(raw))
     except (TypeError, ValueError):
-        logger.warning("场景创建时间无法解析，按当前时间处理：%r", raw)
+        logger.warning("%s无法解析，按当前时间处理：%r", label, raw)
         return now()
 
 
@@ -325,6 +332,9 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         is_ending_reached=bool(data.get("is_ending_reached", False)),
         ending_reason=data.get("ending_reason", ""),
         unresolved_threads=list(data.get("unresolved_threads", []) or []),
+        # None 是"删除该变量"的标记，必须原样保留：压成空串会让删除意图变成
+        # 一次"把变量改成空值"的更新，旧值反而永远留在世界状态里。
+        world_state_delta=dict(data.get("world_state_delta") or {}),
         evaluated_snapshot_id=data.get("evaluated_snapshot_id", ""),
     )
 
@@ -338,6 +348,60 @@ async def get_evaluation(scene_id: str) -> SceneEvaluation | None:
     if not row:
         return None
     return _deserialize_evaluation(json.loads(row[0]), scene_id)
+
+
+# ---------------------------------------------------------------------------
+# WorldState（工单07：分支级世界变量）
+# ---------------------------------------------------------------------------
+
+
+def _deserialize_world_state(data: dict, project_id: str, branch_id: str) -> WorldState:
+    """从 JSON 还原世界状态（§5.4 第 2 步）。
+
+    值统一转成字符串：文件可被人工编辑，写进去的数字/布尔会原样进角色 prompt，
+    而下游一律按字符串拼接。键为空的条目直接丢弃（拼出来是个无名变量）。
+    """
+    raw = data.get("variables")
+    variables = {
+        str(k).strip(): str(v)
+        for k, v in (raw or {}).items()
+        if str(k).strip() and v is not None
+    }
+    return WorldState(
+        project_id=data.get("project_id", project_id),
+        branch_id=data.get("branch_id", branch_id),
+        variables=variables,
+        updated_at=_parse_created_at(data.get("updated_at"), "世界状态更新时间"),
+    )
+
+
+async def get_world_state(project_id: str, branch_id: str) -> WorldState:
+    """读取分支的世界变量。文件不存在返回空状态，不报错。
+
+    老项目、主分支、以及本功能上线前建立的分支都走这条降级路径：
+    世界变量为空 = 与本功能上线前的行为完全一致。
+    """
+    path = _world_state_dir(project_id) / f"{branch_id}.json"
+    if not path.exists():
+        return WorldState(project_id=project_id, branch_id=branch_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # 世界变量是增量演化的附加层，读不出来不该让整场推演起不来
+        logger.warning("分支 %s 的世界状态文件损坏，按空世界状态处理", branch_id, exc_info=True)
+        return WorldState(project_id=project_id, branch_id=branch_id)
+    return _deserialize_world_state(data, project_id, branch_id)
+
+
+async def save_world_state(state: WorldState) -> None:
+    """落盘分支世界变量。branch_id 为空时拒绝写入 —— 那会退化成项目级共享文件，
+    两条 IF 线互相污染（与长期记忆的 collection 后缀同理，见 §4.2 陷阱 11）。
+    """
+    if not state.branch_id:
+        raise ValueError("保存世界状态必须指定 branch_id")
+    state.updated_at = now()
+    path = _world_state_dir(state.project_id) / f"{state.branch_id}.json"
+    path.write_text(to_json(state), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
