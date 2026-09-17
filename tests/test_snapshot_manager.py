@@ -33,7 +33,8 @@ async def test_create_and_restore_snapshot():
     snap = await sm.create_snapshot("scene-1", "branch-1", states, label="test")
     assert snap.snapshot_id
 
-    restored = await sm.restore_snapshot(snap.snapshot_id)
+    # 破坏性方法有调用路障（工单07），测试是它仅存的调用方
+    restored = await sm.restore_snapshot(snap.snapshot_id, confirm_destructive=True)
     assert "c1" in restored
     assert restored["c1"].current_emotion == "愤怒"
     assert restored["c1"].relationships["c2"].relation_type == "敌对"

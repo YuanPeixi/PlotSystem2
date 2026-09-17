@@ -16,6 +16,7 @@ from backend.config import settings
 from backend.knowledge_graph import GraphManager
 from backend.models import (
     MAX_UNRESOLVED_THREADS,
+    MAX_WORLD_VARIABLES,
     PROGRESS_UNAVAILABLE,
     CharacterCard,
     CharacterState,
@@ -45,6 +46,13 @@ _HISTORY_BUDGET_TOKENS = 2000
 #: 20 条超长线索一旦写进去，后续每一次规划与评估都拖着它（PR #17：预算是硬约束）。
 _THREADS_BUDGET_TOKENS = 800
 _THREAD_ITEM_TOKENS = 60
+
+#: 世界变量的总预算与单值上限（工单07）。同一条道理，但更紧迫：线索只进导演上下文，
+#: 世界变量进**每一场、每个角色、每一轮**的 system prompt，超预算是按轮次计费的。
+_WORLD_BUDGET_TOKENS = 800
+_WORLD_VALUE_TOKENS = 60
+#: 变量名上限。键会原样进 prompt，长键既浪费预算又说明模型在拿它当句子用。
+_WORLD_KEY_CHARS = 40
 
 
 def unavailable_evaluation(scene_id: str) -> SceneEvaluation:
@@ -173,10 +181,81 @@ def _normalize_threads(value, fallback: list[str] | None = None) -> list[str]:
     return threads
 
 
+def describe_world_state(variables: dict[str, str] | None) -> str:
+    """把世界变量渲染成"一行一条"的文本块，供导演与角色的提示词共用。"""
+    if not variables:
+        return "（暂无世界层变量）"
+    return "\n".join(f"- {k}：{v}" for k, v in variables.items())
+
+
+def normalize_world_delta(value) -> dict[str, str | None]:
+    """把 LLM 给的世界变量增量收进可控形状。
+
+    `None` 必须原样保留 —— 它是"该变量不再成立，删掉"的唯一表达方式。没有删除语义的话，
+    变量只增不减，迟早把预算占满，之后每一条新的世界事实都会被挤掉。
+    空字符串按同义处理：模型表达"取消"时给空串和给 null 一样常见。
+
+    值统一塌成单行：它会按"一行一条"渲染进 prompt，带换行的值会让同一条变量
+    看起来像两条（与 episodic 条目的单行不变量同一道理）。
+    """
+    if not isinstance(value, dict):
+        return {}
+    delta: dict[str, str | None] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()[:_WORLD_KEY_CHARS]
+        if not key or key in delta:
+            continue
+        text = "" if raw_value is None else " ".join(str(raw_value).split())
+        if not text:
+            delta[key] = None
+        else:
+            delta[key] = fit_lines([text], ContextBudget(max_tokens=_WORLD_VALUE_TOKENS)).text
+        # delta 自身也要限量：它会落进 evaluations 表并被快照的 story_history 复制
+        if len(delta) >= MAX_WORLD_VARIABLES:
+            break
+    return delta
+
+
+def merge_world_variables(
+    current: dict[str, str] | None, delta: dict[str, str | None] | None
+) -> tuple[dict[str, str], list[str]]:
+    """应用增量并压回预算，返回 (合并结果, 被淘汰的键)。
+
+    与 `_normalize_threads` 同一条教训：**限条数不等于限预算**。世界变量比线索更狠 ——
+    它进的是每一场、每个角色、每一轮的 system prompt，超预算按轮次计费。
+
+    超限时淘汰**最久未更新**的键：世界事实越旧越可能已经不成立，而最近一场刚写下的
+    多半正在生效。被淘汰的键返回给调用方 warning，不静默丢。
+    """
+    merged: dict[str, str] = {k: v for k, v in (current or {}).items()}
+    for key, value in (delta or {}).items():
+        # 先 pop 再插入：dict 保持插入序，重新插入等于把"最近更新"刷到队尾
+        merged.pop(key, None)
+        if value is not None:
+            merged[key] = str(value)
+
+    kept: list[tuple[str, str]] = []
+    used = 0
+    for key, value in reversed(list(merged.items())):
+        if len(kept) >= MAX_WORLD_VARIABLES:
+            break
+        cost = estimate_tokens(f"- {key}：{value}")
+        if kept and used + cost > _WORLD_BUDGET_TOKENS:
+            break
+        kept.append((key, value))
+        used += cost
+    kept.reverse()
+    result = dict(kept)
+    return result, [k for k in merged if k not in result]
+
+
 _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个场景。
 
 【主线目标（用户设定，不可更改）】
 {narrative_goal}
+
+【当前世界状态（跨场次持续生效的公开事实）】
+{world_state}
 
 【本场意图】
 {scene_intent}
@@ -191,7 +270,7 @@ _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个�
 {characters}
 
 请挑选 2-6 名最合适的角色，设定场景。本场必须服务于主线目标；若本场意图与主线目标冲突，
-以主线目标为准。优先推进尚未收束的线索。严格输出 JSON（不要额外文字）：
+以主线目标为准。优先推进尚未收束的线索。场景设定不得与【当前世界状态】矛盾。严格输出 JSON（不要额外文字）：
 {{
   "name": "场景名",
   "description": "场景描述与期望走向（不强制结果）",
@@ -210,6 +289,9 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
 
 【结局判定标准】
 {ending_criteria}
+
+【本场开始前的世界状态（跨场次持续生效的公开事实）】
+{world_state}
 
 【本场开始前的主线推进度】
 {prior_progress}
@@ -236,6 +318,12 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   本场开始前的推进度；本场没有实质推进时给与之相同的值；
 - unresolved_threads 请输出**更新后的完整列表**：保留仍未收束的旧线索、删去本场已收束的、
   追加本场新开的，最近提及的排在前面；
+- world_state_delta 只记录本场对**世界层**造成的持续性改变（季节推移、某势力的公开态度、
+  某公开事件是否已发生）。三条硬要求：
+  1. **只能写所有在场角色都能感知的公开事实**。它会被注入到之后每一场、每个角色的设定里，
+     把只有部分角色知道的秘密写进去，等于向全体角色泄密，破坏本系统的信息不对称；
+  2. 角色个人的情绪/位置/目标不属于世界层，不要写进来；
+  3. 某条变量不再成立时，把它的值设为 null 表示删除。本场没有改变世界层时给 {{}}；
 - 结局判定只看【结局判定标准】与【主线目标】，并对照【前情提要】确认条件是否真的已在
   前面的场次里完成（多条件的结局往往跨场次达成）；不得把本场演出来的任意告一段落
   当成故事结局。
@@ -251,6 +339,7 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   "is_ending_reached": true|false,
   "ending_reason": "若已抵达结局，说明理由，否则空字符串",
   "unresolved_threads": ["未收束的线索1", "未收束的线索2"],
+  "world_state_delta": {{"某势力态度": "敌对", "已失效的变量": null}},
   "recommended_decision": "continue|next_scene|rollback",
   "rollback_reason": "若建议回滚，说明原因，否则空字符串"
 }}
@@ -286,6 +375,7 @@ class DirectorAgent:
         history_scenes: list[Scene] | None = None,
         scene_intent: str = "",
         recent_results: list[tuple[Scene, SceneEvaluation]] | None = None,
+        world_state: dict[str, str] | None = None,
     ) -> SceneConfig:
         char_desc = "\n".join(self._describe_for_plan(c) for c in available_characters)
         history_text = "（暂无历史场景）"
@@ -300,6 +390,7 @@ class DirectorAgent:
             characters=char_desc,
             history=history_text,
             recent_results=self._describe_recent_results(recent_results or []),
+            world_state=describe_world_state(world_state),
         )
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
@@ -341,6 +432,7 @@ class DirectorAgent:
         prior_progress: float = PROGRESS_UNAVAILABLE,
         prior_threads: list[str] | None = None,
         prior_synopses: list[str] | None = None,
+        world_state: dict[str, str] | None = None,
     ) -> SceneEvaluation:
         transcript = await self._build_transcript(dialogue_log)
         # 钳制基线：不可用（无历史评估）时按 0 起算，但仍要区分于"历史进度确实是 0"
@@ -359,6 +451,7 @@ class DirectorAgent:
             scene_brief=self._scene_brief(scene),
             character_profiles=self._describe_for_eval(characters or []),
             transcript=transcript,
+            world_state=describe_world_state(world_state),
         )
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
@@ -373,6 +466,8 @@ class DirectorAgent:
             result.synopsis = "（评估结果解析失败，分数不可信）"
             result.unresolved_threads = _normalize_threads(None, fallback=prior)
             result.goal_revision = revision
+            # world_state_delta 保持空：解析失败时世界状态必须原样不动，
+            # 绝不能让一次失败的调用伪装成一次真实的世界更新（与分数置为不可用同理）
             return result
 
         def _score(key: str) -> float:
@@ -418,6 +513,7 @@ class DirectorAgent:
             unresolved_threads=_normalize_threads(
                 data.get("unresolved_threads"), fallback=prior
             ),
+            world_state_delta=normalize_world_delta(data.get("world_state_delta")),
         )
 
     @staticmethod

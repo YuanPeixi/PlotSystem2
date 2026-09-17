@@ -31,6 +31,12 @@ PROGRESS_UNAVAILABLE = -1.0
 #: 未收束线索的累积上限，超出会把导演上下文吃光（工单28）
 MAX_UNRESOLVED_THREADS = 20
 
+#: 世界变量的条数上限（工单07）。它比线索更需要设限：线索只进导演上下文，
+#: 而世界变量进**每一场、每个角色、每一轮**的 system prompt，且只增不减。
+#: token 预算常量不放这里 —— 它要用 utils.llm.estimate_tokens，而
+#: utils.llm → config → models 已成链，反向 import 会成环（见 director_agent）。
+MAX_WORLD_VARIABLES = 30
+
 
 def goal_revision(narrative_goal: str) -> str:
     """主线目标的版本指纹。
@@ -224,6 +230,24 @@ class Project:
     updated_at: datetime = field(default_factory=now)
 
 
+@dataclass
+class WorldState:
+    """分支维度的全局世界变量（工单07）。
+
+    信息不对称保证"角色不该知道的不知道"，世界状态负责"该传播的能传播"：
+    季节、某势力的公开态度、某公开事件是否已发生这类**跨场次持续演变**的世界层事实。
+
+    **它是公共可见层**：变量会进入本场全部在场角色的 system prompt，
+    因此只允许存放所有角色都可感知的公开事实（契约1）。
+    作用域是分支级（与长期记忆同级），两条 IF 线各自演化、互不污染。
+    """
+
+    project_id: str = ""
+    branch_id: str = ""
+    variables: dict[str, str] = field(default_factory=dict)
+    updated_at: datetime = field(default_factory=now)
+
+
 # ---------------------------------------------------------------------------
 # 对话与场景
 # ---------------------------------------------------------------------------
@@ -331,6 +355,9 @@ class SceneEvaluation:
     is_ending_reached: bool = False
     ending_reason: str = ""
     unresolved_threads: list[str] = field(default_factory=list)
+    # 本场对世界变量的增量修改（工单07）。值为 None 表示"该变量不再成立，删除它"，
+    # 因此反序列化必须保留 None，不能当成空串。空 dict = 本场没有改变世界层事实。
+    world_state_delta: dict[str, str | None] = field(default_factory=dict)
     # 本场评估是针对哪个结束态快照给出的。`evaluations` 以 scene_id 为主键且
     # INSERT OR REPLACE，一场只留最新一份：continue 续跑会覆盖掉旧评估。
     # 归属戳随历史副本保留用于追溯；分叉实际继承快照的历史副本（空 = 旧记录）。
@@ -373,6 +400,9 @@ class Snapshot:
     scene_context: dict = field(default_factory=dict)
     graph_checkpoint: str = ""
     chroma_checkpoint: str = ""
+    # 该时点的世界变量副本（工单07）。分叉据此让新分支继承世界状态 ——
+    # 世界状态是分支级文件，不随快照目录走，不冻结进来就会"一分叉世界重置"。
+    world_state_variables: dict[str, str] = field(default_factory=dict)
     # 时点化的导演评估副本。不能通过 scene_id 回读后来被 continue 覆盖的评估。
     story_history: list[dict] | None = None
 

@@ -10,7 +10,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
-from backend.agents.director_agent import unavailable_evaluation
+from backend.agents.director_agent import merge_world_variables, unavailable_evaluation
 from backend.config import settings
 from backend.exceptions import ConflictError, PlotSystemError, SnapshotNotFoundError
 from backend.graphrag_pipeline import GraphRAGPipeline
@@ -30,6 +30,7 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
     SceneStatus,
+    WorldState,
     goal_revision,
     new_id,
 )
@@ -286,6 +287,7 @@ async def plan_scene(
     # 只传已完成的场景作为历史上下文
     completed = [s for s in history if s.status == SceneStatus.COMPLETED.value]
     recent_results = await _recent_scene_results(completed)
+    world = await repository.get_world_state(project_id, branch_id)
     director = DirectorAgent(project_id, GraphManager(project_id), SnapshotManager(project_id))
     return await director.plan_scene(
         branch_id,
@@ -294,6 +296,8 @@ async def plan_scene(
         history_scenes=completed,
         scene_intent=scene_intent,
         recent_results=recent_results,
+        # 看不见世界状态的导演会排出自相矛盾的场次（例如把已被烧毁的城池设为地点）
+        world_state=world.variables,
     )
 
 
@@ -483,7 +487,10 @@ async def run_scene(scene_id: str) -> None:
             scene.inherited_story_history = await _story_records(
                 scene, include_current=False, sm=sm
             )
-        engine = SceneEngine(scene, config, agents, sm)
+        # 分支级世界变量（工单07）。每次运行都重新读：它在场次之间演进，
+        # 但整场冻结，因此可以安全地进 system 消息（契约3 补充条款）。
+        world = await repository.get_world_state(scene.project_id, scene.branch_id)
+        engine = SceneEngine(scene, config, agents, sm, world_variables=world.variables)
         # continue 续跑：注入历史 transcript，让角色知道之前说了什么
         if scene.dialogue_log:
             engine.inject_history(scene.dialogue_log)
@@ -530,6 +537,7 @@ async def run_scene(scene_id: str) -> None:
                 prior_progress=prior_progress,
                 prior_threads=prior_threads,
                 prior_synopses=prior_synopses,
+                world_state=world.variables,
             )
             # 保留 9fe7e99 的快照归属戳；副本中同样留存，供追溯与审查。
             evaluation.evaluated_snapshot_id = result.snapshot_id_after
@@ -546,6 +554,7 @@ async def run_scene(scene_id: str) -> None:
                     "message": "后置快照历史补写失败；从该快照分叉可能缺少本场评估。",
                     "fatal": False,
                 })
+            await _apply_world_delta(scene, world, evaluation, result.snapshot_id_after, sm)
             await events.publish(scene_id, "evaluation", to_dict(evaluation))
         except Exception as exc:  # noqa: BLE001
             logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
@@ -573,6 +582,46 @@ async def run_scene(scene_id: str) -> None:
     finally:
         _running_engines.pop(scene_id, None)
         _active_scenes.discard(scene_id)
+
+
+async def _apply_world_delta(
+    scene: Scene,
+    world: WorldState,
+    evaluation: SceneEvaluation,
+    snapshot_id_after: str,
+    sm: SnapshotManager,
+) -> None:
+    """把本场评估产生的世界变量增量落到分支，并补写后置快照（工单07）。
+
+    包在自己的 try 里：这一场已经跑完并打了后置快照，世界变量是增量演化的附加层，
+    它的失败绝不能把场景状态打回 paused —— 决策 CAS 只接 completed，退回了用户
+    就再也无法对这场提交决策（与自动评估同一口径）。
+
+    delta 为空时**仍要补写快照**：引擎打后置快照时用的是开场那份世界变量，
+    补写这一步同时兼有"把空 delta 也确认一遍"的作用，成本只是一次 meta.json 重写。
+    """
+    if not snapshot_id_after:
+        return
+    try:
+        merged, dropped = merge_world_variables(world.variables, evaluation.world_state_delta)
+        if dropped:
+            # 静默丢弃世界事实比丢弃线索更难发现：它不落在任何列表里，只是下一场
+            # 开始时角色忽然不知道某件事了。
+            logger.warning(
+                "场景 %s 的世界变量超出预算，已淘汰最久未更新的 %d 项：%s",
+                scene.scene_id,
+                len(dropped),
+                "、".join(dropped),
+            )
+        world.variables = merged
+        await repository.save_world_state(world)
+        await sm.record_world_state(snapshot_id_after, merged)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("场景 %s 的世界变量更新失败：%s", scene.scene_id, exc, exc_info=True)
+        await events.publish(scene.scene_id, "scene_error", {
+            "message": "世界状态更新失败；本场对世界层的改动可能未生效。",
+            "fatal": False,
+        })
 
 
 async def _persist_character_states(agents: list[CharacterAgent]) -> None:
@@ -632,6 +681,8 @@ async def fork_from_snapshot(
     - I1 起点一致：靠 `restore_snapshot_id` 懒承接（契约4），**绝不 restore_snapshot()**；
     - I2 无副作用：全程只读来源分支，只新增记录；
     - I3 相互隔离：复制来源分支的长期记忆到新分支的 Chroma 集合；
+      分支级世界变量同理（工单07）—— 它是分支级文件、不随快照目录走，
+      不从快照搬进新分支的话，一分叉整个世界层就重置了；
     - I4 可追溯：`parent_branch_id` / `parent_scene_id` 指回来源；
     - I5 条件生效：`conditions` 覆盖同名的继承条件。
 
@@ -653,6 +704,15 @@ async def fork_from_snapshot(
     # 先搬记忆再建分支：搬运失败会抛错，顺序反过来就会留下一条无记忆的孤儿分支
     branch_id = new_id()
     await sm.clone_collections_for_branch(snapshot_id, branch_id)
+    # 世界变量同理（I3）：先落盘，失败就不该留下一条"世界被重置"的分支。
+    # 空变量也照写，好让这条分支的起点是显式的空，而不是"文件还没建"。
+    await repository.save_world_state(
+        WorldState(
+            project_id=project_id,
+            branch_id=branch_id,
+            variables=dict(snap.world_state_variables),
+        )
+    )
     branch = await sm.fork_branch(
         snapshot_id, dict(conditions or {}), name, director_notes, branch_id=branch_id
     )
