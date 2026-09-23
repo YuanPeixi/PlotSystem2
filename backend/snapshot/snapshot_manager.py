@@ -109,9 +109,16 @@ class SnapshotManager:
         label: str = "",
         story_history: list[dict] | None = None,
         world_state_variables: dict[str, str] | None = None,
+        snapshot_id: str = "",
     ) -> Snapshot:
+        """创建快照。
+
+        `snapshot_id` 允许调用方预生成（同 `fork_branch` 的 `branch_id`）：
+        快照一被索引就对分叉可见，需要"先挂守卫再创建"的调用方必须先拿到 id
+        （见 `SceneEngine.run` 的后置快照）。留空则内部生成。
+        """
         snap = Snapshot(
-            snapshot_id=new_id(),
+            snapshot_id=snapshot_id or new_id(),
             scene_id=scene_id,
             branch_id=branch_id,
             label=label,

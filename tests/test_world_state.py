@@ -119,7 +119,7 @@ async def test_run_scene_injects_world_and_keeps_scene_conditions_clean(monkeypa
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
             self.scene.status = "completed"
             self.scene.snapshot_id_after = ""
             return SceneResult(
@@ -403,7 +403,7 @@ async def test_run_scene_applies_delta_and_patches_snapshot(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
             self.scene.status = "completed"
             self.scene.snapshot_id_after = snap.snapshot_id
             return SceneResult(
@@ -460,7 +460,7 @@ async def test_world_state_failure_keeps_scene_completed(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
             self.scene.status = "completed"
             self.scene.snapshot_id_after = "snap-missing"
             return SceneResult(
@@ -773,8 +773,9 @@ async def test_fork_rejected_while_snapshot_pending_world_patch():
 
 @pytest.mark.asyncio
 async def test_pending_mark_is_set_before_snapshot_visible_and_cleared_on_success(monkeypatch):
-    """端到端：`run_scene` 期间，后置快照一旦落库可见，标记必须已经挂上；
-    评估与世界状态补写都完成后，标记必须被摘除，分叉才重新放行。
+    """端到端：`run_scene` 必须把守卫回调接到引擎上 —— 引擎在后置快照落库**之前**
+    回调，标记就必须已经生效（快照一进表就对 fork 可见，不等 scene 落库、也不等
+    run() 返回）；评估与世界状态补写都完成后，标记必须被摘除，分叉才重新放行。
     """
     project_id = "proj-world-pending-e2e"
     sm, snap = await _project_with_snapshot(project_id, "branch-src", {"季节": "隆冬"})
@@ -796,7 +797,14 @@ async def test_pending_mark_is_set_before_snapshot_visible_and_cleared_on_succes
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+            # 真实引擎在此处才创建后置快照：回调返回后快照立即可见，
+            # 因此标记必须在回调内就生效。
+            assert on_after_snapshot is not None, "run_scene 必须接上守卫回调"
+            on_after_snapshot(snap.snapshot_id)
+            observed["pending_at_snapshot"] = orchestrator.is_snapshot_pending_world_patch(
+                snap.snapshot_id
+            )
             self.scene.status = "completed"
             self.scene.snapshot_id_after = snap.snapshot_id
             return SceneResult(
@@ -812,7 +820,7 @@ async def test_pending_mark_is_set_before_snapshot_visible_and_cleared_on_succes
             pass
 
         async def evaluate_scene(self, *args, **kwargs):
-            # 评估调用发生时，post-snapshot 已经落库，标记必须已经挂上。
+            # 评估调用发生时，post-snapshot 已经落库，标记必须仍然挂着。
             observed["pending_during_eval"] = orchestrator.is_snapshot_pending_world_patch(
                 snap.snapshot_id
             )
@@ -827,6 +835,7 @@ async def test_pending_mark_is_set_before_snapshot_visible_and_cleared_on_succes
 
     await orchestrator.run_scene(scene.scene_id)
 
+    assert observed["pending_at_snapshot"] is True
     assert observed["pending_during_eval"] is True
     assert not orchestrator.is_snapshot_pending_world_patch(snap.snapshot_id)
     # 摘除后分叉必须放行，且能看到补写完成的世界变量。
@@ -835,6 +844,48 @@ async def test_pending_mark_is_set_before_snapshot_visible_and_cleared_on_succes
     )
     forked = await repository.get_world_state(project_id, branch.branch_id)
     assert forked.variables == {"季节": "隆冬", "敌军": "已破城"}
+
+
+@pytest.mark.asyncio
+async def test_pending_mark_is_cleared_when_engine_itself_fails(monkeypatch):
+    """引擎打完后置快照后自己抛错：评估永远不会发起，补写也就永远不会发生。
+    若守卫只在评估的 try/finally 里摘除，这份快照将永久不可分叉。
+    """
+    project_id = "proj-world-pending-engine-fail"
+    sm, snap = await _project_with_snapshot(project_id, "branch-src", {"季节": "隆冬"})
+    scene = Scene(
+        scene_id="scene-pending-engine-fail",
+        project_id=project_id,
+        branch_id="branch-src",
+        name="场景",
+        participating_characters=["c1"],
+    )
+    await repository.save_scene(scene)
+
+    class FakeEngine:
+        def __init__(self, scene_obj, *args, **kwargs):
+            self.scene = scene_obj
+
+        def inject_history(self, *args, **kwargs):
+            pass
+
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+            on_after_snapshot(snap.snapshot_id)
+            raise RuntimeError("快照之后炸了")
+
+    async def fake_build_agents(pid, cids, states=None, branch_id=""):
+        return []
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
+    monkeypatch.setattr(orchestrator, "SceneEngine", FakeEngine)
+
+    await orchestrator.run_scene(scene.scene_id)
+
+    assert not orchestrator.is_snapshot_pending_world_patch(snap.snapshot_id)
+    branch, _new_scene = await orchestrator.fork_from_snapshot(
+        project_id, snap.snapshot_id, "引擎失败后仍可分叉"
+    )
+    assert branch is not None
 
 
 @pytest.mark.asyncio
@@ -861,7 +912,8 @@ async def test_pending_mark_is_cleared_even_when_evaluation_fails(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+            on_after_snapshot(snap.snapshot_id)
             self.scene.status = "completed"
             self.scene.snapshot_id_after = snap.snapshot_id
             return SceneResult(
