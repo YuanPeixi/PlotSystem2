@@ -453,16 +453,22 @@ frontend/src/
       那会让第二次 `/start` 阻塞几分钟，属于产品决策，未做。
     - **后置快照存在 ≠ 世界变量已补写完成，这个窗口内必须拒绝分叉**
       （`orchestrator._pending_world_patch` + `fork_from_snapshot` 前置检查）。
-      `scene.status=completed` 与 `snapshot_id_after` 在引擎打完后置快照那一刻就落库
-      可见，而评估、`record_story_history`、`_apply_world_delta` 都要在那之后才跑完。
+      快照在 `create_snapshot` 把它写进 `snapshots` 表那一刻就对分叉可见（fork 只读
+      快照，既不看 `scene.status`，也不等 `run_scene` 往下走），而评估、
+      `record_story_history`、`_apply_world_delta` 都要在那之后才跑完。
       `fork_from_snapshot` 只在分叉那一刻读一次 `snap.world_state_variables` 整份
       拷进新分支文件，之后的补写不会再传播过去 —— 若这个窗口内分叉成功，新分支就会
       **永久**缺失本场对世界的改动，且不像超预算淘汰那样有 warning 可查（story_history
-      同理，见 6.3.1）。因此 `run_scene` 在 `save_scene` 落库前先把
-      `snapshot_id_after` 加进 `_pending_world_patch`，评估+补写的整个 try/finally
-      结束后才摘除（无论成功还是失败 —— 评估失败意味着 delta 永远不会再补写，
-      无限期挡着分叉才是真正的"漏掉本场世界变化"）；`fork_from_snapshot` 在这期间
-      抛 `ConflictError`（409），提示调用方稍后重试（评估通常几秒到十几秒完成）。
+      同理，见 6.3.1）。因此标记必须**早于快照可见**挂上：引擎预生成后置快照 id、
+      在 `create_snapshot` **之前**经 `on_after_snapshot` 回调交给 orchestrator
+      （`SceneEngine.run`）。**不要把它挪回 `run()` 返回之后**——那之间隔着
+      `create_snapshot` 提交事务后的关连接等 await，窗口虽小但真实存在；
+      也不要改用 `save_scene` 落库作为可见性起点，可见性根本不由 scene 落库决定。
+      标记在评估+补写整个 try/finally 结束后才摘除（无论成功还是失败 —— 评估失败
+      意味着 delta 永远不会再补写，无限期挡着分叉才是真正的"漏掉本场世界变化"），
+      且 `finally` 必须罩住 `engine.run()` 本身：快照已建而引擎随后抛错时若不摘，
+      这份快照就永久不可分叉。`fork_from_snapshot` 在这期间抛 `ConflictError`（409），
+      提示调用方稍后重试（评估通常几秒到十几秒完成）。
       与 `_active_scenes` 同属进程内状态、单进程假设。
 
 20. **角色的 system prompt 会逐条渲染 `scene_context` 里的非成句键**（工单07）。
@@ -592,8 +598,9 @@ graph TD
    否则同分支并发的另一场会被整份覆盖抹掉）→ 推 evaluation 与 completed。
    **自动评估与世界变量更新各包一个 `try`**：这一场已经跑完并打了后置快照，它们的失败
    不得把状态打回 `paused`——决策 CAS 只接 `completed`，退回了用户就再也无法对这场决策。
-   `save_scene` 落库前到评估+补写全部结束（成败均可）为止，`result.snapshot_id_after`
-   挂在 `_pending_world_patch` 里，期间 `fork_from_snapshot` 一律拒绝（见 4.2 陷阱 19 / 6.3.1）。
+   从引擎创建后置快照**之前**（`on_after_snapshot` 回调）到评估+补写全部结束（成败均可）
+   为止，该快照 id 挂在 `_pending_world_patch` 里，期间 `fork_from_snapshot` 一律拒绝
+   （见 4.2 陷阱 19 / 6.3.1）。
 
 **运行中的可恢复性（工单23）**：开跑前先把 `status=running` 落库；引擎每产生一轮就先把
 `dialogue_log` / `turns_completed` 写回 `scene` 对象，再回调 `on_turn`，由 orchestrator **逐轮
@@ -651,6 +658,8 @@ graph TD
 （见 `test_fork_during_evaluation_keeps_history_known_at_fork` 的历史版本），新分支会
 永久缺失本场结果——对 story_history 这曾被当成可接受的"冻结语义"，但对 world_state
 是无迹可查的静默丢失，两者本质是同一处竞态，因此统一堵住整个窗口而非只堵 world_state。
+**窗口的起点是快照创建、不是 scene 落库**：fork 只读 `snapshots` 表，`create_snapshot`
+一索引它就可分叉，因此标记由引擎在创建前经 `on_after_snapshot` 挂上（见 4.2 陷阱 19）。
 
 ### 6.4 启动对账
 
@@ -1097,6 +1106,19 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      `test_fork_during_evaluation_keeps_history_known_at_fork` 原先把"分叉拿到冻结在
      那一刻的旧数据"当成可接受行为验证，现已重写为验证"该窗口内分叉被拒绝、窗口结束
      后分叉可见完整结果"。同步更新 4.2 陷阱 19 / 5.3 / 6.3.1 / 8。
+-->
+
+<!-- 2026-09-23（续二）: 修正上一条的窗口起点。原注释称"save_scene 一落库快照才对
+     fork 可见，所以标记挂在 save_scene 之前就够了"——不成立：`fork_from_snapshot`
+     只读 `snapshots` 表，`create_snapshot` 里 `_index_snapshot` 提交的那一刻快照
+     就可分叉，根本不经过 scene 落库。原实现把标记挂在 `engine.run()` 返回之后，
+     中间隔着 `_persist_character_states`（每角色一次文件 IO）以及 run() 内部快照
+     提交后的收尾 await，那段窗口里的分叉仍会永久丢掉本场世界改动。
+     修法：`SceneEngine.run()` 新增同步回调 `on_after_snapshot`，预生成后置快照 id
+     并在 `create_snapshot` **之前**回调；`create_snapshot` 相应新增可选的
+     `snapshot_id` 参数（同 `fork_branch` 的 `branch_id` 预生成）。orchestrator 的
+     `finally` 随之上移到罩住 `engine.run()`，否则引擎在快照之后抛错会让标记永久挂住。
+     同步更新 4.2 陷阱 19 / 6.2 / 6.3.1。
 -->
 <!-- 2026-08-27: 工单08（分叉语义收敛）落地。长期记忆 collection 补分支维度
      （`char_{cid}__{branch_id}`，留空仍是项目级共享，无需迁移）；新增

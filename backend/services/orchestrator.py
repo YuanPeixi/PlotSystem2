@@ -88,16 +88,18 @@ def is_scene_active(scene_id: str) -> bool:
 
 # 后置快照已存在、但本场自动评估产生的世界变量增量尚未补写进去的快照 id 集合。
 #
-# `scene.status = completed` 与 `snapshot_id_after` 在 run_scene 里是先落库的
-# （引擎打完后置快照就存），随后才发起评估、算出 delta、经 `_apply_world_delta`
-# 补写回这份快照（record_world_state）—— 这中间隔着一整次 LLM 调用。若此刻恰好
-# 有人从这份快照分叉，`fork_from_snapshot` 会一次性把 `snap.world_state_variables`
-# 拷进新分支的世界状态文件；拷贝只发生这一次，之后 `record_world_state` 才补写
-# 完成的 delta 永远不会再传播过去 —— 新分支从此**永久**缺失本场对世界的改动，
+# 后置快照在 `create_snapshot` 把它写进 snapshots 表的那一刻就对
+# `fork_from_snapshot` 可见（fork 只读快照，既不看 scene 状态、也不等 run_scene
+# 往下走），随后才发起评估、算出 delta、经 `_apply_world_delta` 补写回这份快照
+# （record_world_state）—— 这中间隔着一整次 LLM 调用。若此刻恰好有人从这份快照
+# 分叉，`fork_from_snapshot` 会一次性把 `snap.world_state_variables` 拷进新分支的
+# 世界状态文件；拷贝只发生这一次，之后 `record_world_state` 才补写完成的 delta
+# 永远不会再传播过去 —— 新分支从此**永久**缺失本场对世界的改动，
 # 且无迹可查（不像 dropped 变量还有 warning）。
 # 因此分叉前必须能看见"这份快照还差一次世界状态补写"，在窗口内拒绝分叉，
-# 让用户重试（评估通常几秒到十几秒完成）。与 `_active_scenes` 同属单进程假设，
-# 多 worker 需要外置为跨进程可见的状态。
+# 让用户重试（评估通常几秒到十几秒完成）。守卫必须早于快照可见，所以由引擎的
+# `on_after_snapshot` 在 `create_snapshot` **之前**挂上（见 run_scene）。
+# 与 `_active_scenes` 同属单进程假设，多 worker 需要外置为跨进程可见的状态。
 _pending_world_patch: set[str] = set()
 
 
@@ -556,17 +558,26 @@ async def run_scene(scene_id: str) -> None:
             await _persist_scene()
             await events.publish(scene_id, "turn", to_dict(turn))
 
-        result = await engine.run(on_turn=_on_turn, on_persist=_persist_scene)
-        # 持久化角色状态变更（情绪/目标/位置）
-        await _persist_character_states(agents)
-        # 挂上"待补写"标记必须先于 save_scene：后者一落库，这份快照立刻对
-        # /snapshots/{id}/fork 可见，标记晚一步就会漏掉落库和挂标记之间的窗口。
-        # 摘除标记的 finally 必须从这里就开始罩，而不是等进了下面的评估 try 才罩——
-        # 否则 save_scene/发布 snapshot 事件本身的失败会让标记永久挂住，
-        # 这份快照从此再也无法分叉（比漏掉一次世界更新更糟）。
-        if result.snapshot_id_after:
-            _pending_world_patch.add(result.snapshot_id_after)
+        # "待补写"守卫必须在后置快照**可见之前**挂上，而快照一进 snapshots 表就
+        # 对 /snapshots/{id}/fork 可见 —— 它不依赖 scene 落库，也不等 run() 返回。
+        # 所以标记由引擎在创建后置快照前经 on_after_snapshot 回调挂上，这里只负责
+        # 兜底摘除：run() 自身抛错（快照已建、评估永远不会发起）时若不摘，
+        # 这份快照就永久不可分叉。
+        pending_snapshot = ""
+
+        def _mark_pending_world_patch(snapshot_id: str) -> None:
+            nonlocal pending_snapshot
+            pending_snapshot = snapshot_id
+            _pending_world_patch.add(snapshot_id)
+
         try:
+            result = await engine.run(
+                on_turn=_on_turn,
+                on_persist=_persist_scene,
+                on_after_snapshot=_mark_pending_world_patch,
+            )
+            # 持久化角色状态变更（情绪/目标/位置）
+            await _persist_character_states(agents)
             await repository.save_scene(scene)
             await events.publish(scene_id, "snapshot", {"snapshot_id": result.snapshot_id_after})
 
@@ -617,11 +628,12 @@ async def run_scene(scene_id: str) -> None:
                     {"message": f"自动评估失败：{exc}", "fatal": False},
                 )
         finally:
-            # 评估失败、甚至上面的 save_scene/发布事件本身失败，都要摘掉标记：
+            # 引擎抛错、评估失败、甚至 save_scene/发布事件本身失败，都要摘掉标记：
             # 一旦确定不会再有补写发生（无论是成功完成还是彻底放弃），无限期挡着
             # 分叉才是真正的"漏掉本场世界变化"——这里只挡"补写还没完成"的窗口，
             # 不挡"补写已确定不会再发生"的终态。
-            _pending_world_patch.discard(result.snapshot_id_after)
+            if pending_snapshot:
+                _pending_world_patch.discard(pending_snapshot)
         await events.publish(
             scene_id, "status", {"status": "completed", "reason": result.terminated_reason}
         )
