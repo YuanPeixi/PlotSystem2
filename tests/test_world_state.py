@@ -1,16 +1,20 @@
 """工单07：分支级世界变量（WorldState）。
 
-覆盖五条关键行为，每条都对应一个"不测就会静默退化"的点：
+覆盖八条关键行为，每条都对应一个"不测就会静默退化"的点：
 
 1. 合并优先级与**不写回** `Scene.initial_conditions`（偏离工单原文的 B2）；
 2. 世界变量真的进了角色的 system prompt，且整场不变（契约3 补充条款）；
 3. delta 的预算、淘汰与删除语义（C1，`unresolved_threads` 踩过的同一坑）；
 4. 分叉继承与无副作用（I3 / I2），以及回滚丢弃本场 delta；
-5. 后置快照的补写（B3）与老项目的降级路径。
+5. 后置快照的补写（B3）与老项目的降级路径；
+6. 同分支并发下的读-改-写：后完成的那场不得抹掉先完成的那场的更新；
+7. 保留字：世界变量只能补充场景上下文，不能改写场景固有字段；
+8. 读取侧闸门：人工编辑的文件同样要受预算约束。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -36,7 +40,9 @@ from backend.models import (
 )
 from backend.scene_engine import SceneEngine
 from backend.services import orchestrator, repository
+from backend.services.world_state import WORLD_BUDGET_TOKENS, WORLD_VALUE_TOKENS
 from backend.snapshot import SnapshotManager
+from backend.utils.llm import estimate_tokens
 
 
 def _world_state_file(project_id: str, branch_id: str):
@@ -520,3 +526,215 @@ async def test_world_state_round_trip_coerces_values_to_str():
 
     state = await repository.get_world_state(project_id, "b")
     assert state.variables == {"年份": "1205", "开战": "True"}
+
+
+# ---------------------------------------------------------------------------
+# 6. 同分支并发：世界状态的读-改-写
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_world_delta_rereads_instead_of_using_the_opening_copy():
+    """`_apply_world_delta` 必须自己重读，不得沿用 run_scene 开场读到的副本。
+
+    那份副本与这里之间隔着整整一场 LLM，期间同分支上另一场完全可能已经跑完并
+    更新过世界。拿旧副本合并再整份覆盖写，等于把对方的更新抹掉。
+    """
+    project_id = "proj-world-reread"
+    sm, snap = await _project_with_snapshot(project_id, "branch-src", {"季节": "冬季"})
+    scene_a = Scene(scene_id="scene-a", project_id=project_id, branch_id="branch-src")
+    scene_b = Scene(scene_id="scene-b", project_id=project_id, branch_id="branch-src")
+
+    # A 先完成，写下一条新的世界事实
+    await orchestrator._apply_world_delta(
+        scene_a,
+        SceneEvaluation(scene_id="scene-a", world_state_delta={"城池": "已沦陷"}),
+        snap.snapshot_id,
+        sm,
+    )
+    # B 随后以空 delta 收尾 —— 它开场读到的世界里还没有"城池"
+    await orchestrator._apply_world_delta(
+        scene_b, SceneEvaluation(scene_id="scene-b"), snap.snapshot_id, sm
+    )
+
+    live = await repository.get_world_state(project_id, "branch-src")
+    assert live.variables == {"季节": "冬季", "城池": "已沦陷"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_scenes_on_one_branch_do_not_lose_world_updates(monkeypatch):
+    """同分支两场真并发：谁都不该把对方的世界更新吃掉。
+
+    `_active_scenes` 只挡得住同一个场景被启动两次，同一分支上的两个不同场景照样
+    可以并发跑完。**只给写加锁是不够的**：锁到了也只是把过时副本安全地写了进去，
+    临界区必须从"重读"开始。
+    """
+    project_id = "proj-world-concurrent"
+    sm, snap = await _project_with_snapshot(project_id, "branch-src", {"季节": "冬季"})
+    real_get = repository.get_world_state
+
+    async def yielding_get(project_id_: str, branch_id_: str):
+        state = await real_get(project_id_, branch_id_)
+        # 强行在读与写之间让出控制权：真实路径上这中间是 LLM 调用与文件 IO，
+        # 不制造让出点的话单线程事件循环会把两次读写排成串行，并发窗口就测不出来。
+        await asyncio.sleep(0)
+        return state
+
+    monkeypatch.setattr(repository, "get_world_state", yielding_get)
+
+    await asyncio.gather(
+        orchestrator._apply_world_delta(
+            Scene(scene_id="scene-a", project_id=project_id, branch_id="branch-src"),
+            SceneEvaluation(scene_id="scene-a", world_state_delta={"城池": "已沦陷"}),
+            snap.snapshot_id,
+            sm,
+        ),
+        orchestrator._apply_world_delta(
+            Scene(scene_id="scene-b", project_id=project_id, branch_id="branch-src"),
+            SceneEvaluation(scene_id="scene-b", world_state_delta={"粮草": "告罄"}),
+            snap.snapshot_id,
+            sm,
+        ),
+    )
+
+    live = await real_get(project_id, "branch-src")
+    assert live.variables == {"季节": "冬季", "城池": "已沦陷", "粮草": "告罄"}
+    # 补写进快照的那份也必须是合并后的完整状态，否则从它分叉会带出一个中间态
+    assert (await sm.get_snapshot(snap.snapshot_id)).world_state_variables == live.variables
+
+
+@pytest.mark.asyncio
+async def test_world_state_locks_are_per_branch():
+    """锁按 (project_id, branch_id) 分桶：两条分支互不阻塞。"""
+    assert orchestrator._world_state_lock("p", "b1") is orchestrator._world_state_lock("p", "b1")
+    assert orchestrator._world_state_lock("p", "b1") is not orchestrator._world_state_lock("p", "b2")
+    assert orchestrator._world_state_lock("p1", "b") is not orchestrator._world_state_lock("p2", "b")
+
+
+# ---------------------------------------------------------------------------
+# 7. 保留字：世界变量不得改写场景本身
+# ---------------------------------------------------------------------------
+
+
+def test_world_variables_cannot_shadow_scene_fields():
+    """世界变量垫在 name/location/... 之下又摊在同一个 dict 里，同名就会顶掉本场设定。
+
+    场景设在王城、世界里存着 `location=首都`，角色与导演就双双读到"地点：首都"——
+    一条跨场次沿用的世界层默认值，改掉了导演为这一场明确指定的地点。
+    """
+    scene = Scene(scene_id="s", project_id="p", branch_id="b")
+    engine = _engine(scene, {}, {"location": "首都", "name": "另一场", "季节": "隆冬"})
+    ctx = engine._scene_context()
+
+    assert ctx["location"] == "王城"   # 场景固有字段不可被世界变量改写
+    assert ctx["name"] == "试炼"
+    assert ctx["季节"] == "隆冬"        # 普通世界变量照常生效
+    assert "首都" not in _agent().build_system_prompt(ctx)
+
+
+def test_reserved_keys_never_enter_the_snapshot():
+    """保留字在构造时就被摘掉，不进 `world_variables`，也就不会被快照带下去。"""
+    scene = Scene(scene_id="s", project_id="p", branch_id="b")
+    engine = _engine(scene, {}, {"description": "另一段描述", "季节": "隆冬"})
+
+    assert engine.world_variables == {"季节": "隆冬"}
+
+
+def test_normalize_world_delta_rejects_reserved_keys():
+    """写入侧闸门：delta 会落进 evaluations 表并被快照复制，留着它就是一条假记录。"""
+    delta = normalize_world_delta({"location": "首都", "季节": "隆冬"})
+    assert delta == {"季节": "隆冬"}
+
+
+def test_merge_evicts_reserved_keys_already_in_store():
+    """库里已经存着保留字（本次修复之前写入的）也要清掉，并计入 dropped 以便 warning。"""
+    merged, dropped = merge_world_variables({"opening_narration": "旧开场", "季节": "隆冬"}, None)
+    assert merged == {"季节": "隆冬"}
+    assert dropped == ["opening_narration"]
+
+
+# ---------------------------------------------------------------------------
+# 8. 读取侧闸门：人工编辑的文件同样要受预算约束
+# ---------------------------------------------------------------------------
+
+
+def _world_tokens(variables: dict[str, str]) -> int:
+    return sum(estimate_tokens(f"- {k}：{v}") for k, v in variables.items())
+
+
+@pytest.mark.asyncio
+async def test_hand_edited_world_state_is_clamped_on_read():
+    """`merge_world_variables` 只拦得住导演那条路径。文件摆在项目目录里、明确支持
+    人工编辑，手写三百条变量会直接进**每一场、每个角色、每一轮**的 system prompt。
+    """
+    project_id = "proj-world-handedit"
+    path = _world_state_file(project_id, "b")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"variables": {f"变量{i}": f"值{i}" for i in range(300)}}),
+        encoding="utf-8",
+    )
+
+    variables = (await repository.get_world_state(project_id, "b")).variables
+    assert len(variables) <= MAX_WORLD_VARIABLES
+    assert _world_tokens(variables) <= WORLD_BUDGET_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_hand_edited_oversized_value_is_clamped_on_read():
+    """单条超长同样致命：30 条的上限拦不住一条五千字的变量。"""
+    project_id = "proj-world-hugevalue"
+    path = _world_state_file(project_id, "b")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"variables": {"战况": "长" * 5000}}), encoding="utf-8"
+    )
+
+    variables = (await repository.get_world_state(project_id, "b")).variables
+    assert estimate_tokens(variables["战况"]) <= WORLD_VALUE_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_hand_edited_multiline_value_is_squashed_on_read():
+    """世界变量按"一行一条"渲染，带换行的值会让同一条变量看起来像两条
+    （与 episodic 条目的单行不变量同一道理）。
+    """
+    project_id = "proj-world-multiline"
+    path = _world_state_file(project_id, "b")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"variables": {"战况": "北境失守\n南境仍在坚守"}}), encoding="utf-8"
+    )
+
+    assert "\n" not in (await repository.get_world_state(project_id, "b")).variables["战况"]
+
+
+@pytest.mark.asyncio
+async def test_hand_edited_reserved_key_is_ignored_on_read():
+    project_id = "proj-world-handreserved"
+    path = _world_state_file(project_id, "b")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"variables": {"location": "首都", "季节": "隆冬"}}), encoding="utf-8"
+    )
+
+    assert (await repository.get_world_state(project_id, "b")).variables == {"季节": "隆冬"}
+
+
+@pytest.mark.asyncio
+async def test_clamping_does_not_rewrite_the_file():
+    """只压不写回：这是读路径，不该因为一次读取就改掉用户手编的文件。
+    下一次合并落盘时超限的内容自然收敛。
+    """
+    project_id = "proj-world-noclobber"
+    path = _world_state_file(project_id, "b")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"variables": {f"变量{i}": f"值{i}" for i in range(300)}}),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    await repository.get_world_state(project_id, "b")
+
+    assert path.read_bytes() == before

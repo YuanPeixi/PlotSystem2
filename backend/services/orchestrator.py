@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from copy import deepcopy
 from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
-from backend.agents.director_agent import merge_world_variables, unavailable_evaluation
+from backend.agents.director_agent import unavailable_evaluation
 from backend.config import settings
 from backend.exceptions import ConflictError, PlotSystemError, SnapshotNotFoundError
 from backend.graphrag_pipeline import GraphRAGPipeline
@@ -36,6 +37,7 @@ from backend.models import (
 )
 from backend.scene_engine import SceneEngine
 from backend.services import events, inspection, repository
+from backend.services.world_state import merge_world_variables
 from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_dict
@@ -54,6 +56,29 @@ _active_scenes: set[str] = set()
 # 1. decisions 表（scene_id 主键）持久化已生效决策 —— 顺序重试/网络重放直接重放结果；
 # 2. scenes.status 列的 CAS 条件更新 —— 拦截并发请求，且跨进程/多 worker 有效。
 # 详见 apply_decision。
+
+# 分支级世界状态的"读-改-写"临界区，按 (project_id, branch_id) 分桶。
+# `_active_scenes` 只挡得住同一个场景被启动两次，同一分支上的**两个不同场景**照样
+# 可以并发跑完；而世界状态是整份文件覆盖写的，两场各自拿着开场读到的副本收尾，
+# 后完成的那场就会把先完成的那场的更新整个抹掉。锁必须罩住**重读**
+# （见 `_apply_world_delta`），只锁写等于把过时副本安全地写了进去。
+# 与 `_active_scenes` 同属【契约9】的单进程假设：多 worker 要先把它外置。
+_world_state_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _world_state_lock(project_id: str, branch_id: str) -> asyncio.Lock:
+    """取分支专用的锁。首次访问时创建 —— 取与写之间没有 await，单线程事件循环下原子。
+
+    用完不删：删除看似省内存，实则有一个真实的竞态 —— 某个任务可能已经拿到了锁对象、
+    正阻塞在 acquire 上，此时删掉条目会让下一个任务新建一把锁，两者同时进临界区。
+    锁本身只有几十字节，分支数量又是有界的。
+    """
+    key = (project_id, branch_id)
+    lock = _world_state_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _world_state_locks[key] = lock
+    return lock
 
 
 def is_scene_active(scene_id: str) -> bool:
@@ -554,7 +579,7 @@ async def run_scene(scene_id: str) -> None:
                     "message": "后置快照历史补写失败；从该快照分叉可能缺少本场评估。",
                     "fatal": False,
                 })
-            await _apply_world_delta(scene, world, evaluation, result.snapshot_id_after, sm)
+            await _apply_world_delta(scene, evaluation, result.snapshot_id_after, sm)
             await events.publish(scene_id, "evaluation", to_dict(evaluation))
         except Exception as exc:  # noqa: BLE001
             logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
@@ -586,7 +611,6 @@ async def run_scene(scene_id: str) -> None:
 
 async def _apply_world_delta(
     scene: Scene,
-    world: WorldState,
     evaluation: SceneEvaluation,
     snapshot_id_after: str,
     sm: SnapshotManager,
@@ -599,23 +623,35 @@ async def _apply_world_delta(
 
     delta 为空时**仍要补写快照**：引擎打后置快照时用的是开场那份世界变量，
     补写这一步同时兼有"把空 delta 也确认一遍"的作用，成本只是一次 meta.json 重写。
+
+    **世界状态必须在锁内重读**，不能沿用 `run_scene` 开场读的那份：分支世界状态是
+    整份文件覆盖写，而那份副本与这里之间隔着整整一场 LLM。同一分支上两场并发时，
+    后完成的那场会拿着开场的旧副本把先完成的那场的更新整个抹掉 —— A 写下"城池已
+    沦陷"，B 以空 delta 收尾，世界就只剩下"冬季"。只给写操作加锁救不了：锁到了也
+    只是把过时副本安全地写了进去，重读才是要害（§4.2 陷阱 19）。
     """
     if not snapshot_id_after:
         return
     try:
-        merged, dropped = merge_world_variables(world.variables, evaluation.world_state_delta)
-        if dropped:
-            # 静默丢弃世界事实比丢弃线索更难发现：它不落在任何列表里，只是下一场
-            # 开始时角色忽然不知道某件事了。
-            logger.warning(
-                "场景 %s 的世界变量超出预算，已淘汰最久未更新的 %d 项：%s",
-                scene.scene_id,
-                len(dropped),
-                "、".join(dropped),
+        async with _world_state_lock(scene.project_id, scene.branch_id):
+            world = await repository.get_world_state(scene.project_id, scene.branch_id)
+            merged, dropped = merge_world_variables(
+                world.variables, evaluation.world_state_delta
             )
-        world.variables = merged
-        await repository.save_world_state(world)
-        await sm.record_world_state(snapshot_id_after, merged)
+            if dropped:
+                # 静默丢弃世界事实比丢弃线索更难发现：它不落在任何列表里，只是下一场
+                # 开始时角色忽然不知道某件事了。
+                logger.warning(
+                    "场景 %s 的世界变量超出预算，已淘汰最久未更新的 %d 项：%s",
+                    scene.scene_id,
+                    len(dropped),
+                    "、".join(dropped),
+                )
+            world.variables = merged
+            await repository.save_world_state(world)
+            # 补写留在锁内：快照记录的世界状态与落盘的那份必须是同一份，
+            # 否则从该快照分叉出的分支会带着一份谁都没见过的中间态。
+            await sm.record_world_state(snapshot_id_after, merged)
     except Exception as exc:  # noqa: BLE001
         logger.warning("场景 %s 的世界变量更新失败：%s", scene.scene_id, exc, exc_info=True)
         await events.publish(scene.scene_id, "scene_error", {
@@ -881,7 +917,6 @@ async def apply_decision(
             # 是 INSERT OR REPLACE，续跑后拿到的自然是新值。
             await repository.save_scene(scene)
             # 异步触发，调用方通过事件总线追踪进度
-            import asyncio
             asyncio.create_task(run_scene(scene_id))
             decision.next_scene_id = scene_id
 

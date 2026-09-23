@@ -16,7 +16,7 @@ from __future__ import annotations
 from backend.agents.base_agent import autogen_available, make_model_client
 from backend.config import settings
 from backend.memory import MemoryManager
-from backend.models import CharacterCard, LoreEntry
+from backend.models import RESERVED_SCENE_CONTEXT_KEYS, CharacterCard, LoreEntry
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
@@ -112,8 +112,10 @@ class CharacterAgent:
             )
         return "\n".join(lines)
 
-    #: `_scene_brief` 单独成句的键，其余键一律进"当前情境"清单
-    _BRIEF_KEYS = ("name", "location", "description", "opening_narration")
+    #: `_scene_brief` 单独成句的键，其余键一律进"当前情境"清单。
+    #: 与 `RESERVED_SCENE_CONTEXT_KEYS` 是同一份名单，不能各写各的：世界变量正是
+    #: 按那份名单被拒的，两边一旦漂移就会出现"拦住了却不成句"或"没拦住又被顶掉"。
+    _BRIEF_KEYS = RESERVED_SCENE_CONTEXT_KEYS
 
     @classmethod
     def _scene_brief(cls, scene_context: dict) -> str:

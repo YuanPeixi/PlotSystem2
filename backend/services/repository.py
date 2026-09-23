@@ -30,6 +30,7 @@ from backend.models import (
     WorldState,
     now,
 )
+from backend.services.world_state import clamp_world_variables
 from backend.utils import db
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_json
@@ -358,15 +359,23 @@ async def get_evaluation(scene_id: str) -> SceneEvaluation | None:
 def _deserialize_world_state(data: dict, project_id: str, branch_id: str) -> WorldState:
     """从 JSON 还原世界状态（§5.4 第 2 步）。
 
-    值统一转成字符串：文件可被人工编辑，写进去的数字/布尔会原样进角色 prompt，
-    而下游一律按字符串拼接。键为空的条目直接丢弃（拼出来是个无名变量）。
+    这里就把变量压回预算（`clamp_world_variables`）：文件摆在项目目录里、明确支持
+    人工编辑，而 `merge_world_variables` 只拦得住导演写进来的那条路径。手写一条
+    五千字的变量、或是塞进三百条，都会绕过写入侧闸门直接进**每一场、每个角色、
+    每一轮**的 system prompt。值统一转成单行字符串：写进去的数字/布尔会原样进
+    角色 prompt，而下游一律按字符串拼接、按"一行一条"渲染。
+
+    **只压不写回**：这是读路径，不该因为一次读取就改掉用户手编的文件；下一次
+    合并落盘时超限的内容自然收敛。
     """
-    raw = data.get("variables")
-    variables = {
-        str(k).strip(): str(v)
-        for k, v in (raw or {}).items()
-        if str(k).strip() and v is not None
-    }
+    variables, dropped = clamp_world_variables(data.get("variables"))
+    if dropped:
+        logger.warning(
+            "分支 %s 的世界状态文件超出预算或含保留字，本次读取已忽略 %d 项：%s",
+            branch_id,
+            len(dropped),
+            "、".join(dropped),
+        )
     return WorldState(
         project_id=data.get("project_id", project_id),
         branch_id=data.get("branch_id", branch_id),

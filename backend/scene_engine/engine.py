@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from backend.agents.character_agent import CharacterAgent
 from backend.config import settings
 from backend.models import (
+    RESERVED_SCENE_CONTEXT_KEYS,
     CharacterState,
     DialogueTurn,
     Scene,
@@ -73,7 +74,7 @@ class SceneEngine:
         # 那条通道必须走 user 消息，两者不得混用。
         # 走构造参数而非 SceneConfig 字段：SceneConfig 是导演的规划产物，
         # 世界变量是运行期注入的，混进去会让 /scenes/plan 多返回一个恒空字段。
-        self.world_variables = dict(world_variables or {})
+        self.world_variables = self._reject_reserved(world_variables)
         self._interrupt = False
         self._history_transcript: list[str] = []  # continue 时注入的历史
         self._selector: ScoringSpeakerSelector | None = None
@@ -82,6 +83,31 @@ class SceneEngine:
     def interrupt(self) -> None:
         """外部请求中断（如导演/暂停）。"""
         self._interrupt = True
+
+    def _reject_reserved(self, world_variables: dict[str, str] | None) -> dict[str, str]:
+        """丢掉与场景固有字段同名的世界变量（最后一道闸门）。
+
+        `_scene_context` 把世界变量垫在 name/location/description/opening_narration
+        之下、又摊在同一个 dict 里，同名的世界变量会**顶掉本场的设定**：场景设在
+        城堡，世界里存着 `location=首都`，于是角色与导演双双读到"地点：首都"。
+        世界变量只允许**补充**场景上下文，不允许改写场景是什么。
+
+        写入侧（`normalize_world_delta`）与读取侧（`clamp_world_variables`）都已拦过，
+        这里仍拦一次：`world_variables` 是构造参数，谁都能直接传进来。
+        丢弃前 warning —— 世界事实被静默吃掉只表现为"角色忽然不知道某件事"。
+        """
+        cleaned = {
+            k: v for k, v in (world_variables or {}).items()
+            if k not in RESERVED_SCENE_CONTEXT_KEYS
+        }
+        shadowed = [k for k in (world_variables or {}) if k in RESERVED_SCENE_CONTEXT_KEYS]
+        if shadowed:
+            logger.warning(
+                "场景 %s 的世界变量与场景固有字段同名，已忽略：%s",
+                self.scene.scene_id,
+                "、".join(shadowed),
+            )
+        return cleaned
 
     def inject_history(self, history_log: list[DialogueTurn]) -> None:
         """将历史对话轮次注入引擎，供 continue 续跑时使用。"""
@@ -364,6 +390,10 @@ class SceneEngine:
 
         合并只发生在这里，**不写回** `Scene.initial_conditions`：写回并落库会让分叉
         不变量 I5 把此刻的世界快照当成场景局部条件永久带下去，从此永远覆盖真实世界状态。
+
+        四个场景固有键（`RESERVED_SCENE_CONTEXT_KEYS`）不在世界变量的射程内 ——
+        `self.world_variables` 在构造时已由 `_reject_reserved` 过滤，所以摊在
+        前四项之后也顶不掉它们。
         """
         return {
             "name": self.config.name,
