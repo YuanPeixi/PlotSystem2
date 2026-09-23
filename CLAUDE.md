@@ -149,6 +149,7 @@ backend/
 ├── services/           ★★ 编排层：找业务逻辑先看这里
 │   ├── orchestrator.py   唯一跨模块编排点（构建/规划/运行/决策/输出/对账）
 │   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON + 分支世界变量 JSON）
+│   ├── world_state.py    世界变量的规范化/预算/渲染（纯函数，无 IO；读写两侧共用）
 │   ├── inspection.py     ★ 角色内部状态的唯一只读查询层（面板/导演/总结共用）
 │   └── events.py         SSE 内存事件总线（asyncio.Queue）
 │
@@ -406,29 +407,57 @@ frontend/src/
     `0`）解析成 Python `int`，`float()` 对它抛的是 `OverflowError` 而非 `ValueError`，
     漏接会穿过 `_extract_json` 那道防线，把一份本可解析的评估废在编排层的兜底里。
 
-19. **`WorldState` 有四条不可分割的语义**（工单07），少一条就会静默退化：
+19. **`WorldState` 有七条不可分割的语义**（工单07），少一条就会静默退化：
     - **合并只发生在运行时**：`SceneEngine._scene_context()` 按
       `{**世界变量, **scene.initial_conditions}` 合并（场景局部覆盖全局默认），
       **绝不写回 `Scene.initial_conditions`**。写回并落库会让分叉不变量 I5 把此刻的
       世界快照当成**场景局部条件**永久带下去，从此这条分支上的同名世界变量再也改不动；
+    - **四个场景固有键是保留字**（`models.RESERVED_SCENE_CONTEXT_KEYS` =
+      name / location / description / opening_narration）。世界变量垫在它们之下又摊在
+      同一个 dict 里，**同名就会顶掉本场的设定** —— 场景设在王城、世界里存着
+      `location=首都`，角色与导演就双双读到"地点：首都"，一条跨场次沿用的默认值
+      改掉了导演为这一场明确指定的地点。世界变量只允许**补充**场景上下文，不允许
+      改写场景是什么。三处拦截：`normalize_world_delta`（不让它落进 evaluations 表）、
+      `merge_world_variables`（清掉库里已有的）、`SceneEngine._reject_reserved`
+      （构造参数谁都能传，最后一道且不进快照）。这份名单与 `CharacterAgent._BRIEF_KEYS`
+      **必须是同一个常量**：两边漂移就会出现"拦住了却不成句"或"没拦住又被顶掉"；
     - **预算是硬约束**，与 `unresolved_threads` 同一条教训但更紧迫：世界变量进的是
       **每一场、每个角色、每一轮**的 system prompt。`merge_world_variables` 同时限
       条数（`MAX_WORLD_VARIABLES`）与总 token，超限淘汰**最久未更新**的键并 warning ——
       静默丢弃世界事实比丢弃线索更难发现，它不落在任何列表里，只表现为下一场角色
       忽然不知道某件事了；
+    - **预算要两道闸门，读取侧那道不可省**：`merge_world_variables` 只拦得住导演写进来
+      的那条路径，而 `world_state/{branch_id}.json` 摆在项目目录里、**明确支持人工编辑**。
+      手写一条五千字的变量、或塞进三百条，都会绕过写入侧直进每一轮的 prompt。
+      因此 `repository._deserialize_world_state` 读文件时就调 `clamp_world_variables`
+      压回同一形状与预算（顺带把值塌成单行 —— 按"一行一条"渲染，换行会让一条看起来像两条）。
+      **只压不写回**：读路径不该因为一次读取就改掉用户手编的文件，超限内容在下次合并
+      落盘时自然收敛。这两个函数与 `describe_world_state` 住在 `services/world_state.py`，
+      拆出来的唯一理由是 import 方向：`repository → director_agent → inspection → repository` 成环；
     - **`delta` 里 value 为 `None` = 删除该变量**，这是唯一的收束手段。没有它变量只增
       不减，迟早占满预算，之后每一条新的世界事实都会被挤掉。空串按同义处理；
       评估解析失败时 `world_state_delta` 必须为空 dict，绝不能让一次失败的 LLM 调用
       伪装成一次真实的世界更新；
     - **后置快照要补写**（`record_world_state`）：delta 出自评估，而后置快照在评估
       之前就打好了。不补写的话，从该快照分叉出的分支会缺掉本场对世界的改动 ——
-      而它的角色状态与导演历史都已包含本场。
+      而它的角色状态与导演历史都已包含本场；
+    - **落盘是"读-改-写"，临界区必须从重读开始**（`orchestrator._world_state_lock`，
+      按 `(project_id, branch_id)` 分桶）。世界状态是**整份文件覆盖写**，而 `run_scene`
+      在开场读、在评估之后才写，中间隔着整整一场 LLM。`_active_scenes` 只挡得住同一个
+      场景被启动两次，同一分支上的**两个不同场景**照样能并发跑完：A 写下"城池已沦陷"、
+      B 随后以空 delta 收尾，世界就只剩下开场那份"冬季"。**只给写加锁救不了** ——
+      锁到了也只是把过时副本安全地写了进去，所以 `_apply_world_delta` 不接受
+      `run_scene` 那份副本，而是在锁内自己重读。锁是进程内的，同属【契约9】。
+      遗留边界：B 整场是拿着**开场的旧世界**演的（它看不见 A 中途写下的事实）。
+      这是并发本身的语义，不是数据丢失；要连它一起消掉得按分支串行整场推演，
+      那会让第二次 `/start` 阻塞几分钟，属于产品决策，未做。
 
 20. **角色的 system prompt 会逐条渲染 `scene_context` 里的非成句键**（工单07）。
     旧实现只读 `name`/`location`/`description`/`opening_narration` 四个键，导演写的
     `initial_conditions` 与世界变量都只参与 lore 关键词匹配、从不进角色视野
     （"已入冬"存进了世界状态，角色照旧在雪地里谈论酷暑）。因此**往 `scene_context`
     里塞任何键都等于把它公开给本场全部角色**，内部记账用的字段不要走这个 dict。
+    那四个成句的键即 `RESERVED_SCENE_CONTEXT_KEYS`，对世界变量是保留字（见陷阱 19）。
 
 ---
 
@@ -469,6 +498,7 @@ build_status.json                 构建进度（供重启后对账）
 ### 5.3 进程内易失状态
 
 `_active_scenes`（并发守卫）、`_running_engines`（暂停/中断）、`_build_status`（有磁盘兜底）、
+`_world_state_locks`（分支世界状态的读-改-写临界区，见 4.2 陷阱 19）、
 `events._subscribers`（SSE 订阅者）、每个 `MemoryManager` 的短期与事件记忆。
 
 ### 5.4 【契约】修改数据模型的三步 checklist
@@ -544,7 +574,8 @@ graph TD
    continue（`prime()` 已载入同一段）上把它翻倍、挤出保留窗口；
 
 6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 自动评估落库
-   → 世界变量合并落盘并补写后置快照（`_apply_world_delta`）→ 推 evaluation 与 completed。
+   → 世界变量合并落盘并补写后置快照（`_apply_world_delta`，**在分支锁内重读**世界状态，
+   否则同分支并发的另一场会被整份覆盖抹掉）→ 推 evaluation 与 completed。
    **自动评估与世界变量更新各包一个 `try`**：这一场已经跑完并打了后置快照，它们的失败
    不得把状态打回 `paused`——决策 CAS 只接 `completed`，退回了用户就再也无法对这场决策。
 
@@ -1018,6 +1049,18 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      `run()` 返回后才存，中间隔着拷贝几十兆 kuzu/chroma 的长窗口，进程被硬杀就会
      在续跑时把整场对话二次写入长期记忆。同步更新 4.2 陷阱 9 与 6.2；
      另登记“场景内自动固化绕过水位线”至 12.1（工单 26）。
+-->
+
+<!-- 2026-09-23: 工单07 的三处评审修复。①`_apply_world_delta` 改为在
+     `(project_id, branch_id)` 锁内**重读**世界状态：原先用的是 run_scene 开场那份副本，
+     同分支两场并发时后完成的那场会把先完成的那场的世界更新整份抹掉（只锁写无效）。
+     ②name/location/description/opening_narration 升为世界变量的保留字
+     （`models.RESERVED_SCENE_CONTEXT_KEYS`），写入/合并/引擎构造三处拦截 ——
+     原先 `location=首都` 会顶掉本场设定的地点。③世界变量的预算补上读取侧闸门
+     （`services/world_state.py::clamp_world_variables`，在 repository 读文件时生效），
+     人工编辑的 `world_state/{branch_id}.json` 不再能绕过 800 token / 30 条上限。
+     世界变量的三个纯函数因此从 director_agent 拆到 services/world_state.py（import 成环），
+     原路径仍可 import。同步更新 3 / 4.2(19,20) / 5.3 / 6.2。
 -->
 <!-- 2026-08-27: 工单08（分叉语义收敛）落地。长期记忆 collection 补分支维度
      （`char_{cid}__{branch_id}`，留空仍是项目级共享，无需迁移）；新增

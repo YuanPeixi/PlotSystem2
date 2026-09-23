@@ -34,8 +34,17 @@ MAX_UNRESOLVED_THREADS = 20
 #: 世界变量的条数上限（工单07）。它比线索更需要设限：线索只进导演上下文，
 #: 而世界变量进**每一场、每个角色、每一轮**的 system prompt，且只增不减。
 #: token 预算常量不放这里 —— 它要用 utils.llm.estimate_tokens，而
-#: utils.llm → config → models 已成链，反向 import 会成环（见 director_agent）。
+#: utils.llm → config → models 已成链，反向 import 会成环（见 services/world_state.py）。
 MAX_WORLD_VARIABLES = 30
+
+#: 场景固有字段在 `scene_context` 里占用的键。`CharacterAgent._scene_brief` 把它们
+#: 渲染成句子（"场景名 @ 地点"），其余键才逐条列进"当前情境"。
+#: 对世界变量而言这些是**保留字**：同名的世界变量会顶掉本场的设定 ——
+#: 场景设在城堡、世界里存着 `location=首都`，角色与导演读到的地点就是首都。
+#: 世界变量只允许**补充**场景上下文，不允许改写场景是什么。
+RESERVED_SCENE_CONTEXT_KEYS = frozenset(
+    {"name", "location", "description", "opening_narration"}
+)
 
 
 def goal_revision(narrative_goal: str) -> str:

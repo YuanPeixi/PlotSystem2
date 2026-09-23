@@ -16,7 +16,6 @@ from backend.config import settings
 from backend.knowledge_graph import GraphManager
 from backend.models import (
     MAX_UNRESOLVED_THREADS,
-    MAX_WORLD_VARIABLES,
     PROGRESS_UNAVAILABLE,
     CharacterCard,
     CharacterState,
@@ -29,11 +28,26 @@ from backend.models import (
     goal_revision,
 )
 from backend.services import inspection
+from backend.services.world_state import (
+    describe_world_state,
+    merge_world_variables,
+    normalize_world_delta,
+)
 from backend.utils.context import TAIL_ONLY, ContextBudget, compact_lines, fit_lines
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
 logger = get_logger("agents.director")
+
+#: 世界变量的三个纯函数已拆到 `services/world_state.py`（读取侧也要用它们压预算，
+#: 而 repository → director_agent 会成环）。这里再导出，老 import 路径不变。
+__all__ = [
+    "DirectorAgent",
+    "describe_world_state",
+    "merge_world_variables",
+    "normalize_world_delta",
+    "unavailable_evaluation",
+]
 
 #: 评分为该值表示"评估未生成"，而不是"得分很低"
 SCORE_UNAVAILABLE = -1.0
@@ -46,13 +60,6 @@ _HISTORY_BUDGET_TOKENS = 2000
 #: 20 条超长线索一旦写进去，后续每一次规划与评估都拖着它（PR #17：预算是硬约束）。
 _THREADS_BUDGET_TOKENS = 800
 _THREAD_ITEM_TOKENS = 60
-
-#: 世界变量的总预算与单值上限（工单07）。同一条道理，但更紧迫：线索只进导演上下文，
-#: 世界变量进**每一场、每个角色、每一轮**的 system prompt，超预算是按轮次计费的。
-_WORLD_BUDGET_TOKENS = 800
-_WORLD_VALUE_TOKENS = 60
-#: 变量名上限。键会原样进 prompt，长键既浪费预算又说明模型在拿它当句子用。
-_WORLD_KEY_CHARS = 40
 
 
 def unavailable_evaluation(scene_id: str) -> SceneEvaluation:
@@ -179,74 +186,6 @@ def _normalize_threads(value, fallback: list[str] | None = None) -> list[str]:
         if len(threads) >= MAX_UNRESOLVED_THREADS:
             break
     return threads
-
-
-def describe_world_state(variables: dict[str, str] | None) -> str:
-    """把世界变量渲染成"一行一条"的文本块，供导演与角色的提示词共用。"""
-    if not variables:
-        return "（暂无世界层变量）"
-    return "\n".join(f"- {k}：{v}" for k, v in variables.items())
-
-
-def normalize_world_delta(value) -> dict[str, str | None]:
-    """把 LLM 给的世界变量增量收进可控形状。
-
-    `None` 必须原样保留 —— 它是"该变量不再成立，删掉"的唯一表达方式。没有删除语义的话，
-    变量只增不减，迟早把预算占满，之后每一条新的世界事实都会被挤掉。
-    空字符串按同义处理：模型表达"取消"时给空串和给 null 一样常见。
-
-    值统一塌成单行：它会按"一行一条"渲染进 prompt，带换行的值会让同一条变量
-    看起来像两条（与 episodic 条目的单行不变量同一道理）。
-    """
-    if not isinstance(value, dict):
-        return {}
-    delta: dict[str, str | None] = {}
-    for raw_key, raw_value in value.items():
-        key = str(raw_key).strip()[:_WORLD_KEY_CHARS]
-        if not key or key in delta:
-            continue
-        text = "" if raw_value is None else " ".join(str(raw_value).split())
-        if not text:
-            delta[key] = None
-        else:
-            delta[key] = fit_lines([text], ContextBudget(max_tokens=_WORLD_VALUE_TOKENS)).text
-        # delta 自身也要限量：它会落进 evaluations 表并被快照的 story_history 复制
-        if len(delta) >= MAX_WORLD_VARIABLES:
-            break
-    return delta
-
-
-def merge_world_variables(
-    current: dict[str, str] | None, delta: dict[str, str | None] | None
-) -> tuple[dict[str, str], list[str]]:
-    """应用增量并压回预算，返回 (合并结果, 被淘汰的键)。
-
-    与 `_normalize_threads` 同一条教训：**限条数不等于限预算**。世界变量比线索更狠 ——
-    它进的是每一场、每个角色、每一轮的 system prompt，超预算按轮次计费。
-
-    超限时淘汰**最久未更新**的键：世界事实越旧越可能已经不成立，而最近一场刚写下的
-    多半正在生效。被淘汰的键返回给调用方 warning，不静默丢。
-    """
-    merged: dict[str, str] = {k: v for k, v in (current or {}).items()}
-    for key, value in (delta or {}).items():
-        # 先 pop 再插入：dict 保持插入序，重新插入等于把"最近更新"刷到队尾
-        merged.pop(key, None)
-        if value is not None:
-            merged[key] = str(value)
-
-    kept: list[tuple[str, str]] = []
-    used = 0
-    for key, value in reversed(list(merged.items())):
-        if len(kept) >= MAX_WORLD_VARIABLES:
-            break
-        cost = estimate_tokens(f"- {key}：{value}")
-        if kept and used + cost > _WORLD_BUDGET_TOKENS:
-            break
-        kept.append((key, value))
-        used += cost
-    kept.reverse()
-    result = dict(kept)
-    return result, [k for k in merged if k not in result]
 
 
 _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个场景。
