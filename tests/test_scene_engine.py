@@ -117,6 +117,39 @@ async def test_scene_run_perceives_all_participants_without_duplication():
 
 
 @pytest.mark.asyncio
+async def test_after_snapshot_callback_fires_before_snapshot_is_indexed():
+    """工单07：后置快照一进 snapshots 表就对 `/snapshots/{id}/fork` 可见，
+    而本场的世界变量要等评估之后才补写回它。编排层的"待补写"守卫因此必须在
+    **索引之前**就拿到快照 id —— 把回调挪到 create_snapshot 之后（乃至 run()
+    返回之后）都会留下一个"可分叉但世界变量还没补写"的窗口，在那里分叉出的
+    分支会永久缺失本场对世界的改动。
+    """
+    agent = _make_agent("c1", "甲")
+    scene = Scene(scene_id="s-hook", project_id="proj-se", branch_id="b-hook")
+    config = SceneConfig(name="回调", participating_characters=["c1"], max_turns=1)
+    sm = SnapshotManager("proj-se")
+
+    marked: list[str] = []
+    marked_before_index: list[bool] = []
+    original_index = sm._index_snapshot
+
+    async def spy_index(snap):
+        if snap.label.startswith("after:"):
+            marked_before_index.append(snap.snapshot_id in marked)
+        await original_index(snap)
+
+    sm._index_snapshot = spy_index
+    engine = SceneEngine(scene, config, [agent], sm)
+
+    with patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="我明白了。")):
+        result = await engine.run(on_after_snapshot=marked.append)
+
+    # 后置快照被索引（= 对分叉可见）时，守卫已经挂上，且挂的是同一个 id
+    assert marked_before_index == [True]
+    assert marked == [result.snapshot_id_after]
+
+
+@pytest.mark.asyncio
 async def test_scene_run_strips_inner_thought_for_other_agents():
     """工单15/契约1：写入他人轮次时必须剥离内心独白，避免私有内心泄露给旁观角色。"""
     agent_a = _make_agent("c1", "甲")
