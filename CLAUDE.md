@@ -430,7 +430,10 @@ frontend/src/
       的那条路径，而 `world_state/{branch_id}.json` 摆在项目目录里、**明确支持人工编辑**。
       手写一条五千字的变量、或塞进三百条，都会绕过写入侧直进每一轮的 prompt。
       因此 `repository._deserialize_world_state` 读文件时就调 `clamp_world_variables`
-      压回同一形状与预算（顺带把值塌成单行 —— 按"一行一条"渲染，换行会让一条看起来像两条）。
+      压回同一形状与预算（顺带把**键和值都**塌成单行 —— 按"一行一条"渲染，换行会让一条
+      看起来像两条。只塌值是做不全的：不变量说的是**渲染出来的行**，而键值同在
+      `f"- {k}：{v}"` 一行里，三道闸门又都只按名字判保留字、不看形状，
+      所以键的换行同样能凭空多出一条看似合法的世界变量）。
       **只压不写回**：读路径不该因为一次读取就改掉用户手编的文件，超限内容在下次合并
       落盘时自然收敛。这两个函数与 `describe_world_state` 住在 `services/world_state.py`，
       拆出来的唯一理由是 import 方向：`repository → director_agent → inspection → repository` 成环；
