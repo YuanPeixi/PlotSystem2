@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from backend.agents import CharacterAgent, DirectorAgent
+from backend.exceptions import ConflictError
 from backend.memory import MemoryManager
 from backend.models import (
     CharacterCard,
@@ -182,16 +183,21 @@ async def test_review_cutoff_survives_next_scene(story):
     assert not any("【B】" in s for s in later[2]), later
 
 
-async def test_fork_during_evaluation_keeps_history_known_at_fork(story, monkeypatch):
+async def test_fork_is_blocked_until_evaluation_settles_then_sees_full_history(story, monkeypatch):
+    """评审修复：分叉曾经能在评估进行中拿到"冻结在那一刻"的旧数据 —— 对
+    story_history 这尚可接受（有明确的冻结语义），但对 world_state 是永久静默丢失
+    （fork 只拷一次，评估完成后的补写再也传不过去）。两者出自同一处窗口（评估这
+    一整次 LLM 调用期间），因此统一在评估+补写完成前拒绝分叉，而不是让调用方拿到
+    一份"看起来能用但注定过时"的分支。
+    """
     a, b, _ = story
-    captured = []
 
     async def evaluate(self, scene, *args, **kwargs):
         current = await repository.get_scene(scene.scene_id)
-        _, child = await orchestrator.fork_from_snapshot(
-            scene.project_id, current.snapshot_id_after, "评估尚未返回"
-        )
-        captured.append(child)
+        with pytest.raises(ConflictError):
+            await orchestrator.fork_from_snapshot(
+                scene.project_id, current.snapshot_id_after, "评估尚未返回"
+            )
         return SceneEvaluation(
             scene_id=scene.scene_id,
             story_progress=0.7,
@@ -203,10 +209,10 @@ async def test_fork_during_evaluation_keeps_history_known_at_fork(story, monkeyp
     b.max_turns = 2
     await repository.save_scene(b)
     await orchestrator.run_scene(b.scene_id)
-    child = await repository.get_scene(captured[0].scene_id)
-    assert await orchestrator._story_context(child, GOAL) == (0.2, ["叛徒身份"], ["【A】叛徒未明"])
-    # 同一快照补评估完成后创建的新分支可见本轮结果，已有分支不追写。
+
+    # 评估与世界状态补写都已落定（标记已摘除），此刻分叉才拿到完整、一致的结果。
     current = await repository.get_scene(b.scene_id)
+    assert not orchestrator.is_snapshot_pending_world_patch(current.snapshot_id_after)
     _, later = await orchestrator.fork_from_snapshot(
         b.project_id, current.snapshot_id_after, "评估完成"
     )
