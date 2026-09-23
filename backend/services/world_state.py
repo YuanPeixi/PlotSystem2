@@ -30,8 +30,16 @@ WORLD_KEY_CHARS = 40
 
 
 def normalize_world_key(raw_key) -> str:
-    """把任意键收成可进 prompt 的短标识。返回空串表示该键不可用。"""
-    return str(raw_key).strip()[:WORLD_KEY_CHARS]
+    """把任意键收成**单行**且不超过长度上限的短标识。返回空串表示该键不可用。
+
+    塌单行与 `normalize_world_value` 同一条理由，但只做在值上是做不全的：
+    "一行一条"是**渲染出来的行**的不变量，而键值同在 `f"- {k}：{v}"` 一行里。
+    键里留一个换行，就能在导演提示词与每个在场角色的 system prompt 里凭空多出
+    一条看起来合法的世界变量（来源可以是评估 LLM 的 JSON，也可以是人工编辑的
+    `world_state/{branch_id}.json`）。三道闸门都只按名字判保留字，不看形状，
+    所以形状必须在这里一次收干净。
+    """
+    return " ".join(str(raw_key).split())[:WORLD_KEY_CHARS]
 
 
 def normalize_world_value(raw_value) -> str:
@@ -66,7 +74,8 @@ def normalize_world_delta(value) -> dict[str, str | None]:
         return {}
     delta: dict[str, str | None] = {}
     shadowed: list[str] = []
-    for raw_key, raw_value in value.items():
+    truncated = 0
+    for index, (raw_key, raw_value) in enumerate(value.items()):
         key = normalize_world_key(raw_key)
         if not key or key in delta:
             continue
@@ -79,11 +88,20 @@ def normalize_world_delta(value) -> dict[str, str | None]:
         delta[key] = text or None
         # delta 自身也要限量：它会落进 evaluations 表并被快照的 story_history 复制
         if len(delta) >= MAX_WORLD_VARIABLES:
+            truncated = len(value) - index - 1
             break
     if shadowed:
         logger.warning(
             "导演给出的世界变量与场景固有字段同名，已忽略：%s（世界变量只能补充场景上下文，不能改写场景本身）",
             "、".join(shadowed),
+        )
+    if truncated:
+        # 与 `merge_world_variables` 的淘汰同一口径：世界事实被吃掉不会表现为报错，
+        # 只表现为下一场角色忽然不知道某件事，不能静默。
+        logger.warning(
+            "导演给出的世界变量增量超过 %d 条上限，已截断丢弃其余 %d 条",
+            MAX_WORLD_VARIABLES,
+            truncated,
         )
     return delta
 
