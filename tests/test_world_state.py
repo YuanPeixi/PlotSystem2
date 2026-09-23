@@ -1,6 +1,6 @@
 """工单07：分支级世界变量（WorldState）。
 
-覆盖八条关键行为，每条都对应一个"不测就会静默退化"的点：
+覆盖九条关键行为，每条都对应一个"不测就会静默退化"的点：
 
 1. 合并优先级与**不写回** `Scene.initial_conditions`（偏离工单原文的 B2）；
 2. 世界变量真的进了角色的 system prompt，且整场不变（契约3 补充条款）；
@@ -9,7 +9,9 @@
 5. 后置快照的补写（B3）与老项目的降级路径；
 6. 同分支并发下的读-改-写：后完成的那场不得抹掉先完成的那场的更新；
 7. 保留字：世界变量只能补充场景上下文，不能改写场景固有字段；
-8. 读取侧闸门：人工编辑的文件同样要受预算约束。
+8. 读取侧闸门：人工编辑的文件同样要受预算约束；
+9. 评估/补写窗口内拒绝分叉：分叉只拷一次快照里的世界变量，补写完成前分叉
+   会让新分支永久缺失本场对世界的改动。
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from backend.agents.director_agent import (
     normalize_world_delta,
 )
 from backend.config import settings
+from backend.exceptions import ConflictError
 from backend.memory import MemoryManager
 from backend.models import (
     MAX_WORLD_VARIABLES,
@@ -738,3 +741,155 @@ async def test_clamping_does_not_rewrite_the_file():
     await repository.get_world_state(project_id, "b")
 
     assert path.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# 9. 评估/补写窗口内拒绝分叉（评审修复）
+# ---------------------------------------------------------------------------
+#
+# `fork_from_snapshot` 只在分叉那一刻读一次 `snap.world_state_variables` 并整份
+# 拷进新分支文件，之后 `record_world_state` 才补写完成的本场 delta 不会再传播过去。
+# 若允许在"后置快照已存在、评估还没跑完"的窗口内分叉，新分支就会**永久**缺失本场
+# 对世界的改动，且不像超预算淘汰那样有 warning 可查。
+
+
+@pytest.mark.asyncio
+async def test_fork_rejected_while_snapshot_pending_world_patch():
+    """直接操纵守卫标记：不依赖真实评估耗时，验证 fork 入口本身的拦截逻辑。"""
+    project_id = "proj-world-pending-fork"
+    sm, snap = await _project_with_snapshot(project_id, "branch-src", {"季节": "隆冬"})
+
+    orchestrator._pending_world_patch.add(snap.snapshot_id)
+    try:
+        with pytest.raises(ConflictError):
+            await orchestrator.fork_from_snapshot(project_id, snap.snapshot_id, "过早分叉")
+    finally:
+        orchestrator._pending_world_patch.discard(snap.snapshot_id)
+
+    # 标记摘除后，同一份快照恢复可分叉
+    branch, _scene = await orchestrator.fork_from_snapshot(project_id, snap.snapshot_id, "补写完成后")
+    assert branch is not None
+
+
+@pytest.mark.asyncio
+async def test_pending_mark_is_set_before_snapshot_visible_and_cleared_on_success(monkeypatch):
+    """端到端：`run_scene` 期间，后置快照一旦落库可见，标记必须已经挂上；
+    评估与世界状态补写都完成后，标记必须被摘除，分叉才重新放行。
+    """
+    project_id = "proj-world-pending-e2e"
+    sm, snap = await _project_with_snapshot(project_id, "branch-src", {"季节": "隆冬"})
+    scene = Scene(
+        scene_id="scene-pending",
+        project_id=project_id,
+        branch_id="branch-src",
+        name="场景",
+        participating_characters=["c1"],
+    )
+    await repository.save_scene(scene)
+
+    observed: dict = {}
+
+    class FakeEngine:
+        def __init__(self, scene_obj, *args, **kwargs):
+            self.scene = scene_obj
+
+        def inject_history(self, *args, **kwargs):
+            pass
+
+        async def run(self, on_turn=None, on_persist=None):
+            self.scene.status = "completed"
+            self.scene.snapshot_id_after = snap.snapshot_id
+            return SceneResult(
+                scene_id=self.scene.scene_id,
+                dialogue_log=[],
+                snapshot_id_before="",
+                snapshot_id_after=snap.snapshot_id,
+                turns_completed=0,
+            )
+
+    class FakeDirector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def evaluate_scene(self, *args, **kwargs):
+            # 评估调用发生时，post-snapshot 已经落库，标记必须已经挂上。
+            observed["pending_during_eval"] = orchestrator.is_snapshot_pending_world_patch(
+                snap.snapshot_id
+            )
+            return SceneEvaluation(scene_id=scene.scene_id, world_state_delta={"敌军": "已破城"})
+
+    async def fake_build_agents(pid, cids, states=None, branch_id=""):
+        return []
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
+    monkeypatch.setattr(orchestrator, "SceneEngine", FakeEngine)
+    monkeypatch.setattr(orchestrator, "DirectorAgent", FakeDirector)
+
+    await orchestrator.run_scene(scene.scene_id)
+
+    assert observed["pending_during_eval"] is True
+    assert not orchestrator.is_snapshot_pending_world_patch(snap.snapshot_id)
+    # 摘除后分叉必须放行，且能看到补写完成的世界变量。
+    branch, _new_scene = await orchestrator.fork_from_snapshot(
+        project_id, snap.snapshot_id, "补写完成后"
+    )
+    forked = await repository.get_world_state(project_id, branch.branch_id)
+    assert forked.variables == {"季节": "隆冬", "敌军": "已破城"}
+
+
+@pytest.mark.asyncio
+async def test_pending_mark_is_cleared_even_when_evaluation_fails(monkeypatch):
+    """评估本身失败（LLM 报错）时，delta 永远不会再补写 —— 无限期挡着分叉才是
+    真正的"漏掉本场世界变化"：这里只挡"补写还没完成"的窗口，不挡"补写已确定
+    不会再发生"的终态。
+    """
+    project_id = "proj-world-pending-failure"
+    sm, snap = await _project_with_snapshot(project_id, "branch-src", {"季节": "隆冬"})
+    scene = Scene(
+        scene_id="scene-pending-fail",
+        project_id=project_id,
+        branch_id="branch-src",
+        name="场景",
+        participating_characters=["c1"],
+    )
+    await repository.save_scene(scene)
+
+    class FakeEngine:
+        def __init__(self, scene_obj, *args, **kwargs):
+            self.scene = scene_obj
+
+        def inject_history(self, *args, **kwargs):
+            pass
+
+        async def run(self, on_turn=None, on_persist=None):
+            self.scene.status = "completed"
+            self.scene.snapshot_id_after = snap.snapshot_id
+            return SceneResult(
+                scene_id=self.scene.scene_id,
+                dialogue_log=[],
+                snapshot_id_before="",
+                snapshot_id_after=snap.snapshot_id,
+                turns_completed=0,
+            )
+
+    class FakeDirector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def evaluate_scene(self, *args, **kwargs):
+            raise RuntimeError("LLM 挂了")
+
+    async def fake_build_agents(pid, cids, states=None, branch_id=""):
+        return []
+
+    monkeypatch.setattr(orchestrator, "build_character_agents", fake_build_agents)
+    monkeypatch.setattr(orchestrator, "SceneEngine", FakeEngine)
+    monkeypatch.setattr(orchestrator, "DirectorAgent", FakeDirector)
+
+    await orchestrator.run_scene(scene.scene_id)
+
+    assert not orchestrator.is_snapshot_pending_world_patch(snap.snapshot_id)
+    branch, _new_scene = await orchestrator.fork_from_snapshot(
+        project_id, snap.snapshot_id, "评估失败后仍可分叉"
+    )
+    assert branch is not None

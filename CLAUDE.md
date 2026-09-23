@@ -451,6 +451,19 @@ frontend/src/
       遗留边界：B 整场是拿着**开场的旧世界**演的（它看不见 A 中途写下的事实）。
       这是并发本身的语义，不是数据丢失；要连它一起消掉得按分支串行整场推演，
       那会让第二次 `/start` 阻塞几分钟，属于产品决策，未做。
+    - **后置快照存在 ≠ 世界变量已补写完成，这个窗口内必须拒绝分叉**
+      （`orchestrator._pending_world_patch` + `fork_from_snapshot` 前置检查）。
+      `scene.status=completed` 与 `snapshot_id_after` 在引擎打完后置快照那一刻就落库
+      可见，而评估、`record_story_history`、`_apply_world_delta` 都要在那之后才跑完。
+      `fork_from_snapshot` 只在分叉那一刻读一次 `snap.world_state_variables` 整份
+      拷进新分支文件，之后的补写不会再传播过去 —— 若这个窗口内分叉成功，新分支就会
+      **永久**缺失本场对世界的改动，且不像超预算淘汰那样有 warning 可查（story_history
+      同理，见 6.3.1）。因此 `run_scene` 在 `save_scene` 落库前先把
+      `snapshot_id_after` 加进 `_pending_world_patch`，评估+补写的整个 try/finally
+      结束后才摘除（无论成功还是失败 —— 评估失败意味着 delta 永远不会再补写，
+      无限期挡着分叉才是真正的"漏掉本场世界变化"）；`fork_from_snapshot` 在这期间
+      抛 `ConflictError`（409），提示调用方稍后重试（评估通常几秒到十几秒完成）。
+      与 `_active_scenes` 同属进程内状态、单进程假设。
 
 20. **角色的 system prompt 会逐条渲染 `scene_context` 里的非成句键**（工单07）。
     旧实现只读 `name`/`location`/`description`/`opening_narration` 四个键，导演写的
@@ -499,6 +512,7 @@ build_status.json                 构建进度（供重启后对账）
 
 `_active_scenes`（并发守卫）、`_running_engines`（暂停/中断）、`_build_status`（有磁盘兜底）、
 `_world_state_locks`（分支世界状态的读-改-写临界区，见 4.2 陷阱 19）、
+`_pending_world_patch`（后置快照的世界状态补写窗口守卫，同见 4.2 陷阱 19）、
 `events._subscribers`（SSE 订阅者）、每个 `MemoryManager` 的短期与事件记忆。
 
 ### 5.4 【契约】修改数据模型的三步 checklist
@@ -578,6 +592,8 @@ graph TD
    否则同分支并发的另一场会被整份覆盖抹掉）→ 推 evaluation 与 completed。
    **自动评估与世界变量更新各包一个 `try`**：这一场已经跑完并打了后置快照，它们的失败
    不得把状态打回 `paused`——决策 CAS 只接 `completed`，退回了用户就再也无法对这场决策。
+   `save_scene` 落库前到评估+补写全部结束（成败均可）为止，`result.snapshot_id_after`
+   挂在 `_pending_world_patch` 里，期间 `fork_from_snapshot` 一律拒绝（见 4.2 陷阱 19 / 6.3.1）。
 
 **运行中的可恢复性（工单23）**：开跑前先把 `status=running` 落库；引擎每产生一轮就先把
 `dialogue_log` / `turns_completed` 写回 `scene` 对象，再回调 `on_turn`，由 orchestrator **逐轮
@@ -626,6 +642,15 @@ graph TD
 （`MemoryError` → 500）就不会留下一条无记忆的孤儿分支。世界变量的落盘同样排在
 `fork_branch` 之前，同一理由：不留下一条"世界被重置"的分支。Chroma 不可用 / 快照不含向量库
 仍按契约6 只 warning 并记录空起点；Chroma 已安装且快照库存在但复制/打开失败则必须中止。
+
+**评估+补写窗口内拒绝分叉**（评审修复，与 4.2 陷阱 19 世界变量补写窗口同一机制）：
+`fork_from_snapshot` 入口先查 `orchestrator._pending_world_patch`，命中则抛
+`ConflictError`（409）。`S` 若恰是某场刚完成、评估仍在跑的后置快照，`snap` 里的
+`world_state_variables`（以及 `story_history`）此刻还是评估之前那份；分叉只在那一刻
+读一次并整份拷给新分支，之后的补写不会再传播过去。旧实现允许这个窗口内分叉成功
+（见 `test_fork_during_evaluation_keeps_history_known_at_fork` 的历史版本），新分支会
+永久缺失本场结果——对 story_history 这曾被当成可接受的"冻结语义"，但对 world_state
+是无迹可查的静默丢失，两者本质是同一处竞态，因此统一堵住整个窗口而非只堵 world_state。
 
 ### 6.4 启动对账
 
@@ -800,7 +825,7 @@ prefix cache**，落地时必须改走 user 块。
 | GET | `/projects/{project_id}/branches` | 分支树 |
 | GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404 |
 | GET | `/projects/{project_id}/snapshots` | 快照列表（只返回元信息，不带角色状态明细） |
-| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}` |
+| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}`。若目标快照所属场景的评估/世界状态补写仍在进行中，返回 409（`ConflictError`），稍后重试即可（见 6.3.1） |
 | DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**，且按项目约束） |
 | POST | `/projects/{project_id}/output` | 生成输出 |
 | GET | `/output/{output_id}` | 取回生成结果 |
@@ -1061,6 +1086,17 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      人工编辑的 `world_state/{branch_id}.json` 不再能绕过 800 token / 30 条上限。
      世界变量的三个纯函数因此从 director_agent 拆到 services/world_state.py（import 成环），
      原路径仍可 import。同步更新 3 / 4.2(19,20) / 5.3 / 6.2。
+-->
+
+<!-- 2026-09-23（续）: 同一评审的第四处发现。`fork_from_snapshot` 曾允许在"后置快照
+     已存在、评估/世界状态补写还没跑完"的窗口内分叉 —— 分叉只在那一刻拷贝一次
+     `snap.world_state_variables`（以及 `story_history`），之后的补写不会再传播过去，
+     新分支从此永久缺失本场对世界的改动。新增 `orchestrator._pending_world_patch`：
+     `run_scene` 在后置快照落库前挂上标记，评估+补写的 try/finally 结束后（无论成败）
+     摘除；`fork_from_snapshot` 命中标记则抛 `ConflictError`（409），提示稍后重试。
+     `test_fork_during_evaluation_keeps_history_known_at_fork` 原先把"分叉拿到冻结在
+     那一刻的旧数据"当成可接受行为验证，现已重写为验证"该窗口内分叉被拒绝、窗口结束
+     后分叉可见完整结果"。同步更新 4.2 陷阱 19 / 5.3 / 6.3.1 / 8。
 -->
 <!-- 2026-08-27: 工单08（分叉语义收敛）落地。长期记忆 collection 补分支维度
      （`char_{cid}__{branch_id}`，留空仍是项目级共享，无需迁移）；新增

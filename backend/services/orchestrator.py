@@ -86,6 +86,26 @@ def is_scene_active(scene_id: str) -> bool:
     return scene_id in _active_scenes
 
 
+# 后置快照已存在、但本场自动评估产生的世界变量增量尚未补写进去的快照 id 集合。
+#
+# `scene.status = completed` 与 `snapshot_id_after` 在 run_scene 里是先落库的
+# （引擎打完后置快照就存），随后才发起评估、算出 delta、经 `_apply_world_delta`
+# 补写回这份快照（record_world_state）—— 这中间隔着一整次 LLM 调用。若此刻恰好
+# 有人从这份快照分叉，`fork_from_snapshot` 会一次性把 `snap.world_state_variables`
+# 拷进新分支的世界状态文件；拷贝只发生这一次，之后 `record_world_state` 才补写
+# 完成的 delta 永远不会再传播过去 —— 新分支从此**永久**缺失本场对世界的改动，
+# 且无迹可查（不像 dropped 变量还有 warning）。
+# 因此分叉前必须能看见"这份快照还差一次世界状态补写"，在窗口内拒绝分叉，
+# 让用户重试（评估通常几秒到十几秒完成）。与 `_active_scenes` 同属单进程假设，
+# 多 worker 需要外置为跨进程可见的状态。
+_pending_world_patch: set[str] = set()
+
+
+def is_snapshot_pending_world_patch(snapshot_id: str) -> bool:
+    """快照是否还差一次世界状态补写（供 API 层给出更明确的前置提示）。"""
+    return snapshot_id in _pending_world_patch
+
+
 # ---------------------------------------------------------------------------
 # GraphRAG 构建
 # ---------------------------------------------------------------------------
@@ -539,55 +559,69 @@ async def run_scene(scene_id: str) -> None:
         result = await engine.run(on_turn=_on_turn, on_persist=_persist_scene)
         # 持久化角色状态变更（情绪/目标/位置）
         await _persist_character_states(agents)
-        await repository.save_scene(scene)
-        await events.publish(scene_id, "snapshot", {"snapshot_id": result.snapshot_id_after})
-
-        # 自动评估独占一个 try：这一场已经跑完并打了后置快照，评估用的 LLM 失败
-        # 不能把状态打回 paused —— 决策的 CAS 只接 completed，一旦退回用户就再也
-        # 无法对这场提交决策，只能重跑一遍空转并覆盖 snapshot_id_after。
+        # 挂上"待补写"标记必须先于 save_scene：后者一落库，这份快照立刻对
+        # /snapshots/{id}/fork 可见，标记晚一步就会漏掉落库和挂标记之间的窗口。
+        # 摘除标记的 finally 必须从这里就开始罩，而不是等进了下面的评估 try 才罩——
+        # 否则 save_scene/发布 snapshot 事件本身的失败会让标记永久挂住，
+        # 这份快照从此再也无法分叉（比漏掉一次世界更新更糟）。
+        if result.snapshot_id_after:
+            _pending_world_patch.add(result.snapshot_id_after)
         try:
-            director = DirectorAgent(
-                scene.project_id, GraphManager(scene.project_id), sm
-            )
-            project = await repository.get_project(scene.project_id)
-            prior_progress, prior_threads, prior_synopses = await _story_context(
-                scene, project.narrative_goal, sm=sm
-            )
-            evaluation = await director.evaluate_scene(
-                scene,
-                result.dialogue_log,
-                [a.card for a in agents],
-                narrative_goal=project.narrative_goal,
-                ending_criteria=project.ending_criteria,
-                prior_progress=prior_progress,
-                prior_threads=prior_threads,
-                prior_synopses=prior_synopses,
-                world_state=world.variables,
-            )
-            # 保留 9fe7e99 的快照归属戳；副本中同样留存，供追溯与审查。
-            evaluation.evaluated_snapshot_id = result.snapshot_id_after
-            await repository.save_evaluation(evaluation)
+            await repository.save_scene(scene)
+            await events.publish(scene_id, "snapshot", {"snapshot_id": result.snapshot_id_after})
+
+            # 自动评估独占一个 try：这一场已经跑完并打了后置快照，评估用的 LLM 失败
+            # 不能把状态打回 paused —— 决策的 CAS 只接 completed，一旦退回用户就再也
+            # 无法对这场提交决策，只能重跑一遍空转并覆盖 snapshot_id_after。
             try:
-                await sm.record_story_history(
-                    result.snapshot_id_after,
-                    [*(scene.inherited_story_history or []), _story_record(scene, evaluation)],
+                director = DirectorAgent(
+                    scene.project_id, GraphManager(scene.project_id), sm
                 )
+                project = await repository.get_project(scene.project_id)
+                prior_progress, prior_threads, prior_synopses = await _story_context(
+                    scene, project.narrative_goal, sm=sm
+                )
+                evaluation = await director.evaluate_scene(
+                    scene,
+                    result.dialogue_log,
+                    [a.card for a in agents],
+                    narrative_goal=project.narrative_goal,
+                    ending_criteria=project.ending_criteria,
+                    prior_progress=prior_progress,
+                    prior_threads=prior_threads,
+                    prior_synopses=prior_synopses,
+                    world_state=world.variables,
+                )
+                # 保留 9fe7e99 的快照归属戳；副本中同样留存，供追溯与审查。
+                evaluation.evaluated_snapshot_id = result.snapshot_id_after
+                await repository.save_evaluation(evaluation)
+                try:
+                    await sm.record_story_history(
+                        result.snapshot_id_after,
+                        [*(scene.inherited_story_history or []), _story_record(scene, evaluation)],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # 快照已被删除或补写失败不能丢掉有效评估，也不能阻断手动决策。
+                    logger.warning("后置快照导演历史补写失败：%s", exc, exc_info=True)
+                    await events.publish(scene_id, "scene_error", {
+                        "message": "后置快照历史补写失败；从该快照分叉可能缺少本场评估。",
+                        "fatal": False,
+                    })
+                await _apply_world_delta(scene, evaluation, result.snapshot_id_after, sm)
+                await events.publish(scene_id, "evaluation", to_dict(evaluation))
             except Exception as exc:  # noqa: BLE001
-                # 快照已被删除或补写失败不能丢掉有效评估，也不能阻断手动决策。
-                logger.warning("后置快照导演历史补写失败：%s", exc, exc_info=True)
-                await events.publish(scene_id, "scene_error", {
-                    "message": "后置快照历史补写失败；从该快照分叉可能缺少本场评估。",
-                    "fatal": False,
-                })
-            await _apply_world_delta(scene, evaluation, result.snapshot_id_after, sm)
-            await events.publish(scene_id, "evaluation", to_dict(evaluation))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
-            await events.publish(
-                scene_id,
-                "scene_error",
-                {"message": f"自动评估失败：{exc}", "fatal": False},
-            )
+                logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
+                await events.publish(
+                    scene_id,
+                    "scene_error",
+                    {"message": f"自动评估失败：{exc}", "fatal": False},
+                )
+        finally:
+            # 评估失败、甚至上面的 save_scene/发布事件本身失败，都要摘掉标记：
+            # 一旦确定不会再有补写发生（无论是成功完成还是彻底放弃），无限期挡着
+            # 分叉才是真正的"漏掉本场世界变化"——这里只挡"补写还没完成"的窗口，
+            # 不挡"补写已确定不会再发生"的终态。
+            _pending_world_patch.discard(result.snapshot_id_after)
         await events.publish(
             scene_id, "status", {"status": "completed", "reason": result.terminated_reason}
         )
@@ -723,7 +757,18 @@ async def fork_from_snapshot(
     - I5 条件生效：`conditions` 覆盖同名的继承条件。
 
     新场景不自动开跑：分叉是探索性操作，不该隐含一整场 LLM 成本。
+
+    **拒绝对"待补写"快照分叉**：若 `snapshot_id` 恰是某场刚完成、评估仍在进行中的
+    后置快照，此刻 `snap.world_state_variables` 还是开场那份、不含本场 delta。
+    分叉只在这一刻读一次这份变量并整份拷进新分支文件，之后 `record_world_state`
+    补写完成也不会再传播过去 —— 新分支会**永久**缺失本场对世界的改动，且无迹可查
+    （不像超预算淘汰还有 warning）。评估通常几秒到十几秒完成，让调用方重试即可。
     """
+    if snapshot_id in _pending_world_patch:
+        raise ConflictError(
+            f"快照 {snapshot_id} 所属场景的自动评估仍在进行中，"
+            "世界状态尚未补写完成，暂不能分叉，请稍后重试"
+        )
     sm = SnapshotManager(project_id)
     snap = await sm.get_snapshot(snapshot_id)
     if snap is None:
