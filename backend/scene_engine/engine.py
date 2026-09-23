@@ -37,6 +37,10 @@ logger = get_logger("scene_engine")
 TurnCallback = Callable[[DialogueTurn], Awaitable[None]] | None
 # 把当前 scene 落库（不推 SSE），用于固化水位线这类不伴随新轮次的进展。
 PersistCallback = Callable[[], Awaitable[None]] | None
+# 后置快照的 id 在**创建之前**先告知编排层，让它有机会挂上"待补写"守卫。
+# 刻意是同步回调：异步回调意味着调用点存在挂起可能，而这里要的恰恰是
+# "从告知到快照可见之间没有任何调度间隙"。
+AfterSnapshotCallback = Callable[[str], None] | None
 
 # 解析格式：*动作*、[内心独白]、其余为对白
 _ACTION_RE = re.compile(r"\*(.+?)\*", re.DOTALL)
@@ -114,7 +118,10 @@ class SceneEngine:
         self._history_transcript = [self._turn_line(t) for t in history_log]
 
     async def run(
-        self, on_turn: TurnCallback = None, on_persist: PersistCallback = None
+        self,
+        on_turn: TurnCallback = None,
+        on_persist: PersistCallback = None,
+        on_after_snapshot: AfterSnapshotCallback = None,
     ) -> SceneResult:
         """场景执行主流程。"""
         if not self.agents:
@@ -220,6 +227,14 @@ class SceneEngine:
         # 5. 模拟后快照（此时短期缓冲已清空，快照记录的是"已落库"的干净状态，
         # 供下一场 prime() 回填也不会重新引入已固化过的内容）
         after_states = self._collect_states()
+        # id 预生成并先回调，再创建快照：快照一进 snapshots 表就对
+        # /snapshots/{id}/fork 可见，而本场的世界变量要等评估之后才补写回它。
+        # 编排层的"待补写"守卫必须在可见之前挂上——放在 create_snapshot 之后
+        # （乃至 run() 返回之后）都不够：create_snapshot 提交事务与返回之间还隔着
+        # 关连接等 await，那段窗口里的分叉会永久缺失本场对世界的改动（工单07）。
+        after_snapshot_id = new_id()
+        if on_after_snapshot:
+            on_after_snapshot(after_snapshot_id)
         snap_after = await self.snapshot_manager.create_snapshot(
             scene_id=self.scene.scene_id,
             branch_id=self.scene.branch_id,
@@ -230,6 +245,7 @@ class SceneEngine:
             # 本场评估产生的 world_state_delta 此刻还不存在（评估在后置快照之后），
             # 由 orchestrator 在 delta 落盘后经 record_world_state 补写（工单07 B3）。
             world_state_variables=self.world_variables,
+            snapshot_id=after_snapshot_id,
         )
 
         self.scene.dialogue_log = turns
