@@ -14,8 +14,8 @@
 `✅ PR #N（合入 main：起始hash到结束hash）`。完整口径与 hash 填写规则见
 [CONVENTIONS.md](./CONVENTIONS.md)。**索引标注可能滞后于实际合并状态，以 git 为准。**
 
-**当前推进中**：工单 07（WorldState 分支级世界变量），分支 `feat/world-state`，等待 PR。
-上一单（26 记忆写入点与固化水位线统一）已随 PR #19 合入 main，工单 09 的前置依赖随之解除。
+**当前推进中**：无。上一单（07 WorldState 分支级世界变量）已随 PR #20 合入 main，
+工单 20 表内依赖（07、11）随之齐备，但仍需先建 24（见阶段 D 下方「其他待建单」）。
 
 ---
 
@@ -59,7 +59,7 @@
 | [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | ✅ PR #16（合入 main：`3f8d4d7`，阶段 A+B） | [两轮 review 教训](./NOTES.md#t08) |
 | [28](./28-narrative-goal-and-ending.md) | 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | ✅ PR #18（合入 main：`82f4dd4`到`8e37a87`） | [三层目标模型 + 两条禁令](./NOTES.md#director-goal) |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 ✅ | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整展示） | — |
-| [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | ⏳ 等待 PR（分支 `feat/world-state`） | [三处偏离与红线](./NOTES.md#t07) |
+| [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | ✅ PR #20（合入 main：`cc8a021`到`d7ccde3`） | [三处偏离、红线与 review 复盘](./NOTES.md#t07) |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16 ✅（硬前置） | 待处理 | [硬前置已解除](./NOTES.md#t16) |
 
 ---
@@ -78,7 +78,7 @@
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 | 备注 |
 |---|---|---|---|---|---|
-| 20 | 环境智能体（裁决角色动作与环境规则） | P3 | 07 ⏳、11 ✅ | 待建单 | [为何排最后](./NOTES.md#t20) · [契约 3 已裁定 + 公开性红线](./NOTES.md#t07) |
+| 20 | 环境智能体（裁决角色动作与环境规则） | P3 | 07 ✅、11 ✅ | 待建单 | [为何排最后](./NOTES.md#t20) · [契约 3 已裁定 + 公开性红线](./NOTES.md#t07) |
 | 21 | 私有内心 OS（角色输出前的自适应思考，**不入档**） | P3 | 20 | 待建单 | [说明](./NOTES.md#t21) |
 | 22 | 评估 + 分镜稿存档 → 支撑 MCTS / 多结局搜索 | P3 | 18 | 待建单 | [说明](./NOTES.md#t22) |
 
@@ -105,7 +105,7 @@ graph LR
   T17 --> T18
   T18 --> T12[12 AutoPilot]
   T18 --> T22[22 MCTS 存档]
-  T07[07 WorldState] --> T20[20 环境智能体]
+  T07[07 WorldState ✅] --> T20[20 环境智能体]
   T11[11 Selector 打通 ✅] --> T20
   T20 --> T21[21 私有内心 OS]
 ```

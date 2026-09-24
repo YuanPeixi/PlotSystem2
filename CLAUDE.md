@@ -407,7 +407,7 @@ frontend/src/
     `0`）解析成 Python `int`，`float()` 对它抛的是 `OverflowError` 而非 `ValueError`，
     漏接会穿过 `_extract_json` 那道防线，把一份本可解析的评估废在编排层的兜底里。
 
-19. **`WorldState` 有七条不可分割的语义**（工单07），少一条就会静默退化：
+19. **`WorldState` 有八条不可分割的语义**（工单07），少一条就会静默退化：
     - **合并只发生在运行时**：`SceneEngine._scene_context()` 按
       `{**世界变量, **scene.initial_conditions}` 合并（场景局部覆盖全局默认），
       **绝不写回 `Scene.initial_conditions`**。写回并落库会让分叉不变量 I5 把此刻的
@@ -704,7 +704,8 @@ graph TD
   **绝不允许**进入 `CharacterAgent.build_system_prompt()`、`speaker_selector` 的打分 prompt
   或任何角色可见的上下文；
 - 一个角色的 `inner_thought` 不得进入其他角色的 prompt；
-- 角色不在场的场次里发生的信息（跨场次传播应走【设想】里的世界状态通道，不是直接给）。
+- 角色不在场的场次里发生的信息不直接给；能跨场次传播的只有公开的世界层事实，
+  走 `WorldState`（见下）。
 
 **不该隔离的**：同一场景中在场角色的**公开发言与动作**。这些是共享感知，
 每个在场角色都应该记住。**分支世界变量（`WorldState`）同理**：它会进入本场全部在场
@@ -1122,6 +1123,14 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      `snapshot_id` 参数（同 `fork_branch` 的 `branch_id` 预生成）。orchestrator 的
      `finally` 随之上移到罩住 `engine.run()`，否则引擎在快照之后抛错会让标记永久挂住。
      同步更新 4.2 陷阱 19 / 6.2 / 6.3.1。
+-->
+
+<!-- 2026-09-23（续三）: 同一评审的第五处发现。世界变量的**键**也要塌成单行：“一行一条”
+     约束的是渲染出来的行，键值同在 `- {k}：{v}` 一行，只塌值做不全，键里的换行能在
+     每个在场角色的 system prompt 里凭空多出一条变量。修在 `normalize_world_key`，
+     写入侧与读取侧都经过它。另：`normalize_world_delta` 超 `MAX_WORLD_VARIABLES`
+     时由静默截断改为 warning。同步更新 4.2 陷阱 19。
+     工单07 以 PR #20 合入 main（`cc8a021`→`d7ccde3`），review 复盘见 NOTES.md#t07。
 -->
 <!-- 2026-08-27: 工单08（分叉语义收敛）落地。长期记忆 collection 补分支维度
      （`char_{cid}__{branch_id}`，留空仍是项目级共享，无需迁移）；新增
