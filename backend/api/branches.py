@@ -54,7 +54,7 @@ async def list_snapshots(project_id: str) -> ApiResponse:
                 "branch_id": s.get("branch_id", ""),
                 "label": s.get("label", ""),
                 "created_at": s.get("created_at", ""),
-                "character_count": len(s.get("character_states") or {}),
+                "character_count": len(s.get("character_ids") or []),
             }
             for s in snaps
         ]
