@@ -10,7 +10,7 @@ const script = source
   .match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   .replace(/^import .*$/gm, '')
 const compiled = ts.transpileModule(script + `
-globalThis.subject = { board, draft, conflict, saveError, loading, saving, load, startEdit, addBeat,
+globalThis.subject = { board, draft, conflict, saveError, loadError, loading, saving, load, startEdit, addBeat,
   removeBeat, moveBeat, save, cancelEdit, reloadAfterConflict };
 `, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 
@@ -296,4 +296,22 @@ test('a refresh issued before a successful save cannot roll the panel back', asy
   await tick()
   assert.equal(h.board.value.revision, 4)
   assert.equal(h.board.value.memo, '改')
+})
+
+test('a successful save clears a load error left by an earlier failed refresh', async () => {
+  const h = harness()
+  h.gets[0].resolve(board('main'))
+  await tick()
+  h.props.refreshKey = { scene_id: 's1' }
+  h.flush()
+  h.gets[1].reject(new Error('Network Error'))
+  await tick()
+  assert.ok(h.loadError.value)
+  h.startEdit()
+  h.draft.value.memo = '改'
+  const saving = h.save()
+  h.puts[0].resolve(board('main', { revision: 4, memo: '改' }))
+  await saving
+  assert.equal(h.board.value.revision, 4)
+  assert.equal(h.loadError.value, '')
 })
