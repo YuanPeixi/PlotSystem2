@@ -17,6 +17,7 @@ from backend.agents import CharacterAgent, DirectorAgent
 from backend.memory import MemoryManager
 from backend.models import (
     CharacterCard,
+    CharacterState,
     DialogueTurn,
     DirectorDecision,
     Project,
@@ -392,3 +393,124 @@ async def test_d2_lineage_projection_tolerates_scalar_history(request):
     sid = await _raw_scene_with_history(request, "被手改坏了")
     [row] = [s for s in await repository.list_scene_lineage(request.node.name) if s.scene_id == sid]
     assert row.inherited_story_history == []
+
+
+# ---------------------------------------------------------------------------
+# D3 快照列表只搬投影
+# ---------------------------------------------------------------------------
+
+
+async def _insert_legacy_snapshot_row(project_id: str, snapshot_id: str, created_at: str) -> None:
+    """本功能上线前的索引行：data_json 是整份快照，含随谱系增长的导演历史副本。"""
+    big_history = [
+        _legacy_record(f"s{i}", synopsis="很长的梗概" * 200, story_progress=0.1)
+        for i in range(50)
+    ]
+    data = {
+        "snapshot_id": snapshot_id,
+        "scene_id": "legacy-scene",
+        "branch_id": "main",
+        "label": "after:旧",
+        "created_at": created_at,
+        "character_states": {"c1": {"character_id": "c1", "short_term_buffer": ["x" * 500]},
+                             "c2": {"character_id": "c2"}},
+        "story_history": big_history,
+    }
+    async with db.connect() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO snapshots "
+            "(snapshot_id, project_id, scene_id, branch_id, label, created_at, data_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (snapshot_id, project_id, "legacy-scene", "main", "after:旧", created_at,
+             json.dumps(data, ensure_ascii=False)),
+        )
+        await conn.commit()
+
+
+class _LoadsSpy:
+    """包住 json 模块，记录应用层实际解析过的最大文本长度。"""
+
+    def __init__(self) -> None:
+        self.max_len = 0
+
+    def loads(self, text, *a, **k):
+        self.max_len = max(self.max_len, len(text))
+        return json.loads(text, *a, **k)
+
+    def __getattr__(self, name):
+        return getattr(json, name)
+
+
+async def test_d3_new_index_row_stores_projection_only(request):
+    pid = request.node.name
+    sm = SnapshotManager(pid)
+    history = [StoryRecord(scene_id="a", name="A", evaluation=SceneEvaluation(synopsis="梗概"))]
+    snap = await sm.create_snapshot(
+        "s", "main", {"c1": CharacterState(character_id="c1")}, label="after:新",
+        story_history=history,
+    )
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "SELECT data_json FROM snapshots WHERE snapshot_id = ?", (snap.snapshot_id,)
+        )
+        stored = json.loads((await cur.fetchone())[0])
+    assert "story_history" not in stored and "character_states" not in stored
+    assert stored["character_ids"] == ["c1"]
+    [row] = await sm.list_snapshots()
+    assert row == {
+        "snapshot_id": snap.snapshot_id, "scene_id": "s", "branch_id": "main",
+        "label": "after:新", "created_at": snap.created_at.isoformat(), "character_ids": ["c1"],
+    }
+    # meta.json 仍是完整真相源
+    assert (await sm.get_snapshot(snap.snapshot_id)).story_history == history
+
+
+async def test_d3_legacy_index_rows_are_projected_in_sql(monkeypatch, request):
+    """验收"D3 存量索引"：旧格式大索引行不得整行搬进应用层。"""
+    from backend.snapshot import snapshot_manager
+
+    pid = request.node.name
+    await _insert_legacy_snapshot_row(pid, f"{pid}-old", "2026-01-01T00:00:00+00:00")
+    sm = SnapshotManager(pid)
+    new = await sm.create_snapshot("s", "main", {"c3": CharacterState(character_id="c3")})
+
+    spy = _LoadsSpy()
+    monkeypatch.setattr(snapshot_manager, "json", spy)
+    rows = await sm.list_snapshots()
+
+    assert [r["snapshot_id"] for r in rows] == [new.snapshot_id, f"{pid}-old"]
+    old = rows[1]
+    assert "story_history" not in old and "character_states" not in old
+    assert sorted(old["character_ids"]) == ["c1", "c2"]
+    assert spy.max_len < 200, "应用层解析的只该是角色 id 列表这类小片段"
+
+
+async def test_d3_inspection_latest_snapshot_unchanged_for_both_row_formats(request):
+    """inspection 靠列表里的角色 id 找"最近出现快照"，新旧两种索引行都要认得。"""
+    from backend.services import inspection
+
+    pid = request.node.name
+    sm = SnapshotManager(pid)
+    await _insert_legacy_snapshot_row(pid, f"{pid}-old", "2000-01-01T00:00:00+00:00")
+    new = await sm.create_snapshot("s", "main", {"c1": CharacterState(character_id="c1")})
+
+    assert await inspection._latest_snapshot_id(sm, "c1") == new.snapshot_id
+    assert await inspection._latest_snapshot_id(sm, "c2") == f"{pid}-old"
+    assert await inspection._latest_snapshot_id(sm, "c2", branch_id="other") == ""
+    assert await inspection._latest_snapshot_id(sm, "nobody") == ""
+
+
+async def test_d3_patch_rewrites_legacy_row_into_projection(request):
+    """旧行在下一次补写时自然瘦身，不需要迁移脚本。"""
+    pid = request.node.name
+    sm = SnapshotManager(pid)
+    snap = await sm.create_snapshot("s", "main", {"c1": CharacterState(character_id="c1")})
+    await _insert_legacy_snapshot_row(pid, snap.snapshot_id, snap.created_at.isoformat())
+    await sm.record_world_state(snap.snapshot_id, {"季节": "冬"})
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "SELECT data_json FROM snapshots WHERE snapshot_id = ?", (snap.snapshot_id,)
+        )
+        stored = json.loads((await cur.fetchone())[0])
+    assert "story_history" not in stored
+    assert stored["character_ids"] == ["c1"]

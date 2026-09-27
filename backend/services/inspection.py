@@ -71,7 +71,7 @@ async def _latest_snapshot_id(
     for row in await sm.list_snapshots():
         if branch_id and row.get("branch_id") != branch_id:
             continue
-        if character_id in (row.get("character_states") or {}):
+        if character_id in (row.get("character_ids") or []):
             return row.get("snapshot_id", "")
     return ""
 

@@ -169,6 +169,21 @@ class SnapshotManager:
         return snap
 
     async def _index_snapshot(self, snap: Snapshot) -> None:
+        """登记快照索引行。data_json 只存列表所需的投影（工单18 D3）。
+
+        完整快照（角色状态、导演历史副本、世界变量）只在 meta.json 里：索引行只有
+        `list_snapshots` 在读，而导演历史副本随谱系增长，第 N 个快照带 N 条完整评估，
+        整份存进来会让列表接口 O(N²)。角色 id 必须保留 —— `inspection._latest_snapshot_id`
+        靠它判断某角色出现在哪些快照，删掉它 Inspection 面板会静默退回角色卡。
+        """
+        projection = {
+            "snapshot_id": snap.snapshot_id,
+            "scene_id": snap.scene_id,
+            "branch_id": snap.branch_id,
+            "label": snap.label,
+            "created_at": snap.created_at.isoformat(),
+            "character_ids": list(snap.character_states),
+        }
         async with db.connect() as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO snapshots "
@@ -181,7 +196,7 @@ class SnapshotManager:
                     snap.branch_id,
                     snap.label,
                     snap.created_at.isoformat(),
-                    to_json(snap),
+                    json.dumps(projection, ensure_ascii=False),
                 ),
             )
             await conn.commit()
@@ -485,13 +500,44 @@ class SnapshotManager:
         await self._index_snapshot(snap)
 
     async def list_snapshots(self) -> list[dict]:
+        """列出快照元信息：snapshot_id / scene_id / branch_id / label / created_at /
+        character_ids，按创建时间倒序。完整快照请走 `get_snapshot`（读 meta.json）。
+
+        投影在 SQL 侧完成（工单18 D3）：本功能上线前写入的索引行带着完整快照，
+        包括随谱系增长的导演历史副本，整行读回再解析就是 O(N²)。新行存的是
+        `character_ids`，旧行只有 `character_states` 对象，用 `json_each` 取它的键。
+        这只省掉应用层的搬运与解析，SQLite 仍会读整个旧 blob；旧行在下一次补写
+        （`_persist_patch`）时自然瘦身，不另写迁移。
+        """
         async with db.connect() as conn:
             cur = await conn.execute(
-                "SELECT data_json FROM snapshots WHERE project_id = ? ORDER BY created_at DESC",
+                "SELECT json_extract(data_json, '$.snapshot_id'), "
+                "json_extract(data_json, '$.scene_id'), "
+                "json_extract(data_json, '$.branch_id'), "
+                "json_extract(data_json, '$.label'), "
+                "json_extract(data_json, '$.created_at'), "
+                "COALESCE("
+                "  CASE json_type(data_json, '$.character_ids') "
+                "    WHEN 'array' THEN json_extract(data_json, '$.character_ids') END, "
+                "  (SELECT json_group_array(key) "
+                "     FROM json_each(data_json, '$.character_states') "
+                "    WHERE json_type(data_json, '$.character_states') = 'object')"
+                ") "
+                "FROM snapshots WHERE project_id = ? ORDER BY created_at DESC",
                 (self.project_id,),
             )
             rows = await cur.fetchall()
-        return [json.loads(r[0]) for r in rows]
+        return [
+            {
+                "snapshot_id": snapshot_id or "",
+                "scene_id": scene_id or "",
+                "branch_id": branch_id or "",
+                "label": label or "",
+                "created_at": created_at or "",
+                "character_ids": json.loads(character_ids) if character_ids else [],
+            }
+            for snapshot_id, scene_id, branch_id, label, created_at, character_ids in rows
+        ]
 
     async def delete_snapshot(self, snapshot_id: str) -> None:
         import shutil
