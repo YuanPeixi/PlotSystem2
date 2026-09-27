@@ -19,6 +19,7 @@ function board(branch, overrides = {}) {
   return {
     project_id: 'p', branch_id: branch, memo: '', goal_revision: 'r', fork_origin: null,
     changelog: [], revision: 3, next_beat_seq: 3, updated_at: '', goal_stale: false,
+    narrative_goal: '揭露叛徒', current_goal_revision: 'r',
     outline: [
       { beat_id: 'b1', title: '查账', description: '', status: 'planned', resolved_scene_id: '' },
       { beat_id: 'b2', title: '对质', description: '当面', status: 'done', resolved_scene_id: 's' },
@@ -159,4 +160,93 @@ test('refresh key reloads only when not editing', async () => {
   h.props.refreshKey = { scene_id: 's2' }
   h.flush()
   assert.equal(h.gets.length, 2)
+})
+
+/** A 上开始保存 → 切到 B → 切回 A 并加载完，此时 A 的旧保存还没回来。 */
+async function saveThenRoundTrip() {
+  const h = harness('A')
+  h.gets[0].resolve(board('A'))
+  await tick()
+  h.startEdit()
+  h.draft.value.memo = '第一份'
+  const saving = h.save()
+  h.props.branchId = 'B'
+  h.flush()
+  h.props.branchId = 'A'
+  h.flush()
+  h.gets.at(-1).resolve(board('A'))
+  await tick()
+  return { h, saving }
+}
+
+test('a late save response cannot clear a draft started after switching away and back', async () => {
+  const { h, saving } = await saveThenRoundTrip()
+  h.startEdit()
+  h.draft.value.memo = '新草稿'
+  h.puts[0].resolve(board('A', { revision: 4 }))
+  await saving
+  assert.equal(h.draft.value.memo, '新草稿')
+  assert.equal(h.board.value.revision, 3)
+})
+
+test('a late save failure is not reported against a newer draft', async () => {
+  const { h, saving } = await saveThenRoundTrip()
+  h.startEdit()
+  h.puts[0].reject(new h.ApiError('分镜稿已被修改', 409))
+  await saving
+  assert.equal(h.conflict.value, '')
+  assert.equal(h.saveError.value, '')
+  assert.ok(h.draft.value)
+})
+
+test('a save still in flight on the previous branch does not block saving here', async () => {
+  const { h } = await saveThenRoundTrip()
+  h.startEdit()
+  void h.save()
+  assert.equal(h.puts.length, 2)
+})
+
+test('clearing the title of an existing beat is refused locally instead of deleting it', async () => {
+  const h = harness()
+  h.gets[0].resolve(board('main'))
+  await tick()
+  h.startEdit()
+  h.draft.value.outline[1].title = '   '
+  await h.save()
+  assert.equal(h.puts.length, 0)
+  assert.match(h.saveError.value, /b2/)
+  assert.equal(h.draft.value.outline.length, 2)
+})
+
+test('retrying an unchanged draft reuses its request id; editing it issues a new one', async () => {
+  const h = harness()
+  h.gets[0].resolve(board('main'))
+  await tick()
+  h.startEdit()
+  h.addBeat()
+  h.draft.value.outline[2].title = '新节拍'
+  const first = h.save()
+  h.puts[0].reject(new Error('Network Error')) // 响应丢了：客户端不知道新节拍拿到了什么 ID
+  await first
+  const retry = h.save()
+  h.puts[1].reject(new Error('Network Error'))
+  await retry
+  assert.ok(h.puts[0].payload.request_id)
+  assert.equal(h.puts[1].payload.request_id, h.puts[0].payload.request_id)
+  assert.deepEqual(h.puts[1].payload, h.puts[0].payload)
+  h.draft.value.memo = '改了内容'
+  void h.save()
+  assert.notEqual(h.puts[2].payload.request_id, h.puts[0].payload.request_id)
+})
+
+test('confirming the goal sends the revision of the goal text the user was shown', async () => {
+  const h = harness()
+  h.gets[0].resolve(board('main', { goal_stale: true, narrative_goal: '新目标', current_goal_revision: 'r2' }))
+  await tick()
+  h.startEdit()
+  assert.equal(h.draft.value.goalText, '新目标')
+  h.draft.value.confirmGoal = true
+  void h.save()
+  assert.equal(h.puts[0].payload.confirm_goal, true)
+  assert.equal(h.puts[0].payload.goal_revision_seen, 'r2')
 })

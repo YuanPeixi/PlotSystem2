@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.api.schemas import ApiResponse, ForkBranchRequest, UpdateStoryboardRequest
-from backend.models import StoryBeat
+from backend.models import StoryBeat, StoryboardView
 from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
 from backend.utils.serializer import to_dict
@@ -42,18 +42,24 @@ async def get_world_state(project_id: str, branch_id: str) -> ApiResponse:
     return ApiResponse.ok(to_dict(state))
 
 
-def _storyboard_payload(board, goal_stale: bool) -> dict:
-    return {**to_dict(board), "goal_stale": goal_stale}
+def _storyboard_payload(view: StoryboardView) -> dict:
+    return {
+        **to_dict(view.storyboard),
+        "goal_stale": view.goal_stale,
+        "narrative_goal": view.narrative_goal,
+        "current_goal_revision": view.goal_revision,
+    }
 
 
 @project_router.get("/branches/{branch_id}/storyboard")
 async def get_storyboard(project_id: str, branch_id: str) -> ApiResponse:
     """读取分支的导演分镜稿（工单18）。没有记录时返回空分镜稿，不是 404。
 
-    `goal_stale` = 路线图基于旧版主线目标，前端据此显示"已按当前目标重排"的确认入口。
+    `goal_stale` = 路线图基于旧版主线目标，前端据此显示"已按当前目标重排"的确认入口；
+    `narrative_goal` / `current_goal_revision` 是这一刻的目标原文与版本，确认时原样带回。
     """
-    board, stale = await orchestrator.get_storyboard_view(project_id, branch_id)
-    return ApiResponse.ok(_storyboard_payload(board, stale))
+    view = await orchestrator.get_storyboard_view(project_id, branch_id)
+    return ApiResponse.ok(_storyboard_payload(view))
 
 
 @project_router.put("/branches/{branch_id}/storyboard")
@@ -61,9 +67,10 @@ async def put_storyboard(
     project_id: str, branch_id: str, req: UpdateStoryboardRequest
 ) -> ApiResponse:
     """用户整份替换路线图与备忘。修订号不匹配 409、超预算或引用不存在的节拍 422；
-    与当前内容完全相同视为重放（响应丢失后的重试），返回 200 且不记 changelog。
+    `request_id` 命中已生效的编辑视为重放（契约5），内容与当前完全相同视为无操作，
+    两者都返回 200 且不记 changelog。
     """
-    board, stale = await orchestrator.update_storyboard(
+    view = await orchestrator.update_storyboard(
         project_id,
         branch_id,
         [
@@ -75,8 +82,10 @@ async def put_storyboard(
         req.memo,
         base_revision=req.revision,
         confirm_goal=req.confirm_goal,
+        goal_revision_seen=req.goal_revision_seen,
+        request_id=req.request_id,
     )
-    return ApiResponse.ok(_storyboard_payload(board, stale))
+    return ApiResponse.ok(_storyboard_payload(view))
 
 
 @project_router.get("/snapshots")

@@ -667,6 +667,8 @@ def deserialize_storyboard(data: object, project_id: str, branch_id: str) -> Sto
             scene_id=str(c.get("scene_id") or ""),
             summary=str(c.get("summary") or ""),
             at=_parse_created_at(c.get("at"), "分镜稿改动时间"),
+            request_id=str(c.get("request_id") or ""),
+            request_digest=str(c.get("request_digest") or ""),
         )
         for c in (changelog_raw if isinstance(changelog_raw, list) else [])
         if isinstance(c, dict)
