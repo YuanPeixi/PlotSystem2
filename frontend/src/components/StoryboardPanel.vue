@@ -219,6 +219,8 @@ async function save() {
     // 保存结果比此前发出、尚未返回的刷新更新：让它们作废，否则旧稿会把面板盖回去
     loadSeq++
     loading.value = false
+    // 被作废的刷新若已先失败，它留下的加载错误说的是一份已经过时的状态
+    loadError.value = ''
     board.value = data
     if (JSON.stringify(toPayload(d)) !== key) {
       // 保存期间草稿又被改过：发出去的那份已落盘，之后的修改还没有。不清草稿，也不把它的
