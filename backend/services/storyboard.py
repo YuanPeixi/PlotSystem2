@@ -307,6 +307,7 @@ def is_patch_empty(patch: StoryboardPatch) -> bool:
     return not (
         patch.add or patch.complete or patch.drop or patch.update
         or patch.reorder is not None or patch.memo is not None or patch.goal_realigned
+        or patch.rejected
     )
 
 
@@ -336,7 +337,8 @@ def merge_storyboard_patch(
       仍等于导演读到的（已经是导演要的顺序则按幂等处理）；先于其余操作应用（它描述的
       是导演读到的那一版的顺序）；
     - `goal_realigned` 是对导演读到的那一版路线图的判断：路线图之后被别人改过、本次有
-      节拍操作被跳过、或计划中节拍被预算淘汰，确认都不成立 —— 否则旧路线图会被标成
+      操作被跳过（含解析器丢弃的格式无效操作 `patch.rejected`）、或计划中节拍被预算淘汰，
+      确认都不成立 —— 否则旧路线图会被标成
       已适配新目标。成立时写回 `seen_revision` 而不是最新目标：LLM 调用期间用户又改了
       目标的话，下一场仍应提示过期。
 
@@ -344,7 +346,8 @@ def merge_storyboard_patch(
     """
     merged = deepcopy(current)
     applied: list[str] = []
-    skipped: list[str] = []
+    # 解析器丢掉的格式无效操作也算被跳过：它们同样意味着导演想改的没改成
+    skipped: list[str] = [f"格式无效：{r}" for r in patch.rejected]
     base_beats = {b.beat_id: b for b in base.outline}
     was_empty = not merged.outline
     roadmap_unchanged = _outline_key(current.outline) == _outline_key(base.outline)
@@ -433,7 +436,7 @@ def merge_storyboard_patch(
         merged.next_beat_seq += 1
         merged.outline.append(StoryBeat(beat_id=bid, title=title, description=desc))
         applied.append(f"新增 {bid}")
-    beat_ops_skipped = bool(skipped)
+    ops_skipped = bool(skipped)
 
     # 5. 备忘
     if patch.memo is not None:
@@ -456,7 +459,7 @@ def merge_storyboard_patch(
     blockers = [
         reason for reason, hit in (
             ("路线图在导演读取后已被他人修改", not roadmap_unchanged),
-            ("本次有节拍操作被跳过", beat_ops_skipped),
+            ("本次有操作被跳过或格式无效", ops_skipped),
             ("计划中节拍被预算淘汰", bool(planned_evicted)),
         ) if hit
     ]

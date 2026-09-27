@@ -365,6 +365,9 @@ class StoryboardPatch:
     memo: str | None = None
     # 导演显式确认"已按当前主线目标重排"。只有它能让 goal_revision 前进
     goal_realigned: bool = False
+    # 解析器因格式无效丢弃的操作（带原因）。合并时计为被跳过、并挡住本次目标确认：
+    # 静默丢掉的话，一个只剩 goal_realigned 的 patch 就像"没改路线图、确认已适配"
+    rejected: list[str] = field(default_factory=list)
 
 
 @dataclass
