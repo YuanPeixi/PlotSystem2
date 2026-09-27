@@ -27,6 +27,7 @@ from backend.models import (
     RelationshipState,
     Scene,
     SceneEvaluation,
+    SceneLineage,
     SpeakerMode,
     StoryRecord,
     WorldState,
@@ -300,6 +301,52 @@ async def list_scenes_by_status(status: str) -> list[Scene]:
     return [_deserialize_scene(json.loads(r[0])) for r in rows]
 
 
+async def list_scene_lineage(project_id: str) -> list[SceneLineage]:
+    """按创建顺序列出全项目场景的谱系字段（工单18 D2）。
+
+    导演历史的回溯每次都要看全项目（手建场景靠"本分支上一场"兜底），原先走
+    `list_scenes` 会把每一场的完整 `dialogue_log` 读进应用层再反序列化。这里在
+    SQL 侧用 `json_extract` 只取回溯用得到的字段 —— 仍然从 `data_json` 取而不是读
+    同名的索引列，守住"data_json 是唯一真相源"（§5.1）。
+
+    `inherited_story_history` 可能是数组、null、缺键或被手改成标量：`json_extract`
+    对标量返回的是裸值而非 JSON 文本，所以要配合 `json_type` 判断再决定是否解析。
+    """
+    field = "$.inherited_story_history"
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "SELECT scene_id, "
+            "json_extract(data_json, '$.branch_id'), "
+            "json_extract(data_json, '$.parent_scene_id'), "
+            "json_extract(data_json, '$.name'), "
+            "json_extract(data_json, '$.restore_snapshot_id'), "
+            f"json_type(data_json, '{field}'), "
+            f"json_extract(data_json, '{field}') "
+            "FROM scenes WHERE project_id = ? ORDER BY created_at",
+            (project_id,),
+        )
+        rows = await cur.fetchall()
+    result: list[SceneLineage] = []
+    for scene_id, branch_id, parent_id, name, restore_id, history_type, history in rows:
+        if history_type in ("array", "object"):
+            raw: object = json.loads(history)
+        elif history_type in (None, "null"):
+            raw = None
+        else:
+            raw = history
+        result.append(
+            SceneLineage(
+                scene_id=scene_id,
+                branch_id=branch_id or "",
+                parent_scene_id=parent_id,
+                name=name or "",
+                restore_snapshot_id=restore_id or "",
+                inherited_story_history=deserialize_story_history(raw, f"场景 {scene_id}"),
+            )
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
@@ -415,6 +462,32 @@ async def get_evaluation(scene_id: str) -> SceneEvaluation | None:
     if not row:
         return None
     return _deserialize_evaluation(json.loads(row[0]), scene_id)
+
+
+#: 单条 SQL 的 IN 列表长度上限。老版本 SQLite 的绑定参数上限是 999，留足余量。
+_IN_CHUNK = 500
+
+
+async def get_evaluations(scene_ids: list[str]) -> dict[str, SceneEvaluation]:
+    """批量读取评估（工单18 D2），返回 scene_id → 评估；没有评估的场景不出现在结果里。
+
+    谱系回溯原先对每个祖先逐个 `get_evaluation`，50 场就是 50 次单行查询。
+    """
+    ids = list(dict.fromkeys(scene_ids))
+    result: dict[str, SceneEvaluation] = {}
+    if not ids:
+        return result
+    async with db.connect() as conn:
+        for start in range(0, len(ids), _IN_CHUNK):
+            chunk = ids[start : start + _IN_CHUNK]
+            placeholders = ", ".join("?" * len(chunk))
+            cur = await conn.execute(
+                f"SELECT scene_id, data_json FROM evaluations WHERE scene_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            for scene_id, data_json in await cur.fetchall():
+                result[scene_id] = _deserialize_evaluation(json.loads(data_json), scene_id)
+    return result
 
 
 # ---------------------------------------------------------------------------
