@@ -119,9 +119,8 @@ export interface StoryRecord {
   threads_known: boolean
 }
 
-/** 快照元信息（GET /projects/{id}/snapshots 的列表项，不含角色状态明细）。 */
+/** 快照元信息（GET /projects/{id}/snapshots 的列表项，不含角色状态明细与导演历史）。 */
 export interface SnapshotMeta {
-  story_history?: StoryRecord[] | null
   snapshot_id: string
   scene_id: string
   branch_id: string
