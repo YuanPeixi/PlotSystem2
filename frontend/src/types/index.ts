@@ -203,6 +203,8 @@ export interface StoryboardPatch {
   reorder: string[] | null
   memo: string | null
   goal_realigned: boolean
+  /** 解析时因格式无效被丢弃的操作（带原因）；非空时本次目标确认不成立 */
+  rejected: string[]
 }
 
 /** 分支级导演分镜稿（GET /projects/{pid}/branches/{bid}/storyboard）。仅导演/用户可见。 */

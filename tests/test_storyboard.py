@@ -490,6 +490,43 @@ def test_parse_patch_is_strict_about_booleans_and_shapes():
     assert sb.is_patch_empty(parse_storyboard_patch("垃圾"))
 
 
+def test_parse_records_every_dropped_operation():
+    """解析器丢掉的每一项都要留下原因，交给合并阶段：静默丢掉的话，一个只剩
+    `goal_realigned` 的 patch 看起来就像"导演什么都没改、确认路线图已适配"。"""
+    patch = parse_storyboard_patch({
+        "update": [{"title": "没带 ID 的改写"}],
+        "reorder": "b2,b1",
+        "add": [42],
+        "complete": "b1",
+        "memo": 3,
+        "goal_realigned": True,
+    })
+    assert patch.goal_realigned is True
+    assert len(patch.rejected) == 5
+    assert not sb.is_patch_empty(StoryboardPatch(rejected=["x"]))
+    # null 表示"不改"，不是格式错误
+    assert parse_storyboard_patch({"memo": None, "reorder": None, "goal_realigned": True}).rejected == []
+
+
+async def test_malformed_ops_block_goal_confirmation_end_to_end(env, monkeypatch):
+    pid, main, llm = env
+    await _seed_board(pid, main, "查账", rev=goal_revision("旧目标"))
+    captured = _capture_events(monkeypatch)
+    llm.eval_reply = _eval_reply({
+        "update": [{"title": "没带 ID"}], "reorder": "b1", "goal_realigned": True,
+    })
+    scene = await _run(pid, main)
+
+    live = await repository.get_storyboard(pid, main)
+    assert live.goal_revision == goal_revision("旧目标")
+    assert any("格式无效" in c.summary for c in live.changelog)
+    assert any(not d["fatal"] and "分镜稿" in d["message"]
+               for e, d in captured if e == "scene_error")
+    # 丢弃原因随评估落库，可追溯
+    evaluation = await repository.get_evaluation(scene.scene_id)
+    assert len(evaluation.storyboard_patch.rejected) == 2
+
+
 # ---------------------------------------------------------------------------
 # 分叉与继承
 # ---------------------------------------------------------------------------
@@ -658,16 +695,20 @@ def test_goal_revision_moves_only_on_explicit_confirmation(patch):
     assert confirmed.storyboard.goal_revision == REV
 
 
-@pytest.mark.parametrize("case", ["op_skipped", "roadmap_changed", "planned_evicted"])
+@pytest.mark.parametrize("case", ["op_skipped", "op_malformed", "roadmap_changed", "planned_evicted"])
 def test_goal_confirmation_needs_the_roadmap_the_director_confirmed(case):
-    """确认是对导演读到的那一版路线图的判断。三种情况各自单独成立，任一都挡住确认：
-    本次有节拍操作被跳过 / 路线图在导演读取后被他人改过 / 计划中节拍被预算淘汰。"""
+    """确认是对导演读到的那一版路线图的判断。四种情况各自单独成立，任一都挡住确认：
+    本次有节拍操作被跳过 / 有操作格式无效被解析器丢弃 / 路线图在导演读取后被他人改过 /
+    计划中节拍被预算淘汰。"""
     base = _board("查账", "对质")
     base.goal_revision = goal_revision("旧目标")
     current = deepcopy(base)
     patch = StoryboardPatch(goal_realigned=True)
     if case == "op_skipped":
         patch.complete = ["b99"]
+    elif case == "op_malformed":
+        # 走真解析器：丢掉的操作到了合并阶段已经看不见，只剩一个确认
+        patch = parse_storyboard_patch({"update": [{"title": "没带 ID"}], "goal_realigned": True})
     elif case == "roadmap_changed":
         current.outline[1].title = "用户改过"
     else:

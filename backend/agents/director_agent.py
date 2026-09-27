@@ -199,23 +199,39 @@ def parse_storyboard_patch(value) -> StoryboardPatch:
     ID 是否存在、前提是否仍成立由 `services.storyboard.merge_storyboard_patch` 在锁内
     对照当前稿判断 —— 这里看不到当前稿。布尔走 `_parse_bool`：``"false"`` 这种合法
     JSON 字符串直接 ``bool()`` 会变成 True，路线图就被误标成"已按新目标重排"。
+
+    丢弃的每一项都记进 `rejected`（带原因），交给合并阶段计为跳过并挡住目标确认；
+    值为 null 的键表示"不改"，不算格式错误。
     """
     if not isinstance(value, dict):
         return StoryboardPatch()
+    rejected: list[str] = []
+
+    def listed(key: str) -> list:
+        raw = value.get(key)
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            rejected.append(f"{key} 不是列表")
+            return []
+        return raw
 
     def ids(key: str) -> list[str]:
-        raw = value.get(key)
-        if not isinstance(raw, list):
-            return []
-        return [single_line(x) for x in raw if isinstance(x, (str, int)) and single_line(x)]
+        result: list[str] = []
+        for x in listed(key):
+            if isinstance(x, (str, int)) and single_line(x):
+                result.append(single_line(x))
+            else:
+                rejected.append(f"{key} 含无效 ID {x!r}")
+        return result
 
     def beats(key: str, *, with_id: bool) -> list[StoryBeat]:
-        raw = value.get(key)
         result: list[StoryBeat] = []
-        for item in raw if isinstance(raw, list) else []:
+        for item in listed(key):
             if isinstance(item, str) and not with_id:
                 item = {"title": item}
             if not isinstance(item, dict):
+                rejected.append(f"{key} 含无效条目 {item!r}")
                 continue
             beat = StoryBeat(
                 beat_id=single_line(item.get("beat_id")) if with_id else "",
@@ -223,13 +239,16 @@ def parse_storyboard_patch(value) -> StoryboardPatch:
                 description=str(item.get("description") or ""),
             )
             if with_id and not beat.beat_id:
+                rejected.append(f"{key} 缺少 beat_id")
                 continue
             result.append(beat)
         return result
 
     reorder = value.get("reorder")
     memo = value.get("memo")
-    return StoryboardPatch(
+    if memo is not None and not isinstance(memo, str):
+        rejected.append("memo 不是字符串")
+    patch = StoryboardPatch(
         add=beats("add", with_id=False),
         complete=ids("complete"),
         drop=ids("drop"),
@@ -238,6 +257,10 @@ def parse_storyboard_patch(value) -> StoryboardPatch:
         memo=memo if isinstance(memo, str) else None,
         goal_realigned=_parse_bool(value.get("goal_realigned", False)) is True,
     )
+    if reorder is not None and not isinstance(reorder, list):
+        rejected.append("reorder 不是列表")
+    patch.rejected = [r[:80] for r in rejected]
+    return patch
 
 
 _STORYBOARD_HEADER = "【导演分镜稿（仅导演可见；路线图服务于主线目标，二者冲突时以主线目标为准）】"

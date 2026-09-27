@@ -10,7 +10,7 @@ const script = source
   .match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   .replace(/^import .*$/gm, '')
 const compiled = ts.transpileModule(script + `
-globalThis.subject = { board, draft, conflict, saveError, loading, load, startEdit, addBeat,
+globalThis.subject = { board, draft, conflict, saveError, loading, saving, load, startEdit, addBeat,
   removeBeat, moveBeat, save, cancelEdit, reloadAfterConflict };
 `, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 
@@ -249,4 +249,51 @@ test('confirming the goal sends the revision of the goal text the user was shown
   void h.save()
   assert.equal(h.puts[0].payload.confirm_goal, true)
   assert.equal(h.puts[0].payload.goal_revision_seen, 'r2')
+})
+
+test('edits typed while a save is in flight are kept, not cleared by the response', async () => {
+  const h = harness()
+  h.gets[0].resolve(board('main'))
+  await tick()
+  h.startEdit()
+  h.draft.value.memo = 'A'
+  const saving = h.save()
+  // 模板里编辑区在保存中是只读的；这里模拟绕过它（如输入法合成事件）的那次改动
+  h.draft.value.memo = 'A 然后继续输入 B'
+  h.puts[0].resolve(board('main', { revision: 4, memo: 'A' }))
+  await saving
+  assert.equal(h.draft.value.memo, 'A 然后继续输入 B')
+  assert.equal(h.draft.value.revision, 3) // 不改基准：下次保存冲突就走 409 提示
+  assert.equal(h.board.value.revision, 4)
+  assert.match(h.saveError.value, /尚未保存/)
+})
+
+test('beat editing actions are ignored while saving', async () => {
+  const h = harness()
+  h.gets[0].resolve(board('main'))
+  await tick()
+  h.startEdit()
+  void h.save()
+  assert.equal(h.saving.value, true)
+  h.addBeat()
+  h.removeBeat(0)
+  h.moveBeat(0, 1)
+  assert.deepEqual(h.draft.value.outline.map(b => b.beat_id), ['b1', 'b2'])
+})
+
+test('a refresh issued before a successful save cannot roll the panel back', async () => {
+  const h = harness()
+  h.gets[0].resolve(board('main'))
+  await tick()
+  h.props.refreshKey = { scene_id: 's1' } // 评估到达，刷新发出、尚未返回
+  h.flush()
+  h.startEdit()
+  h.draft.value.memo = '改'
+  const saving = h.save()
+  h.puts[0].resolve(board('main', { revision: 4, memo: '改' }))
+  await saving
+  h.gets[1].resolve(board('main', { revision: 3 }))
+  await tick()
+  assert.equal(h.board.value.revision, 4)
+  assert.equal(h.board.value.memo, '改')
 })
