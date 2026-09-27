@@ -31,6 +31,7 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
     SceneStatus,
+    StoryRecord,
     WorldState,
     goal_revision,
     new_id,
@@ -375,7 +376,7 @@ async def _story_context(
     - 线索取**最近一份带该键的评估的列表原样**，哪怕它是空的 —— 空表示"上一场把
       线索都收束了"，不是"还没找到线索状态"。把两者混为一谈会让已收束的旧线索被
       重新复活。反过来，LLM 漏返回该键时要继续往前找，而不是当成"线索全部收束"：
-      `ev.get(key, [])` 会把这两种情况压成同一个值，因此必须用独立标志区分
+      旧副本里缺键的记录在反序列化时记为 `threads_known=False`，这里据此跳过
       （写入侧的 `director_agent._normalize_threads` 一直是这么做的）；
     - 梗概要多取几条：结局往往是跨场次达成的，只看本场判不出来。
     """
@@ -386,23 +387,28 @@ async def _story_context(
     threads_found = False
     synopses: list[str] = []
     for record in reversed(records):
-        ev = record["evaluation"]
-        if progress < 0 and ev.get("story_progress", -1) >= 0 and ev.get("goal_revision") == revision:
-            progress = ev["story_progress"]
-        if not threads_found and isinstance(ev.get("unresolved_threads"), list):
-            threads = list(ev["unresolved_threads"])
+        ev = record.evaluation
+        if progress < 0 and ev.story_progress >= 0 and ev.goal_revision == revision:
+            progress = ev.story_progress
+        if not threads_found and record.threads_known:
+            threads = list(ev.unresolved_threads)
             threads_found = True
-        if ev.get("synopsis") and len(synopses) < synopsis_limit:
-            synopses.append(f"【{record['name'] or '未命名场景'}】{ev['synopsis']}")
+        if ev.synopsis and len(synopses) < synopsis_limit:
+            synopses.append(f"【{record.name or '未命名场景'}】{ev.synopsis}")
     synopses.reverse()
     return progress, threads, synopses
 
 
-def _story_record(scene: Scene, evaluation: SceneEvaluation) -> dict:
-    return {"scene_id": scene.scene_id, "name": scene.name, "evaluation": to_dict(evaluation)}
+def _story_record(scene: Scene, evaluation: SceneEvaluation) -> StoryRecord:
+    # 拷一份：记录是时点副本，调用方之后再改这份评估不该追溯改写历史
+    return StoryRecord(
+        scene_id=scene.scene_id, name=scene.name, evaluation=deepcopy(evaluation)
+    )
 
 
-def _merge_story_records(inherited: list[dict], tail: list[dict]) -> list[dict]:
+def _merge_story_records(
+    inherited: list[StoryRecord], tail: list[StoryRecord]
+) -> list[StoryRecord]:
     """拼接冻结副本与本次回溯，同一场景只保留较新的那份评估。
 
     `while` 循环的 `seen` 只在回溯路径内去重，管不到冻结副本：场景 X 冻结进
@@ -410,11 +416,11 @@ def _merge_story_records(inherited: list[dict], tail: list[dict]) -> list[dict]:
     同一场的梗概与线索被重复计入提示词。回溯得到的那份更新，因此它胜出；
     保留 inherited 的相对次序，避免时间线被去重打乱。
     """
-    fresher = {r.get("scene_id") for r in tail if r.get("scene_id")}
-    merged = [r for r in inherited if r.get("scene_id") not in fresher]
-    seen = {r.get("scene_id") for r in merged if r.get("scene_id")}
+    fresher = {r.scene_id for r in tail if r.scene_id}
+    merged = [r for r in inherited if r.scene_id not in fresher]
+    seen = {r.scene_id for r in merged if r.scene_id}
     for record in tail:
-        sid = record.get("scene_id")
+        sid = record.scene_id
         if sid and sid in seen:
             continue
         if sid:
@@ -425,7 +431,7 @@ def _merge_story_records(inherited: list[dict], tail: list[dict]) -> list[dict]:
 
 async def _story_records(
     scene: Scene, *, include_current: bool = True, sm: SnapshotManager | None = None
-) -> list[dict]:
+) -> list[StoryRecord]:
     """按实际继承边界读取导演历史，旧数据才沿场景链回溯。
 
     parent_scene_id 只表示来源；遇到分叉必须停在冻结副本处，不能越过快照

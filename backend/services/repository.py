@@ -7,6 +7,7 @@ CharacterCard 与分支世界变量以 JSON 文件存于项目目录（便于人
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from backend.models import (
     Scene,
     SceneEvaluation,
     SpeakerMode,
+    StoryRecord,
     WorldState,
     now,
 )
@@ -233,7 +235,9 @@ def _deserialize_scene(data: dict) -> Scene:
         snapshot_id_before=data.get("snapshot_id_before", ""),
         snapshot_id_after=data.get("snapshot_id_after"),
         restore_snapshot_id=data.get("restore_snapshot_id", ""),
-        inherited_story_history=data.get("inherited_story_history"),
+        inherited_story_history=deserialize_story_history(
+            data.get("inherited_story_history"), f"场景 {data['scene_id']}"
+        ),
         created_at=_parse_created_at(data.get("created_at")),
         turns_completed=data.get("turns_completed", 0),
         turns_consolidated=data.get("turns_consolidated", 0),
@@ -338,6 +342,68 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         world_state_delta=dict(data.get("world_state_delta") or {}),
         evaluated_snapshot_id=data.get("evaluated_snapshot_id", ""),
     )
+
+
+def _deserialize_story_record(data: object) -> StoryRecord:
+    """还原导演历史里的一条记录。结构不对就抛异常，由调用方跳过这一条。
+
+    评估内容复用 `_deserialize_evaluation`，额外补两处副本特有的防线：
+
+    - **线索的存在性**：`unresolved_threads` 缺键或不是列表记为 `threads_known=False`，
+      `_story_context` 据此继续往前找。`_deserialize_evaluation` 自己把缺键默认成 `[]`
+      —— 那是 evaluations 表一侧的既有口径（工单18 D1 注明不扩大、不统一），但副本
+      不能照搬：[] 在这里是"线索已清空"的权威值；
+    - **推进度必须是有限实数**：副本可被人工编辑，字符串进来会在 `_story_context`
+      的比较处抛 TypeError，NaN 会被当成合法进度（§4.2 陷阱 18）。降级为不可用。
+    """
+    if not isinstance(data, dict):
+        raise TypeError(f"记录不是对象：{type(data).__name__}")
+    raw_ev = data.get("evaluation")
+    if not isinstance(raw_ev, dict):
+        raise TypeError(f"evaluation 不是对象：{type(raw_ev).__name__}")
+    scene_id = str(data.get("scene_id") or "")
+    evaluation = _deserialize_evaluation(raw_ev, scene_id)
+    threads_known = isinstance(raw_ev.get("unresolved_threads"), list)
+    if not threads_known:
+        # 字符串被 list() 拆成单字、None 被压成 []，都不是真实的线索
+        evaluation.unresolved_threads = []
+    if "threads_known" in data:
+        # 本字段落地后写出的记录：以显式值为准（未知过的记录序列化后键是 []，
+        # 只看键在不在会把它误判为已知）
+        threads_known = bool(data["threads_known"]) and threads_known
+    progress = evaluation.story_progress
+    if isinstance(progress, bool) or not isinstance(progress, (int, float)) or not math.isfinite(progress):
+        logger.warning("导演历史记录 %s 的推进度无效，按不可用处理：%r", scene_id, progress)
+        evaluation.story_progress = PROGRESS_UNAVAILABLE
+    return StoryRecord(
+        scene_id=scene_id,
+        name=str(data.get("name") or ""),
+        evaluation=evaluation,
+        threads_known=threads_known,
+    )
+
+
+def deserialize_story_history(raw: object, owner: str) -> list[StoryRecord] | None:
+    """还原 `Scene.inherited_story_history` / `Snapshot.story_history`（工单18 D1）。
+
+    - `None` 原样返回：它是"旧数据，请回溯推断"的哨兵，与权威空历史 `[]` 不能混同
+      （§4.2 陷阱 16）；
+    - 损坏的条目跳过并 warning：一条坏记录不能让整个 `list_scenes` 五百（降级要成片）；
+    - 整个容器都不是列表时按权威空历史处理，而不是 None —— None 会触发回溯，
+      去读**当前**的来源快照，可能越过分叉边界读进后来才发生的剧情。
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        logger.warning("%s 的导演历史不是列表，按空历史处理：%r", owner, type(raw).__name__)
+        return []
+    records: list[StoryRecord] = []
+    for i, item in enumerate(raw):
+        try:
+            records.append(_deserialize_story_record(item))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s 的导演历史第 %d 条损坏，已跳过：%s", owner, i, exc)
+    return records
 
 
 async def get_evaluation(scene_id: str) -> SceneEvaluation | None:

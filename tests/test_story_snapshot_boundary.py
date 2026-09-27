@@ -21,6 +21,7 @@ from backend.models import (
 from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
 from backend.utils import db
+from backend.utils.serializer import to_dict
 
 GOAL = "揭露叛徒"
 
@@ -112,7 +113,7 @@ async def test_nested_fork_keeps_original_cutoff(story):
     snap = await sm.get_snapshot(child.snapshot_id_before)
     assert snap.story_history is not None  # 确认真正写入/还原了快照字段
     indexed = next(s for s in await sm.list_snapshots() if s["snapshot_id"] == snap.snapshot_id)
-    assert indexed["story_history"] == snap.story_history
+    assert indexed["story_history"] == [to_dict(r) for r in snap.story_history]
 
 
 async def test_legacy_snapshot_does_not_guess_future_evaluation(story, caplog):
