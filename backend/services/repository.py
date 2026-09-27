@@ -38,6 +38,7 @@ from backend.models import (
     StoryboardSource,
     StoryRecord,
     WorldState,
+    goal_revision,
     now,
 )
 from backend.services.storyboard import clamp_storyboard
@@ -407,6 +408,7 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         story_progress_raw=data.get("story_progress_raw", PROGRESS_UNAVAILABLE),
         progress_stalled=bool(data.get("progress_stalled", False)),
         goal_revision=data.get("goal_revision", ""),
+        goal_missing=_goal_missing(data),
         is_ending_reached=bool(data.get("is_ending_reached", False)),
         ending_reason=data.get("ending_reason", ""),
         unresolved_threads=list(data.get("unresolved_threads", []) or []),
@@ -416,6 +418,18 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         evaluated_snapshot_id=data.get("evaluated_snapshot_id", ""),
         storyboard_patch=_deserialize_storyboard_patch(data.get("storyboard_patch")),
     )
+
+
+def _goal_missing(data: dict) -> bool:
+    """评估时有没有主线目标。字段上线前的记录按它记下的目标版本回填。
+
+    空目标下写入的评估，`goal_revision` 恰是空串的版本；不回填的话，正是那些
+    "没填目标就跑起来"的老项目看不到无锚点提示。没有版本的更老记录不猜。
+    """
+    if "goal_missing" in data:
+        return data["goal_missing"] is True
+    revision = data.get("goal_revision", "")
+    return bool(revision) and revision == goal_revision("")
 
 
 def _deserialize_storyboard_patch(data: object) -> StoryboardPatch:

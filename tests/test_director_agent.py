@@ -454,6 +454,113 @@ async def test_goal_revision_recorded(monkeypatch):
     assert result.goal_revision == goal_revision("扳倒丞相")
 
 
+# --- 主线目标为空：度量没有参照 --------------------------------------------------
+
+
+@pytest.mark.parametrize("goal", ["", "   "])
+async def test_progress_not_measured_without_goal(monkeypatch, goal):
+    """没有目标就没有"推进到哪"：自评数字照收会在单调钳制下一路爬向一个不存在的终点。"""
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.7))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal=goal, prior_progress=0.3
+    )
+    assert result.goal_missing is True
+    assert result.story_progress == da.PROGRESS_UNAVAILABLE
+    assert result.story_progress_raw == da.PROGRESS_UNAVAILABLE
+    assert result.progress_stalled is False
+    # 其余评分照常保留：只有对照主线目标的度量失去参照，整份评估并没有作废
+    assert result.dramatic_tension_score == 7
+    assert not da.is_evaluation_unavailable(result)
+
+
+async def test_whitespace_only_anchor_cannot_end_the_story(monkeypatch):
+    """只有空白的目标/标准与没有一样，不能当成用户锚点放行结局判定。"""
+    _patch_chat(monkeypatch, _eval_reply(is_ending_reached=True, ending_reason="都结束了"))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="  ", ending_criteria="\n"
+    )
+    assert result.is_ending_reached is False
+
+
+async def test_goal_present_is_not_missing(monkeypatch):
+    _patch_chat(monkeypatch, _eval_reply(story_progress=0.7))
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(
+        _scene(), _log(), _cards(), narrative_goal="扳倒丞相", prior_progress=0.3
+    )
+    assert result.goal_missing is False
+    assert result.story_progress == 0.7
+
+
+async def test_unparsable_evaluation_without_goal_is_marked_missing(monkeypatch):
+    _patch_chat(monkeypatch, "今天不想输出 JSON。")
+    agent = da.DirectorAgent("p1")
+    result = await agent.evaluate_scene(_scene(), _log(), _cards())
+    assert result.goal_missing is True
+
+
+async def test_eval_prompt_without_goal_does_not_ask_for_progress_baseline(monkeypatch):
+    """历史推进度（可能是旧目标或无目标时期的噪声）不能作为基线喂回去。"""
+    sink: list = []
+    _patch_chat(monkeypatch, _eval_reply(), sink)
+    agent = da.DirectorAgent("p1")
+    await agent.evaluate_scene(_scene(), _log(), _cards(), prior_progress=0.3)
+    prompt = sink[0][0]["content"]
+    assert "0.30" not in prompt
+    assert "不度量推进度" in prompt
+    # 无锚点时分镜稿最容易被当成目标：被评的一方写的路线图不能充当评分依据
+    assert "不要拿分镜稿代替主线目标" in prompt
+
+
+async def test_plan_prompt_without_goal_marks_roadmap_as_exploratory(monkeypatch):
+    sink: list = []
+    _patch_chat(monkeypatch, json.dumps({"name": "夜谈", "participating_characters": ["王子"]}), sink)
+    agent = da.DirectorAgent("p1")
+    await agent.plan_scene("b1", "", _cards())
+    prompt = sink[0][0]["content"]
+    assert "探索性" in prompt
+
+
+async def test_goal_score_without_goal_does_not_trigger_rollback():
+    """没有目标时"目标达成"分是噪声，不能凭它回滚（AutoPilot 会真的去建分支）。"""
+    from backend.models import SceneEvaluation
+
+    agent = da.DirectorAgent("p1")
+    decision = await agent.make_decision(
+        SceneEvaluation(
+            scene_id="s1",
+            narrative_goal_score=2.0,
+            dramatic_tension_score=5.0,
+            plot_deviation_score=9.0,
+            character_consistency_score=8.0,
+            recommended_decision="next_scene",
+            goal_missing=True,
+        )
+    )
+    assert decision.decision_type == "next_scene"
+
+
+async def test_consistency_rule_still_applies_without_goal():
+    """只屏蔽失去参照的那一条；角色一致性与主线目标无关，照常生效。"""
+    from backend.models import SceneEvaluation
+
+    agent = da.DirectorAgent("p1")
+    decision = await agent.make_decision(
+        SceneEvaluation(
+            scene_id="s1",
+            narrative_goal_score=8.0,
+            dramatic_tension_score=5.0,
+            plot_deviation_score=2.0,
+            character_consistency_score=3.0,
+            recommended_decision="next_scene",
+            goal_missing=True,
+        )
+    )
+    assert decision.decision_type == "rollback"
+
+
 # --- PR review 第二轮 ---------------------------------------------------------
 
 

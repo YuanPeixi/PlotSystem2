@@ -153,6 +153,8 @@ export interface SceneEvaluation {
   story_progress: number
   story_progress_raw: number
   progress_stalled: boolean
+  /** 评估时项目没有主线目标：目标达成 / 主线偏离没有参照，推进度不度量 */
+  goal_missing?: boolean
   is_ending_reached: boolean
   ending_reason: string
   unresolved_threads: string[]

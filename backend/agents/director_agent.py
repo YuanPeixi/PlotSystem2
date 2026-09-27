@@ -420,7 +420,8 @@ class DirectorAgent:
         char_desc = "\n".join(self._describe_for_plan(c) for c in available_characters)
         threads = _normalize_threads(None, fallback=prior_threads)
         prompt = _PLAN_PROMPT.format(
-            narrative_goal=narrative_goal or "（用户未设定主线目标，请依据前情自行把握大方向）",
+            narrative_goal=narrative_goal.strip()
+            or "（用户未设定主线目标，请依据前情自行把握大方向；路线图只是你的探索性打算，不是主线目标）",
             storyboard_header=_STORYBOARD_HEADER,
             storyboard=describe_storyboard(storyboard, narrative_goal),
             scene_intent=scene_intent or "（未指定，由你依据主线目标、路线图与未收束线索决定）",
@@ -473,17 +474,25 @@ class DirectorAgent:
         storyboard: Storyboard | None = None,
     ) -> SceneEvaluation:
         transcript = await self._build_transcript(dialogue_log)
+        # 没有主线目标就没有"推进到哪"：自评数字照收，会在单调钳制下一路爬向一个不存在的终点
+        goal_missing = not narrative_goal.strip()
         # 钳制基线：不可用（无历史评估）时按 0 起算，但仍要区分于"历史进度确实是 0"
         baseline = prior_progress if prior_progress >= 0 else 0.0
         revision = goal_revision(narrative_goal)
         # 继承进来的线索也要过预算：库里可能存着本次预算之前写入的超长列表
         prior = _normalize_threads(None, fallback=prior_threads)
+        if goal_missing:
+            prior_progress_text = "（用户未设定主线目标，不度量推进度，story_progress 可省略）"
+        elif prior_progress >= 0:
+            prior_progress_text = f"{baseline:.2f}"
+        else:
+            prior_progress_text = "（暂无历史评估，本场是主线的起点）"
         prompt = _EVAL_PROMPT.format(
-            narrative_goal=narrative_goal or "（用户未设定主线目标，plot_deviation_score 请保守给出）",
+            narrative_goal=narrative_goal.strip()
+            or "（用户未设定主线目标：narrative_goal_score 与 plot_deviation_score 没有参照，"
+            "请保守给出；不要拿分镜稿代替主线目标打分）",
             ending_criteria=ending_criteria or "（用户未给出明确的结局标准）",
-            prior_progress=f"{baseline:.2f}"
-            if prior_progress >= 0
-            else "（暂无历史评估，本场是主线的起点）",
+            prior_progress=prior_progress_text,
             prior_synopses=self._fit_synopses(prior_synopses or []),
             prior_threads="\n".join(f"- {t}" for t in prior) or "（暂无）",
             scene_brief=self._scene_brief(scene),
@@ -506,6 +515,7 @@ class DirectorAgent:
             result.synopsis = "（评估结果解析失败，分数不可信）"
             result.unresolved_threads = _normalize_threads(None, fallback=prior)
             result.goal_revision = revision
+            result.goal_missing = goal_missing
             # world_state_delta 与 storyboard_patch 保持空：解析失败时世界状态与分镜稿
             # 都必须原样不动，绝不能让一次失败的调用伪装成一次真实的更新（与分数置为
             # 不可用同理）
@@ -524,7 +534,10 @@ class DirectorAgent:
             rollback_suggestion = {"reason": data.get("rollback_reason", "")}
 
         raw_progress = _parse_progress(data.get("story_progress"))
-        if raw_progress < 0:
+        if goal_missing:
+            # 与缺失同样记为不可用（不是 0）：没有尺子，谈不上推进或停滞
+            raw_progress, progress, stalled = PROGRESS_UNAVAILABLE, PROGRESS_UNAVAILABLE, False
+        elif raw_progress < 0:
             # 缺失/非法不能当成"进度 0"：那会伪造一次停滞信号，也会让进度条掉回去
             logger.warning("场景 %s 的评估未给出可用的 story_progress", scene.scene_id)
             progress, stalled = PROGRESS_UNAVAILABLE, False
@@ -549,6 +562,7 @@ class DirectorAgent:
             story_progress_raw=raw_progress,
             progress_stalled=stalled,
             goal_revision=revision,
+            goal_missing=goal_missing,
             is_ending_reached=ending_reached,
             ending_reason=ending_reason,
             unresolved_threads=_normalize_threads(
@@ -584,7 +598,7 @@ class DirectorAgent:
                 data.get("is_ending_reached"),
             )
             reached = False
-        if reached and not (narrative_goal or ending_criteria):
+        if reached and not (narrative_goal.strip() or ending_criteria.strip()):
             logger.warning(
                 "场景 %s 的评估声称已抵达结局，但项目没有主线目标/结局标准，已忽略", scene_id
             )
@@ -611,12 +625,11 @@ class DirectorAgent:
             )
             return DirectorDecision(decision_type=evaluation.recommended_decision)
 
-        # 基于评分的规则化推荐（与 CLAUDE.md 5.3 评分维度一致）
+        # 基于评分的规则化推荐（与 CLAUDE.md 5.3 评分维度一致）。没有主线目标时
+        # "目标达成"分没有参照，不能凭它回滚；与目标无关的角色一致性照常生效
         decision_type = evaluation.recommended_decision
-        if (
-            evaluation.narrative_goal_score < 4
-            or evaluation.character_consistency_score < 5
-        ):
+        goal_score_low = not evaluation.goal_missing and evaluation.narrative_goal_score < 4
+        if goal_score_low or evaluation.character_consistency_score < 5:
             decision_type = DecisionType.ROLLBACK.value
         elif evaluation.dramatic_tension_score < 3:
             decision_type = DecisionType.CONTINUE.value
