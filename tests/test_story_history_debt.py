@@ -21,9 +21,12 @@ from backend.models import (
     Project,
     Scene,
     SceneEvaluation,
+    StoryRecord,
     goal_revision,
 )
 from backend.services import orchestrator, repository
+from backend.snapshot import SnapshotManager
+from backend.snapshot.snapshot_manager import _snapshots_dir
 from backend.utils import db
 
 GOAL = "揭露叛徒"
@@ -168,3 +171,138 @@ async def test_d0_story_context_equivalent_across_lineage(lineage):
         key: await orchestrator._story_context(scene, GOAL) for key, scene in lineage.items()
     }
     assert actual == EXPECTED
+
+
+# ---------------------------------------------------------------------------
+# D1 类型化：旧数据兼容 + 字段存在性
+# ---------------------------------------------------------------------------
+
+
+def _legacy_record(scene_id: str, **ev) -> dict:
+    return {"scene_id": scene_id, "name": scene_id.upper(), "evaluation": ev}
+
+
+async def _raw_scene_with_history(request, history) -> str:
+    pid = request.node.name
+    await repository.save_project(Project(project_id=pid, name=pid))
+    sid = f"{pid}-raw"
+    data = {"scene_id": sid, "project_id": pid, "branch_id": "b", "name": "R"}
+    if history is not _MISSING:
+        data["inherited_story_history"] = history
+    await _insert_raw_scene(sid, pid, "b", data)
+    return sid
+
+
+_MISSING = object()
+
+
+async def test_d1_legacy_scene_history_reads_back_typed(request):
+    sid = await _raw_scene_with_history(
+        request, [_legacy_record("a", story_progress=0.3, synopsis="梗概", unresolved_threads=["X"])]
+    )
+    scene = await repository.get_scene(sid)
+    [record] = scene.inherited_story_history
+    assert isinstance(record, StoryRecord)
+    assert (record.scene_id, record.name) == ("a", "A")
+    assert record.evaluation.story_progress == 0.3
+    assert record.evaluation.unresolved_threads == ["X"]
+    assert record.threads_known is True
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(_MISSING, None), (None, None), ([], [])])
+async def test_d1_none_and_empty_stay_distinguishable(request, raw, expected):
+    """None = 旧数据请回溯；[] = 权威空历史。读回后不得混同。"""
+    sid = await _raw_scene_with_history(request, raw)
+    assert (await repository.get_scene(sid)).inherited_story_history == expected
+
+
+async def test_d1_corrupt_entry_is_skipped_not_fatal(request, caplog):
+    """一条坏记录只丢它自己：list_scenes 不得五百，其余记录照常读回。"""
+    sid = await _raw_scene_with_history(request, [
+        "不是对象",
+        {"scene_id": "x", "name": "X", "evaluation": "不是对象"},
+        {"scene_id": "y", "name": "Y", "evaluation": {"world_state_delta": ["不是字典"]}},
+        _legacy_record("ok", synopsis="好的"),
+    ])
+    [scene] = await repository.list_scenes(request.node.name)
+    assert scene.scene_id == sid
+    assert [r.scene_id for r in scene.inherited_story_history] == ["ok"]
+    assert caplog.text.count("导演历史第") == 3
+
+
+async def test_d1_non_list_container_degrades_to_authoritative_empty(request, caplog):
+    """整个容器坏了不能退成 None：那会触发回溯，去读当前来源快照、越过分叉边界。"""
+    sid = await _raw_scene_with_history(request, {"不是": "列表"})
+    assert (await repository.get_scene(sid)).inherited_story_history == []
+    assert "不是列表" in caplog.text
+
+
+async def test_d1_invalid_progress_degrades_instead_of_crashing(request, caplog):
+    """手编的字符串进度原先会在 _story_context 的比较处抛 TypeError。"""
+    sid = await _raw_scene_with_history(request, [
+        _legacy_record("a", story_progress=0.3, goal_revision=REV, synopsis="甲"),
+        _legacy_record("b", story_progress="0.9", goal_revision=REV, synopsis="乙"),
+        _legacy_record("c", story_progress=float("nan"), goal_revision=REV, synopsis="丙"),
+    ])
+    scene = await repository.get_scene(sid)
+    progress, _, synopses = await orchestrator._story_context(scene, GOAL)
+    assert progress == 0.3
+    assert synopses == ["【A】甲", "【B】乙", "【C】丙"]
+    assert "推进度无效" in caplog.text
+
+
+@pytest.mark.parametrize("latest", [
+    {},  # 缺键
+    {"unresolved_threads": None},
+    {"unresolved_threads": "不是列表"},
+])
+async def test_d1_missing_threads_in_frozen_copy_falls_back(request, latest):
+    """验收"D1 字段存在性"：最近一条缺线索（或值非列表）→ 取上一条的线索。"""
+    sid = await _raw_scene_with_history(request, [
+        _legacy_record("a", unresolved_threads=["线索X"]),
+        _legacy_record("b", **latest),
+    ])
+    scene = await repository.get_scene(sid)
+    assert scene.inherited_story_history[-1].threads_known is False
+    assert scene.inherited_story_history[-1].evaluation.unresolved_threads == []
+    _, threads, _ = await orchestrator._story_context(scene, GOAL)
+    assert threads == ["线索X"]
+
+
+async def test_d1_explicit_empty_threads_in_frozen_copy_is_authoritative(request):
+    sid = await _raw_scene_with_history(request, [
+        _legacy_record("a", unresolved_threads=["线索X"]),
+        _legacy_record("b", unresolved_threads=[]),
+    ])
+    _, threads, _ = await orchestrator._story_context(await repository.get_scene(sid), GOAL)
+    assert threads == []
+
+
+async def test_d1_unknown_threads_survive_save_roundtrip(request):
+    """存在性要能跨一次"读出来再存回去"：序列化后 unresolved_threads 的键是 []，
+    只看键在不在的话，第二次读取就会把它误判成"线索已清空"。"""
+    sid = await _raw_scene_with_history(request, [
+        _legacy_record("a", unresolved_threads=["线索X"]),
+        _legacy_record("b"),
+    ])
+    scene = await repository.get_scene(sid)
+    await repository.save_scene(scene)
+    reloaded = await repository.get_scene(sid)
+    assert [r.threads_known for r in reloaded.inherited_story_history] == [True, False]
+    _, threads, _ = await orchestrator._story_context(reloaded, GOAL)
+    assert threads == ["线索X"]
+
+
+async def test_d1_legacy_snapshot_history_reads_back_typed(request):
+    pid = request.node.name
+    await repository.save_project(Project(project_id=pid, name=pid))
+    sm = SnapshotManager(pid)
+    snap = await sm.create_snapshot("s", "b", {}, label="after:legacy")
+    meta = _snapshots_dir(pid) / snap.snapshot_id / "meta.json"
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    data["story_history"] = [_legacy_record("a", synopsis="旧"), _legacy_record("b")]
+    meta.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    loaded = await sm.get_snapshot(snap.snapshot_id)
+    assert [type(r) for r in loaded.story_history] == [StoryRecord, StoryRecord]
+    assert [r.threads_known for r in loaded.story_history] == [False, False]

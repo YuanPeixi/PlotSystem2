@@ -27,9 +27,11 @@ from backend.models import (
     CharacterState,
     RelationshipState,
     Snapshot,
+    StoryRecord,
     new_id,
     now,
 )
+from backend.services.repository import deserialize_story_history
 from backend.snapshot.branch_tree import build_branch_tree
 from backend.utils import db
 from backend.utils.branch_memory import is_fork_initialized, mark_fork_initialized
@@ -107,7 +109,7 @@ class SnapshotManager:
         character_states: dict[str, CharacterState],
         scene_context: dict | None = None,
         label: str = "",
-        story_history: list[dict] | None = None,
+        story_history: list[StoryRecord] | None = None,
         world_state_variables: dict[str, str] | None = None,
         snapshot_id: str = "",
     ) -> Snapshot:
@@ -437,7 +439,9 @@ class SnapshotManager:
             scene_context=data.get("scene_context", {}),
             graph_checkpoint=data.get("graph_checkpoint", ""),
             chroma_checkpoint=data.get("chroma_checkpoint", ""),
-            story_history=data.get("story_history"),
+            story_history=deserialize_story_history(
+                data.get("story_history"), f"快照 {snapshot_id}"
+            ),
             world_state_variables=dict(data.get("world_state_variables") or {}),
             # 不还原就等于每次读都换一个 now()：任何"读出来改一改再存回去"的
             # 路径都会把快照重排到时间线末尾。调用点各自重读 meta.json 打补丁
@@ -445,7 +449,9 @@ class SnapshotManager:
             created_at=_parse_snapshot_time(data.get("created_at")),
         )
 
-    async def record_story_history(self, snapshot_id: str, history: list[dict]) -> None:
+    async def record_story_history(
+        self, snapshot_id: str, history: list[StoryRecord]
+    ) -> None:
         """本轮评估完成后补齐对应后置快照；不改旧轮次的快照。"""
         snap = await self._load_for_patch(snapshot_id)
         snap.story_history = deepcopy(history)
