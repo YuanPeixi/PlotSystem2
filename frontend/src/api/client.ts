@@ -12,11 +12,24 @@ import type {
   SceneConfig,
   SceneEvaluation,
   SnapshotMeta,
+  Storyboard,
+  StoryboardUpdate,
 } from '@/types'
 
 const API_BASE = '/api/v1'
 
 const http = axios.create({ baseURL: API_BASE, timeout: 600000 })
+
+/** 带 HTTP 状态码的业务错误：调用方需要区分 409（冲突，提示重新加载）与其他失败。 */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
 
 async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T> {
   try {
@@ -31,7 +44,7 @@ async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T>
     // 并透传服务端的中文错误描述，供调用方 catch 后展示给用户。
     if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object') {
       const data = err.response.data as ApiResponse<unknown>
-      if (data.error) throw new Error(data.error)
+      if (data.error) throw new ApiError(data.error, err.response.status)
     }
     throw err
   }
@@ -113,6 +126,12 @@ export const api = {
     unwrap<ForkResult>(http.post(`/snapshots/${snapshotId}/fork?project_id=${id}`, payload)),
   deleteSnapshot: (id: string, snapshotId: string) =>
     unwrap(http.delete(`/snapshots/${snapshotId}?project_id=${id}`)),
+
+  // 导演分镜稿（工单18）：无记录时返回空分镜稿；PUT 修订号不匹配抛 ApiError(409)
+  getStoryboard: (id: string, branchId: string) =>
+    unwrap<Storyboard>(http.get(`/projects/${id}/branches/${branchId}/storyboard`)),
+  updateStoryboard: (id: string, branchId: string, payload: StoryboardUpdate) =>
+    unwrap<Storyboard>(http.put(`/projects/${id}/branches/${branchId}/storyboard`, payload)),
 
   // 输出
   generateOutput: (id: string, payload: Record<string, unknown>) =>
