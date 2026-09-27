@@ -103,16 +103,25 @@ export interface Scene {
   snapshot_id_before: string
   snapshot_id_after: string | null
   restore_snapshot_id: string
-  inherited_story_history?: Array<{ scene_id: string; name: string; evaluation: SceneEvaluation }> | null
+  inherited_story_history?: StoryRecord[] | null
   turns_completed: number
   speaker_mode: string
   dialogue_log: DialogueTurn[]
   created_at?: string
 }
 
+/** 导演历史的一条记录（仅导演可见，不进入角色上下文）。 */
+export interface StoryRecord {
+  scene_id: string
+  name: string
+  evaluation: SceneEvaluation
+  /** false = 旧副本里线索缺失/损坏，回溯时会继续往前找；[] 的线索配 true 表示已清空 */
+  threads_known: boolean
+}
+
 /** 快照元信息（GET /projects/{id}/snapshots 的列表项，不含角色状态明细）。 */
 export interface SnapshotMeta {
-  story_history?: Array<{ scene_id: string; name: string; evaluation: SceneEvaluation }> | null
+  story_history?: StoryRecord[] | null
   snapshot_id: string
   scene_id: string
   branch_id: string

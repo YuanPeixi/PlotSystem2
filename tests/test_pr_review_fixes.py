@@ -22,6 +22,7 @@ from backend.models import (
     Project,
     Scene,
     SceneEvaluation,
+    StoryRecord,
     goal_revision,
 )
 from backend.services import orchestrator, repository
@@ -93,12 +94,12 @@ async def test_list_scenes_survives_corrupted_created_at():
 # ---------------------------------------------------------------------------
 
 
-def _rec(scene_id: str, name: str, progress: float) -> dict:
-    return {
-        "scene_id": scene_id,
-        "name": name,
-        "evaluation": {"story_progress": progress, "synopsis": f"{name}-{progress}"},
-    }
+def _rec(scene_id: str, name: str, progress: float) -> StoryRecord:
+    return StoryRecord(
+        scene_id=scene_id,
+        name=name,
+        evaluation=SceneEvaluation(story_progress=progress, synopsis=f"{name}-{progress}"),
+    )
 
 
 def test_merge_prefers_fresher_record_over_frozen_copy():
@@ -106,15 +107,15 @@ def test_merge_prefers_fresher_record_over_frozen_copy():
     inherited = [_rec("x", "X", 0.2), _rec("y", "Y", 0.3)]
     tail = [_rec("x", "X", 0.8)]
     merged = orchestrator._merge_story_records(inherited, tail)
-    assert [r["scene_id"] for r in merged] == ["y", "x"]
-    assert merged[-1]["evaluation"]["story_progress"] == 0.8
+    assert [r.scene_id for r in merged] == ["y", "x"]
+    assert merged[-1].evaluation.story_progress == 0.8
 
 
 def test_merge_keeps_inherited_order_when_disjoint():
     inherited = [_rec("a", "A", 0.1), _rec("b", "B", 0.2)]
     tail = [_rec("c", "C", 0.3)]
     merged = orchestrator._merge_story_records(inherited, tail)
-    assert [r["scene_id"] for r in merged] == ["a", "b", "c"]
+    assert [r.scene_id for r in merged] == ["a", "b", "c"]
 
 
 def test_merge_dedupes_within_tail():
@@ -125,8 +126,8 @@ def test_merge_dedupes_within_tail():
 
 def test_merge_tolerates_records_without_scene_id():
     """旧数据可能缺 scene_id；不能因此互相吞掉。"""
-    inherited = [{"name": "旧", "evaluation": {}}]
-    tail = [{"name": "新", "evaluation": {}}]
+    inherited = [StoryRecord(name="旧")]
+    tail = [StoryRecord(name="新")]
     assert len(orchestrator._merge_story_records(inherited, tail)) == 2
 
 
@@ -275,8 +276,11 @@ def _ev_rec(scene_id: str, ev: dict) -> dict:
 
 
 async def _threads_of(records: list[dict], monkeypatch) -> list[str]:
+    """记录按落盘格式构造、经反序列化进入回溯 —— 存在性正是在那一步保住的。"""
+    typed = repository.deserialize_story_history(records, "测试")
+
     async def fake(scene, **kw):
-        return records
+        return typed
 
     monkeypatch.setattr(orchestrator, "_story_records", fake)
     _, threads, _ = await orchestrator._story_context(object(), "")
@@ -400,7 +404,7 @@ async def _continue_and_read(scene: Scene, monkeypatch) -> list[str]:
     )
     reloaded = await repository.get_scene(scene.scene_id)
     records = await orchestrator._story_records(reloaded, include_current=False)
-    return [r["name"] for r in records]
+    return [r.name for r in records]
 
 
 async def test_continue_keeps_frozen_history_after_source_snapshot_deleted(forked, monkeypatch):
@@ -410,7 +414,7 @@ async def test_continue_keeps_frozen_history_after_source_snapshot_deleted(forke
     _, if0 = await orchestrator.fork_from_snapshot(pid, src.snapshot_id_after, "IF")
     await orchestrator.run_scene(if0.scene_id)
     if0 = await repository.get_scene(if0.scene_id)
-    assert [r["name"] for r in if0.inherited_story_history] == ["P"]
+    assert [r.name for r in if0.inherited_story_history] == ["P"]
 
     await sm.delete_snapshot(src.snapshot_id_after)
     assert await _continue_and_read(if0, monkeypatch) == ["P"]
@@ -429,7 +433,8 @@ async def test_continue_does_not_absorb_post_fork_ancestor_evaluation(forked, mo
 
     await sm.record_story_history(
         src.snapshot_id_after,
-        [{"scene_id": src.scene_id, "name": "P", "evaluation": {"story_progress": 0.9}}],
+        [StoryRecord(scene_id=src.scene_id, name="P",
+                     evaluation=SceneEvaluation(story_progress=0.9))],
     )
     assert await _continue_and_read(if0, monkeypatch) == []
 
@@ -439,7 +444,7 @@ async def test_continue_refreshes_own_evaluation_without_clearing_copy(forked, m
     pid, src = forked
     assert src.inherited_story_history == []
     before = await orchestrator._story_records(src)
-    assert [r["evaluation"]["story_progress"] for r in before] == [0.4]
+    assert [r.evaluation.story_progress for r in before] == [0.4]
 
     # 续跑后的重新评估走 INSERT OR REPLACE，回溯时现读即为新值
     await repository.save_evaluation(
@@ -455,4 +460,4 @@ async def test_continue_refreshes_own_evaluation_without_clearing_copy(forked, m
     assert reloaded.status == "pending"
     assert reloaded.inherited_story_history == []  # 副本原样保留
     after = await orchestrator._story_records(reloaded)
-    assert [r["evaluation"]["story_progress"] for r in after] == [0.8]
+    assert [r.evaluation.story_progress for r in after] == [0.8]

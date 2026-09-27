@@ -302,7 +302,7 @@ class Scene:
     # "运行时记忆（短期缓冲/事件摘要）应从哪个快照回填"。
     restore_snapshot_id: str = ""
     # None = 旧数据尚未冻结；[] = 权威的空历史。只供导演，不进入角色上下文。
-    inherited_story_history: list[dict] | None = None
+    inherited_story_history: list[StoryRecord] | None = None
     turns_completed: int = 0
     # 已固化进长期记忆的轮次数（水位线）。固化只发生在场景正常结束时，
     # 崩溃/异常中断后续跑要靠它区分“哪些已落盘的轮次还没进过记忆”。
@@ -374,6 +374,24 @@ class SceneEvaluation:
 
 
 @dataclass
+class StoryRecord:
+    """导演历史里的一条记录：某一场及其评估（工单18 D1）。
+
+    `Scene.inherited_story_history` 与 `Snapshot.story_history` 的元素类型。
+    字段名曾只以字符串字面量存在，改一处键名就会让推进度静默退回不可用。
+    """
+
+    scene_id: str = ""
+    name: str = ""
+    evaluation: SceneEvaluation = field(default_factory=SceneEvaluation)
+    # 这条记录是否带有权威的线索状态。旧副本里 unresolved_threads 缺键或不是列表时
+    # 为 False，回溯要继续往前找；显式 [] 表示"线索已清空"，为 True。
+    # SceneEvaluation 的默认值就是 []，不单独记这一位，类型化会把"缺键"压成
+    # "已清空"，让更早的未收束线索从导演视野里消失（§4.2 陷阱 17）。
+    threads_known: bool = True
+
+
+@dataclass
 class DirectorDecision:
     """导演最终决策。"""
 
@@ -413,7 +431,7 @@ class Snapshot:
     # 世界状态是分支级文件，不随快照目录走，不冻结进来就会"一分叉世界重置"。
     world_state_variables: dict[str, str] = field(default_factory=dict)
     # 时点化的导演评估副本。不能通过 scene_id 回读后来被 continue 覆盖的评估。
-    story_history: list[dict] | None = None
+    story_history: list[StoryRecord] | None = None
 
 
 @dataclass
