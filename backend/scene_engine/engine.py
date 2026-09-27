@@ -25,6 +25,7 @@ from backend.models import (
     SceneResult,
     SceneStatus,
     SpeakerMode,
+    Storyboard,
     new_id,
 )
 from backend.scene_engine.speaker_selector import ScoringSpeakerSelector, SelectionTrace
@@ -68,6 +69,7 @@ class SceneEngine:
         character_agents: list[CharacterAgent],
         snapshot_manager: SnapshotManager,
         world_variables: dict[str, str] | None = None,
+        storyboard: Storyboard | None = None,
     ):
         self.scene = scene
         self.config = scene_config
@@ -79,6 +81,10 @@ class SceneEngine:
         # 走构造参数而非 SceneConfig 字段：SceneConfig 是导演的规划产物，
         # 世界变量是运行期注入的，混进去会让 /scenes/plan 多返回一个恒空字段。
         self.world_variables = self._reject_reserved(world_variables)
+        # 分镜稿（工单18）只为让前/后置快照带上时点副本。**绝不**并进 scene_context
+        # 或任何角色/selector 可见的上下文（红线 R1）：它含导演对全部角色
+        # unknown_facts 的安排，泄漏出去角色就"知道剧本"了（契约1）。
+        self.storyboard = storyboard
         self._interrupt = False
         self._history_transcript: list[str] = []  # continue 时注入的历史
         self._selector: ScoringSpeakerSelector | None = None
@@ -138,6 +144,7 @@ class SceneEngine:
                 label=f"before:{self.config.name}",
                 story_history=self.scene.inherited_story_history,
                 world_state_variables=self.world_variables,
+                storyboard=self.storyboard,
             )
             self.scene.snapshot_id_before = snap_before.snapshot_id
         self.scene.status = SceneStatus.RUNNING.value
@@ -246,6 +253,8 @@ class SceneEngine:
             # 由 orchestrator 在 delta 落盘后经 record_world_state 补写（工单07 B3）。
             world_state_variables=self.world_variables,
             snapshot_id=after_snapshot_id,
+            # 本场导演对分镜稿的调整同样在评估之后才有，由 orchestrator 补写
+            storyboard=self.storyboard,
         )
 
         self.scene.dialogue_log = turns

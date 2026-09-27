@@ -7,9 +7,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from backend.models import SpeakerMode
+from backend.models import BeatStatus, SpeakerMode
 
 _SPEAKER_MODES = {m.value for m in SpeakerMode}
+_BEAT_STATUSES = {s.value for s in BeatStatus}
 
 
 def _now_iso() -> str:
@@ -112,6 +113,36 @@ class ForkBranchRequest(BaseModel):
     new_conditions: dict = Field(default_factory=dict)
     branch_name: str
     director_notes: str = ""
+
+
+class StoryBeatInput(BaseModel):
+    """用户编辑的一个节拍。已有节拍必须原样带回 beat_id，新节拍留空由后端分配。"""
+
+    beat_id: str = ""
+    title: str
+    description: str = ""
+    status: str = BeatStatus.PLANNED.value
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, v: str) -> str:
+        if v not in _BEAT_STATUSES:
+            raise ValueError(f"status 必须是 {sorted(_BEAT_STATUSES)} 之一，收到 {v!r}")
+        return v
+
+
+class UpdateStoryboardRequest(BaseModel):
+    """用户整份替换分镜稿的路线图与备忘（工单18 §3.6）。
+
+    `revision` 是读取时拿到的修订号，不匹配返回 409。goal_revision / fork_origin /
+    changelog 由后端维护，这里刻意没有这些字段。
+    """
+
+    outline: list[StoryBeatInput] = Field(default_factory=list)
+    memo: str = ""
+    revision: int
+    # 显式确认"已按当前主线目标重排"，不带则不动 goal_revision
+    confirm_goal: bool = False
 
 
 class OutputRequest(BaseModel):

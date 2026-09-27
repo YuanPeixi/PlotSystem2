@@ -27,11 +27,12 @@ from backend.models import (
     CharacterState,
     RelationshipState,
     Snapshot,
+    Storyboard,
     StoryRecord,
     new_id,
     now,
 )
-from backend.services.repository import deserialize_story_history
+from backend.services.repository import deserialize_story_history, deserialize_storyboard
 from backend.snapshot.branch_tree import build_branch_tree
 from backend.utils import db
 from backend.utils.branch_memory import is_fork_initialized, mark_fork_initialized
@@ -112,6 +113,7 @@ class SnapshotManager:
         story_history: list[StoryRecord] | None = None,
         world_state_variables: dict[str, str] | None = None,
         snapshot_id: str = "",
+        storyboard: Storyboard | None = None,
     ) -> Snapshot:
         """创建快照。
 
@@ -128,6 +130,7 @@ class SnapshotManager:
             scene_context=scene_context or {},
             story_history=deepcopy(story_history),
             world_state_variables=dict(world_state_variables or {}),
+            storyboard=deepcopy(storyboard),
         )
         snap_dir = _snapshots_dir(self.project_id) / snap.snapshot_id
         (snap_dir / "character_states").mkdir(parents=True, exist_ok=True)
@@ -458,6 +461,12 @@ class SnapshotManager:
                 data.get("story_history"), f"快照 {snapshot_id}"
             ),
             world_state_variables=dict(data.get("world_state_variables") or {}),
+            # 缺键/null = 本功能上线前的旧快照，分叉时以空稿起步（不得回读来源分支）
+            storyboard=(
+                deserialize_storyboard(data["storyboard"], self.project_id, data.get("branch_id", ""))
+                if data.get("storyboard") is not None
+                else None
+            ),
             # 不还原就等于每次读都换一个 now()：任何"读出来改一改再存回去"的
             # 路径都会把快照重排到时间线末尾。调用点各自重读 meta.json 打补丁
             # 只会让每个新调用方都复制一遍 workaround。
@@ -482,6 +491,16 @@ class SnapshotManager:
         """
         snap = await self._load_for_patch(snapshot_id)
         snap.world_state_variables = dict(variables)
+        await self._persist_patch(snap)
+
+    async def record_storyboard(self, snapshot_id: str, storyboard: Storyboard) -> None:
+        """把评估合并后的分镜稿补写进对应的后置快照（工单18 §3.4，同 record_world_state）。
+
+        后置快照打在评估之前，里面是开场时的那份；不补写的话，从该快照分叉的分支
+        会缺掉本场导演对路线图的调整，而它的导演历史已包含本场。
+        """
+        snap = await self._load_for_patch(snapshot_id)
+        snap.storyboard = deepcopy(storyboard)
         await self._persist_patch(snap)
 
     async def _load_for_patch(self, snapshot_id: str) -> Snapshot:

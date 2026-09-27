@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from backend.api import branches, characters, director, graph, output, projects, scenes
 from backend.api.schemas import ApiResponse
 from backend.config import settings
-from backend.exceptions import ConflictError, PlotSystemError
+from backend.exceptions import ConflictError, InvalidRequestError, PlotSystemError
 from backend.exceptions import MemoryError as MemoryStoreError
 from backend.services import orchestrator
 from backend.utils.db import init_db
@@ -57,6 +57,11 @@ app.add_middleware(
 @app.exception_handler(ConflictError)
 async def handle_conflict_error(_: Request, exc: ConflictError) -> JSONResponse:
     return JSONResponse(status_code=409, content=ApiResponse.fail(str(exc)).model_dump())
+
+
+@app.exception_handler(InvalidRequestError)
+async def handle_invalid_request(_: Request, exc: InvalidRequestError) -> JSONResponse:
+    return JSONResponse(status_code=422, content=ApiResponse.fail(str(exc)).model_dump())
 
 
 @app.exception_handler(MemoryStoreError)
