@@ -160,6 +160,71 @@ export interface SceneEvaluation {
   world_state_delta: Record<string, string | null>
   /** 本场评估对应的结束态快照；分叉时用来识别被续跑覆盖的旧评估（空 = 旧记录） */
   evaluated_snapshot_id: string
+  /** 本场导演对分镜稿的修改（已由后端逐条校验后合并；这里仅供追溯） */
+  storyboard_patch?: StoryboardPatch
+}
+
+export type BeatStatus = 'planned' | 'done' | 'dropped'
+
+/** 路线图上的一个节拍。beat_id 是身份：改名、重排、改状态都不变，只由后端分配。 */
+export interface StoryBeat {
+  beat_id: string
+  title: string
+  description: string
+  status: BeatStatus
+  /** 在哪一场完成或放弃 */
+  resolved_scene_id: string
+}
+
+export interface ForkOrigin {
+  source_branch_id: string
+  source_branch_name: string
+  source_snapshot_id: string
+  source_snapshot_label: string
+  conditions: Record<string, string>
+  director_notes: string
+}
+
+export interface StoryboardChange {
+  source: 'director' | 'user' | 'fork'
+  scene_id: string
+  summary: string
+  at: string
+}
+
+export interface StoryboardPatch {
+  add: Array<Pick<StoryBeat, 'title' | 'description'>>
+  complete: string[]
+  drop: string[]
+  update: Array<Pick<StoryBeat, 'beat_id' | 'title' | 'description'>>
+  reorder: string[] | null
+  memo: string | null
+  goal_realigned: boolean
+}
+
+/** 分支级导演分镜稿（GET /projects/{pid}/branches/{bid}/storyboard）。仅导演/用户可见。 */
+export interface Storyboard {
+  project_id: string
+  branch_id: string
+  outline: StoryBeat[]
+  memo: string
+  goal_revision: string
+  fork_origin: ForkOrigin | null
+  changelog: StoryboardChange[]
+  /** 并发版本：PUT 时原样带回，不匹配返回 409 */
+  revision: number
+  next_beat_seq: number
+  updated_at: string
+  /** 路线图基于旧版主线目标（后端按当前目标算出） */
+  goal_stale: boolean
+}
+
+/** PUT 分镜稿的请求体。已有节拍带回 beat_id，新节拍不带。 */
+export interface StoryboardUpdate {
+  outline: Array<{ beat_id?: string; title: string; description: string; status: BeatStatus }>
+  memo: string
+  revision: number
+  confirm_goal: boolean
 }
 
 /** 分支级世界变量（GET /projects/{pid}/branches/{bid}/world-state）。 */
