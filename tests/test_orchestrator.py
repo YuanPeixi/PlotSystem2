@@ -141,7 +141,7 @@ async def test_apply_decision_without_evaluation_does_not_rollback(monkeypatch):
     _, _, scene, _ = await _setup_project_scene_and_snapshot("-no-eval")
     assert await repository.get_evaluation(scene.scene_id) is None
 
-    async def _fake_plan(project_id, branch_id, narrative_goal="", scene_intent=""):
+    async def _fake_plan(project_id, branch_id, narrative_goal="", scene_intent="", **kwargs):
         return SceneConfig(name="下一场", description=scene_intent, location="某处")
 
     monkeypatch.setattr(orchestrator, "plan_scene", _fake_plan)
@@ -266,8 +266,8 @@ class _FakeDirectorForDecision:
         cards,
         history_scenes=None,
         scene_intent="",
-        recent_results=None,
         world_state=None,
+        **kwargs,
     ):
         if self.plan_delay:
             await asyncio.sleep(self.plan_delay)

@@ -25,9 +25,13 @@ from backend.models import (
     Scene,
     SceneConfig,
     SceneEvaluation,
+    StoryBeat,
+    Storyboard,
+    StoryboardPatch,
     goal_revision,
 )
 from backend.services import inspection
+from backend.services.storyboard import describe_storyboard, single_line
 from backend.services.world_state import (
     describe_world_state,
     merge_world_variables,
@@ -46,6 +50,7 @@ __all__ = [
     "describe_world_state",
     "merge_world_variables",
     "normalize_world_delta",
+    "parse_storyboard_patch",
     "unavailable_evaluation",
 ]
 
@@ -188,10 +193,62 @@ def _normalize_threads(value, fallback: list[str] | None = None) -> list[str]:
     return threads
 
 
+def parse_storyboard_patch(value) -> StoryboardPatch:
+    """把 LLM 给的分镜稿 patch 收进可控形状（工单18 §3.4）。只管形状，不管前提。
+
+    ID 是否存在、前提是否仍成立由 `services.storyboard.merge_storyboard_patch` 在锁内
+    对照当前稿判断 —— 这里看不到当前稿。布尔走 `_parse_bool`：``"false"`` 这种合法
+    JSON 字符串直接 ``bool()`` 会变成 True，路线图就被误标成"已按新目标重排"。
+    """
+    if not isinstance(value, dict):
+        return StoryboardPatch()
+
+    def ids(key: str) -> list[str]:
+        raw = value.get(key)
+        if not isinstance(raw, list):
+            return []
+        return [single_line(x) for x in raw if isinstance(x, (str, int)) and single_line(x)]
+
+    def beats(key: str, *, with_id: bool) -> list[StoryBeat]:
+        raw = value.get(key)
+        result: list[StoryBeat] = []
+        for item in raw if isinstance(raw, list) else []:
+            if isinstance(item, str) and not with_id:
+                item = {"title": item}
+            if not isinstance(item, dict):
+                continue
+            beat = StoryBeat(
+                beat_id=single_line(item.get("beat_id")) if with_id else "",
+                title=str(item.get("title") or ""),
+                description=str(item.get("description") or ""),
+            )
+            if with_id and not beat.beat_id:
+                continue
+            result.append(beat)
+        return result
+
+    reorder = value.get("reorder")
+    memo = value.get("memo")
+    return StoryboardPatch(
+        add=beats("add", with_id=False),
+        complete=ids("complete"),
+        drop=ids("drop"),
+        update=beats("update", with_id=True),
+        reorder=ids("reorder") if isinstance(reorder, list) else None,
+        memo=memo if isinstance(memo, str) else None,
+        goal_realigned=_parse_bool(value.get("goal_realigned", False)) is True,
+    )
+
+
+_STORYBOARD_HEADER = "【导演分镜稿（仅导演可见；路线图服务于主线目标，二者冲突时以主线目标为准）】"
+
 _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个场景。
 
 【主线目标（用户设定，不可更改）】
 {narrative_goal}
+
+{storyboard_header}
+{storyboard}
 
 【当前世界状态（跨场次持续生效的公开事实）】
 {world_state}
@@ -199,17 +256,18 @@ _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个�
 【本场意图】
 {scene_intent}
 
-【已完成场景历史（最近 5 场）】
+【前情提要（本分支的因果谱系，按时间顺序；分叉出的分支包含分叉点之前的剧情）】
 {history}
 
-【最近场次的结果与未收束线索】
-{recent_results}
+【未收束线索】
+{threads}
 
 【可用角色】
 {characters}
 
 请挑选 2-6 名最合适的角色，设定场景。本场必须服务于主线目标；若本场意图与主线目标冲突，
-以主线目标为准。优先推进尚未收束的线索。场景设定不得与【当前世界状态】矛盾。严格输出 JSON（不要额外文字）：
+以主线目标为准。优先推进尚未收束的线索与路线图上计划中的节拍。场景设定不得与【当前世界状态】矛盾。
+严格输出 JSON（不要额外文字）：
 {{
   "name": "场景名",
   "description": "场景描述与期望走向（不强制结果）",
@@ -228,6 +286,9 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
 
 【结局判定标准】
 {ending_criteria}
+
+{storyboard_header}
+{storyboard}
 
 【本场开始前的世界状态（跨场次持续生效的公开事实）】
 {world_state}
@@ -265,7 +326,14 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   3. 某条变量不再成立时，把它的值设为 null 表示删除。本场没有改变世界层时给 {{}}；
 - 结局判定只看【结局判定标准】与【主线目标】，并对照【前情提要】确认条件是否真的已在
   前面的场次里完成（多条件的结局往往跨场次达成）；不得把本场演出来的任意告一段落
-  当成故事结局。
+  当成故事结局；
+- storyboard_patch 是你对【导演分镜稿】的修改，只写需要改的部分，完全不改时给 {{}}：
+  add 新增节拍（只给 title / description，ID 由系统分配）；complete / drop 按节拍 ID
+  标记本场已完成 / 决定放弃；update 按节拍 ID 改写 title 或 description；reorder 给出
+  上面列出的**全部**"计划"节拍 ID 的新顺序（不重排就省略）；memo 给出新的**完整**备忘
+  （不改就省略）。节拍只能引用上面出现过的 ID，不要编造。只有当你确实已按当前主线目标
+  调整好路线图时，才把 goal_realigned 设为 true。分镜稿只记录你打算怎么走到主线目标，
+  不得借它改写主线目标。
 
 请客观评估并严格输出 JSON（不要额外文字）：
 {{
@@ -279,6 +347,7 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   "ending_reason": "若已抵达结局，说明理由，否则空字符串",
   "unresolved_threads": ["未收束的线索1", "未收束的线索2"],
   "world_state_delta": {{"某势力态度": "敌对", "已失效的变量": null}},
+  "storyboard_patch": {{"add": [{{"title": "新节拍", "description": "打算怎么走"}}], "complete": ["b1"]}},
   "recommended_decision": "continue|next_scene|rollback",
   "rollback_reason": "若建议回滚，说明原因，否则空字符串"
 }}
@@ -313,22 +382,28 @@ class DirectorAgent:
         available_characters: list[CharacterCard],
         history_scenes: list[Scene] | None = None,
         scene_intent: str = "",
-        recent_results: list[tuple[Scene, SceneEvaluation]] | None = None,
         world_state: dict[str, str] | None = None,
+        prior_synopses: list[str] | None = None,
+        prior_threads: list[str] | None = None,
+        storyboard: Storyboard | None = None,
     ) -> SceneConfig:
+        """规划下一场。
+
+        历史与评估同源（工单18 §3.3）：`prior_synopses` / `prior_threads` 由编排层沿因果
+        谱系取回（`orchestrator._story_context`），分叉处按冻结副本截止。原先按
+        `list_scenes(branch_id)` 取本分支最近几场，分叉出的新分支规划时看不到分叉点
+        之前发生过什么。`history_scenes` 只剩选角兜底一个用途。
+        """
         char_desc = "\n".join(self._describe_for_plan(c) for c in available_characters)
-        history_text = "（暂无历史场景）"
-        if history_scenes:
-            lines = []
-            for s in history_scenes[-5:]:
-                lines.append(f"- 【{s.name}】@{s.location}：{s.description[:60]}（已完成 {s.turns_completed} 轮）")
-            history_text = "\n".join(lines)
+        threads = _normalize_threads(None, fallback=prior_threads)
         prompt = _PLAN_PROMPT.format(
-            narrative_goal=narrative_goal or "（用户未设定主线目标，请依据历史场景自行把握大方向）",
-            scene_intent=scene_intent or "（未指定，由你依据主线目标与未收束线索决定）",
+            narrative_goal=narrative_goal or "（用户未设定主线目标，请依据前情自行把握大方向）",
+            storyboard_header=_STORYBOARD_HEADER,
+            storyboard=describe_storyboard(storyboard, narrative_goal),
+            scene_intent=scene_intent or "（未指定，由你依据主线目标、路线图与未收束线索决定）",
             characters=char_desc,
-            history=history_text,
-            recent_results=self._describe_recent_results(recent_results or []),
+            history=self._fit_synopses(prior_synopses or []),
+            threads="\n".join(f"- {t}" for t in threads) or "（暂无）",
             world_state=describe_world_state(world_state),
         )
         raw = await chat_safe(
@@ -372,6 +447,7 @@ class DirectorAgent:
         prior_threads: list[str] | None = None,
         prior_synopses: list[str] | None = None,
         world_state: dict[str, str] | None = None,
+        storyboard: Storyboard | None = None,
     ) -> SceneEvaluation:
         transcript = await self._build_transcript(dialogue_log)
         # 钳制基线：不可用（无历史评估）时按 0 起算，但仍要区分于"历史进度确实是 0"
@@ -391,6 +467,8 @@ class DirectorAgent:
             character_profiles=self._describe_for_eval(characters or []),
             transcript=transcript,
             world_state=describe_world_state(world_state),
+            storyboard_header=_STORYBOARD_HEADER,
+            storyboard=describe_storyboard(storyboard, narrative_goal),
         )
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
@@ -405,8 +483,9 @@ class DirectorAgent:
             result.synopsis = "（评估结果解析失败，分数不可信）"
             result.unresolved_threads = _normalize_threads(None, fallback=prior)
             result.goal_revision = revision
-            # world_state_delta 保持空：解析失败时世界状态必须原样不动，
-            # 绝不能让一次失败的调用伪装成一次真实的世界更新（与分数置为不可用同理）
+            # world_state_delta 与 storyboard_patch 保持空：解析失败时世界状态与分镜稿
+            # 都必须原样不动，绝不能让一次失败的调用伪装成一次真实的更新（与分数置为
+            # 不可用同理）
             return result
 
         def _score(key: str) -> float:
@@ -453,6 +532,7 @@ class DirectorAgent:
                 data.get("unresolved_threads"), fallback=prior
             ),
             world_state_delta=normalize_world_delta(data.get("world_state_delta")),
+            storyboard_patch=parse_storyboard_patch(data.get("storyboard_patch")),
         )
 
     @staticmethod
@@ -563,26 +643,6 @@ class DirectorAgent:
             f"  已知：{facts}\n"
             f"  关系：{rel}"
         )
-
-    @staticmethod
-    def _describe_recent_results(results: list[tuple[Scene, SceneEvaluation]]) -> str:
-        """规划用的"上一场结果"块。
-
-        场景历史给的是**演之前的预设**，这里给的才是**演出来的结果**：导演自己写的
-        梗概与仍未收束的线索。没有它，导演规划下一场时看不到上一场究竟发生了什么。
-        """
-        if not results:
-            return "（暂无已评估的场次）"
-        blocks = []
-        for scene, ev in results:
-            synopsis = ev.synopsis or "（无梗概）"
-            blocks.append(f"- 【{scene.name}】{synopsis}")
-        latest = results[-1][1]
-        threads = _normalize_threads(None, fallback=latest.unresolved_threads)
-        if threads:
-            blocks.append("未收束线索：")
-            blocks.extend(f"  · {t}" for t in threads)
-        return "\n".join(blocks)
 
     @staticmethod
     def _describe_for_eval(characters: list[CharacterCard]) -> str:

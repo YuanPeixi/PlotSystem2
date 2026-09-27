@@ -1,7 +1,7 @@
-"""持久化仓储：Project / Character / Scene / Evaluation / WorldState 的读写。
+"""持久化仓储：Project / Character / Scene / Evaluation / WorldState / Storyboard 的读写。
 
 Project / Scene / Evaluation 元数据存 SQLite；
-CharacterCard 与分支世界变量以 JSON 文件存于项目目录（便于人工编辑与快照）。
+CharacterCard、分支世界变量与分支分镜稿以 JSON 文件存于项目目录（便于人工编辑与快照）。
 """
 
 from __future__ import annotations
@@ -19,9 +19,11 @@ from backend.exceptions import (
 )
 from backend.models import (
     PROGRESS_UNAVAILABLE,
+    BeatStatus,
     CharacterCard,
     DialogueTurn,
     DirectorDecision,
+    ForkOrigin,
     LoreEntry,
     Project,
     RelationshipState,
@@ -29,10 +31,16 @@ from backend.models import (
     SceneEvaluation,
     SceneLineage,
     SpeakerMode,
+    StoryBeat,
+    Storyboard,
+    StoryboardChange,
+    StoryboardPatch,
+    StoryboardSource,
     StoryRecord,
     WorldState,
     now,
 )
+from backend.services.storyboard import clamp_storyboard
 from backend.services.world_state import clamp_world_variables
 from backend.utils import db
 from backend.utils.logger import get_logger
@@ -291,6 +299,24 @@ async def list_scenes(project_id: str, branch_id: str | None = None) -> list[Sce
     return [_deserialize_scene(json.loads(r[0])) for r in rows]
 
 
+async def recent_scenes_on_branch(
+    project_id: str, branch_id: str, limit: int = 5
+) -> list[Scene]:
+    """本分支最近 `limit` 场（按创建顺序，旧→新）。
+
+    规划用它定位"接在哪一场之后"与选角兜底；**不是**规划的历史来源 ——
+    前情走因果谱系（工单18 §3.3），否则分叉分支看不到分叉点之前的剧情。
+    """
+    async with db.connect() as conn:
+        cur = await conn.execute(
+            "SELECT data_json FROM scenes WHERE project_id = ? AND branch_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (project_id, branch_id, limit),
+        )
+        rows = await cur.fetchall()
+    return [_deserialize_scene(json.loads(r[0])) for r in reversed(rows)]
+
+
 async def list_scenes_by_status(status: str) -> list[Scene]:
     """按状态列跨项目查询场景（服务启动时对账遗留的 running 场景用）。"""
     async with db.connect() as conn:
@@ -388,6 +414,34 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         # 一次"把变量改成空值"的更新，旧值反而永远留在世界状态里。
         world_state_delta=dict(data.get("world_state_delta") or {}),
         evaluated_snapshot_id=data.get("evaluated_snapshot_id", ""),
+        storyboard_patch=_deserialize_storyboard_patch(data.get("storyboard_patch")),
+    )
+
+
+def _deserialize_storyboard_patch(data: object) -> StoryboardPatch:
+    """还原评估里记录的分镜稿 patch（仅供追溯；合并早已在评估完成时做完）。"""
+    if not isinstance(data, dict):
+        return StoryboardPatch()
+
+    def _ids(key: str) -> list[str]:
+        raw = data.get(key)
+        return [str(x) for x in raw] if isinstance(raw, list) else []
+
+    def _beats(key: str) -> list[StoryBeat]:
+        raw = data.get(key)
+        items = raw if isinstance(raw, list) else []
+        return [b for b in (_deserialize_beat(x) for x in items) if b is not None]
+
+    reorder = data.get("reorder")
+    memo = data.get("memo")
+    return StoryboardPatch(
+        add=_beats("add"),
+        complete=_ids("complete"),
+        drop=_ids("drop"),
+        update=_beats("update"),
+        reorder=[str(x) for x in reorder] if isinstance(reorder, list) else None,
+        memo=str(memo) if memo is not None else None,
+        goal_realigned=data.get("goal_realigned") is True,
     )
 
 
@@ -550,6 +604,122 @@ async def save_world_state(state: WorldState) -> None:
     state.updated_at = now()
     path = _world_state_dir(state.project_id) / f"{state.branch_id}.json"
     path.write_text(to_json(state), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Storyboard（工单18：分支级导演分镜稿）
+# ---------------------------------------------------------------------------
+
+
+def _safe_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _deserialize_beat(data: object) -> StoryBeat | None:
+    if not isinstance(data, dict):
+        return None
+    return StoryBeat(
+        beat_id=str(data.get("beat_id") or ""),
+        title=str(data.get("title") or ""),
+        description=str(data.get("description") or ""),
+        status=str(data.get("status") or BeatStatus.PLANNED.value),
+        resolved_scene_id=str(data.get("resolved_scene_id") or ""),
+    )
+
+
+def _deserialize_fork_origin(data: object) -> ForkOrigin | None:
+    if not isinstance(data, dict):
+        return None
+    conditions = data.get("conditions")
+    return ForkOrigin(
+        source_branch_id=str(data.get("source_branch_id") or ""),
+        source_branch_name=str(data.get("source_branch_name") or ""),
+        source_snapshot_id=str(data.get("source_snapshot_id") or ""),
+        source_snapshot_label=str(data.get("source_snapshot_label") or ""),
+        conditions=dict(conditions) if isinstance(conditions, dict) else {},
+        director_notes=str(data.get("director_notes") or ""),
+    )
+
+
+def deserialize_storyboard(data: object, project_id: str, branch_id: str) -> Storyboard:
+    """从 JSON 还原分镜稿（§5.4 第 2 步），并当场压回预算（工单18 §3.2 读取侧闸门）。
+
+    分支文件与快照副本共用。文件摆在项目目录里、可被人工编辑，任何字段都可能是
+    错的类型：一律降级成默认值，坏节拍跳过 —— 分镜稿是导演的附加记忆，读不出来
+    不该让整场推演起不来。**只压不写回**：读路径不改用户手编的文件。
+    """
+    if not isinstance(data, dict):
+        data = {}
+    outline_raw = data.get("outline")
+    beats = [
+        b for b in (_deserialize_beat(x) for x in (outline_raw if isinstance(outline_raw, list) else []))
+        if b is not None
+    ]
+    changelog_raw = data.get("changelog")
+    changelog = [
+        StoryboardChange(
+            source=str(c.get("source") or StoryboardSource.DIRECTOR.value),
+            scene_id=str(c.get("scene_id") or ""),
+            summary=str(c.get("summary") or ""),
+            at=_parse_created_at(c.get("at"), "分镜稿改动时间"),
+        )
+        for c in (changelog_raw if isinstance(changelog_raw, list) else [])
+        if isinstance(c, dict)
+    ]
+    board = Storyboard(
+        project_id=str(data.get("project_id") or project_id),
+        branch_id=str(data.get("branch_id") or branch_id),
+        outline=beats,
+        memo=str(data.get("memo") or ""),
+        goal_revision=str(data.get("goal_revision") or ""),
+        fork_origin=_deserialize_fork_origin(data.get("fork_origin")),
+        changelog=changelog,
+        revision=_safe_int(data.get("revision"), 0),
+        next_beat_seq=_safe_int(data.get("next_beat_seq"), 1),
+        updated_at=_parse_created_at(data.get("updated_at"), "分镜稿更新时间"),
+    )
+    issues = clamp_storyboard(board)
+    if issues:
+        logger.warning(
+            "分支 %s 的分镜稿超出预算或形状不合法，本次读取已修正：%s",
+            branch_id,
+            "；".join(issues),
+        )
+    return board
+
+
+def _storyboard_path(project_id: str, branch_id: str) -> Path:
+    d = settings.project_dir(project_id) / "storyboard"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{branch_id}.json"
+
+
+async def get_storyboard(project_id: str, branch_id: str) -> Storyboard:
+    """读取分支的分镜稿。文件不存在 = 空分镜稿，不是错误（同 world-state）。"""
+    path = _storyboard_path(project_id, branch_id)
+    if not path.exists():
+        return Storyboard(project_id=project_id, branch_id=branch_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("分支 %s 的分镜稿文件损坏，按空分镜稿处理", branch_id, exc_info=True)
+        return Storyboard(project_id=project_id, branch_id=branch_id)
+    return deserialize_storyboard(data, project_id, branch_id)
+
+
+async def save_storyboard(board: Storyboard) -> None:
+    """落盘分支分镜稿。branch_id 为空时拒绝写入（同 `save_world_state`）。"""
+    if not board.branch_id:
+        raise ValueError("保存分镜稿必须指定 branch_id")
+    board.updated_at = now()
+    _storyboard_path(board.project_id, board.branch_id).write_text(
+        to_json(board), encoding="utf-8"
+    )
 
 
 # ---------------------------------------------------------------------------
