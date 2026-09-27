@@ -233,6 +233,7 @@ frontend/src/
 | `WorldState` | **分支级**世界变量（跨场次演进的公开世界层事实） | **文件** `world_state/{branch_id}.json` |
 | `Storyboard` / `StoryBeat` / `ForkOrigin` | **分支级**导演分镜稿：路线图（带稳定 `beat_id` 的节拍）+ 长期备忘 + 分叉说明 + changelog + 修订号。**只进导演 prompt** | **文件** `storyboard/{branch_id}.json`，快照带时点副本 |
 | `StoryboardPatch` | 导演随评估产出的分镜稿修改（相对导演读到的那一版） | 内嵌于 `SceneEvaluation` |
+| `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
 | `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
 | `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
@@ -499,7 +500,7 @@ frontend/src/
     里塞任何键都等于把它公开给本场全部角色**，内部记账用的字段不要走这个 dict。
     那四个成句的键即 `RESERVED_SCENE_CONTEXT_KEYS`，对世界变量是保留字（见陷阱 19）。
 
-21. **`Storyboard`（导演分镜稿）有七条不可分割的语义**（工单18），存放照搬 `WorldState`：
+21. **`Storyboard`（导演分镜稿）有八条不可分割的语义**（工单18），存放照搬 `WorldState`：
     - **只进导演 prompt**（契约1）：它含导演对全部角色 `unknown_facts` 的安排。
       `SceneEngine` 拿到它只为让前/后置快照带上时点副本，**绝不**并进 `scene_context`
       （陷阱 20：进那个 dict 就等于公开给全体角色）、角色 system prompt 或 selector 打分 prompt；
@@ -510,15 +511,24 @@ frontend/src/
       "导演读到 v1 → 用户改成 v2 → 导演基于 v1 的改写覆盖用户"。`run_scene` 在评估前记下
       `board_seen`，`merge_storyboard_patch` 逐条核对前提：memo 只在当前仍等于导演读到的
       那份时覆盖；导演没见过的 ID（`base` 里没有）一律当未知，哪怕当前稿里恰好有同名 ID；
-      重排必须是导演读到的全部计划中节拍的完整排列，且计划中集合没被他人改过，先于其余
-      操作应用。被跳过的写 changelog + 非致命 `scene_error`，其余照常合并。
+      重排必须是导演读到的全部计划中节拍的完整排列，且当前计划中节拍的**顺序**（不只是集合）
+      仍等于导演读到的——只比集合的话，用户刚调好的顺序会被旧稿的重排无痕覆盖；已是导演要的
+      顺序按幂等处理；重排先于其余操作应用。被跳过的写 changelog + 非致命 `scene_error`，其余照常合并。
       用户↔导演、导演↔导演用同一套规则。**不要改成"整份修订号不一致就丢掉整个 patch"**：
       同分支两场并发时，后完成那场改的是另一个节拍也会被整个丢掉；
     - **`goal_revision` 的写回必须有确认**：只有导演 patch 里 `goal_realigned=true`（走
       `_parse_bool`，`"false"` 不能变 True）或用户 PUT 带 `confirm_goal` 时才前进；写回的是
-      评估 prompt **实际看到的**目标版本，不是写回时的最新版本 —— LLM 调用期间用户又改了目标，
-      下一场照样提示过期。空 patch / 只改 memo / 解析失败都不算确认。空路线图没有"旧版目标"，
+      确认者**实际看到的**目标版本，不是写回时的最新版本 —— 导演是评估 prompt 里那版，用户是
+      读取响应里的 `current_goal_revision`（PUT 必须带回 `goal_revision_seen`，缺失 422）。
+      期间目标又被改了的话，下一场照样提示过期。导演的确认是对**它读到的那一版路线图**的判断，
+      在预算淘汰之后判定：路线图在导演读取后被他人改过、本次有节拍操作被跳过、或计划中节拍被
+      淘汰，确认都不成立（记为跳过）——否则旧路线图会被标成已适配新目标。
+      空 patch / 只改 memo / 解析失败都不算确认。空路线图没有"旧版目标"，
       首次产生节拍时盖上当次看到的版本；
+    - **用户 PUT 的幂等键是 `request_id`**（契约5），与请求摘要一起记在那条用户 changelog 上，
+      在分支锁内查找：命中且摘要相同 → 重放（200、不写），摘要不同 → 422。"内容与当前相同"
+      只是无操作判定，**代替不了幂等键**：带新节拍的请求在首次保存后当前稿里已有分配的 ID，
+      响应丢失的客户端拿不到这些 ID，原样重发永远判不等，只会误报 409；
     - **预算两道闸门**（同陷阱 19）：写入侧合并时超限淘汰（先淘汰最早了结的节拍，再从末尾
       淘汰计划中的，warning）、用户 PUT 超限直接 422 不截断；读取侧 `deserialize_storyboard`
       调 `clamp_storyboard` 压回预算、ID 确定性补发，**只压不写回**。渲染时一切文本塌单行，
@@ -908,8 +918,8 @@ prefix cache**，落地时必须改走 user 块。
 | GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
 | GET | `/projects/{project_id}/branches` | 分支树 |
 | GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404 |
-| GET | `/projects/{project_id}/branches/{branch_id}/storyboard` | 分支导演分镜稿（工单18）。无记录返回空分镜稿而非 404；附 `goal_stale`（路线图基于旧版主线目标） |
-| PUT | `/projects/{project_id}/branches/{branch_id}/storyboard` | 用户整份替换 `outline` / `memo`，带读取时的 `revision`：不匹配 409；超预算、引用不存在的 `beat_id` 422（不截断）；与当前内容完全相同视为重放，200 且不记 changelog；`confirm_goal` 显式确认已按当前目标重排。分支不存在 404。`goal_revision` / `fork_origin` / `changelog` / `revision` 由后端维护 |
+| GET | `/projects/{project_id}/branches/{branch_id}/storyboard` | 分支导演分镜稿（工单18）。无记录返回空分镜稿而非 404；附 `goal_stale`（路线图基于旧版主线目标）与这一刻的 `narrative_goal` / `current_goal_revision` |
+| PUT | `/projects/{project_id}/branches/{branch_id}/storyboard` | 用户整份替换 `outline` / `memo`，带读取时的 `revision`：不匹配 409；超预算、引用不存在的 `beat_id` 422（不截断）；`request_id` 为幂等键，命中已生效的编辑视为重放（200、不写），同键不同内容 422；与当前内容完全相同视为无操作。`confirm_goal` 显式确认已按目标重排，须同时带回读取时的 `goal_revision_seen`（缺失 422），写回的就是它。分支不存在 404。`goal_revision` / `fork_origin` / `changelog` / `revision` 由后端维护 |
 | GET | `/projects/{project_id}/snapshots` | 快照列表：id / scene_id / branch_id / label / created_at / `character_count`（不带角色状态明细与导演历史，SQL 侧投影） |
 | POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}`。若目标快照所属场景的评估/世界状态补写仍在进行中，返回 409（`ConflictError`），稍后重试即可（见 6.3.1） |
 | DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**，且按项目约束） |
@@ -955,11 +965,14 @@ prefix cache**，落地时必须改走 user 块。
   （它会 `/start`，用户点一下“分叉”就烧掉一整场 LLM）。IF 条件在分叉表单里按每行
   `key=value` 填，解析后进 `new_conditions`；“给导演的说明”进 `director_notes`，
   最终成为新分支分镜稿的分叉说明。
-- **分镜稿面板（`StoryboardPanel.vue`，工单18）的三条约束**：草稿有归属分支，切分支即清空，
-  保存前再核对一次、响应回来时分支已切走也不回填；409 **保留草稿并提示重新加载，
+- **分镜稿面板（`StoryboardPanel.vue`，工单18）的五条约束**：草稿有归属，切分支即清空，
+  保存的响应（成功与失败都算）**只认发出它的那份草稿**——A→B→A 往返后分支号相同、草稿却是新的，
+  只比分支号会让迟到的响应清掉新草稿；409 **保留草稿并提示重新加载，
   不自动重试覆盖**（导演评估与用户编辑会并发）；编辑时已有节拍原样回传 `beat_id`，新节拍
-  不带。`refresh-key` 绑本场评估：评估事件到达时分镜稿已合并落盘，正在编辑时不刷新。
-  区分 409 靠 `api/client.ts` 抛出的 `ApiError.status`。
+  不带，**已有节拍标题清空时本地拦下**——PUT 是整份替换，漏发一个已有节拍就是删掉它；
+  幂等键 `request_id` 随草稿内容走，内容没变的重试沿用同一个；确认目标重排时旁边显示的
+  是开始编辑时响应里的目标原文，带回的是它的版本。`refresh-key` 绑本场评估：评估事件到达时
+  分镜稿已合并落盘，正在编辑时不刷新。区分 409 靠 `api/client.ts` 抛出的 `ApiError.status`。
 - **决策后要把分支选择一起切**：rollback 会把新场景建到新分支上，`onDecision` 必须按
   `currentScene.branch_id` 同步 `branchId`（切时先抑制 watcher，否则它会把当前场景改写成
   新分支的最后一场）。不同步的话，后续“让导演规划”和场景列表仍按旧分支走。
