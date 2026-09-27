@@ -13,7 +13,12 @@ from pathlib import Path
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
 from backend.agents.director_agent import unavailable_evaluation
 from backend.config import settings
-from backend.exceptions import ConflictError, PlotSystemError, SnapshotNotFoundError
+from backend.exceptions import (
+    BranchNotFoundError,
+    ConflictError,
+    PlotSystemError,
+    SnapshotNotFoundError,
+)
 from backend.graphrag_pipeline import GraphRAGPipeline
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
@@ -25,6 +30,7 @@ from backend.models import (
     DecisionType,
     DialogueTurn,
     DirectorDecision,
+    ForkOrigin,
     OutputFormat,
     ProjectStatus,
     Scene,
@@ -32,6 +38,9 @@ from backend.models import (
     SceneEvaluation,
     SceneLineage,
     SceneStatus,
+    StoryBeat,
+    Storyboard,
+    StoryboardPatch,
     StoryRecord,
     WorldState,
     goal_revision,
@@ -39,6 +48,12 @@ from backend.models import (
 )
 from backend.scene_engine import SceneEngine
 from backend.services import events, inspection, repository
+from backend.services.storyboard import (
+    apply_user_edit,
+    fork_storyboard,
+    is_goal_stale,
+    merge_storyboard_patch,
+)
 from backend.services.world_state import merge_world_variables
 from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
@@ -59,16 +74,18 @@ _active_scenes: set[str] = set()
 # 2. scenes.status 列的 CAS 条件更新 —— 拦截并发请求，且跨进程/多 worker 有效。
 # 详见 apply_decision。
 
-# 分支级世界状态的"读-改-写"临界区，按 (project_id, branch_id) 分桶。
+# 分支级状态文件（世界变量、分镜稿）的"读-改-写"临界区，按 (project_id, branch_id) 分桶。
 # `_active_scenes` 只挡得住同一个场景被启动两次，同一分支上的**两个不同场景**照样
-# 可以并发跑完；而世界状态是整份文件覆盖写的，两场各自拿着开场读到的副本收尾，
+# 可以并发跑完；而这两份文件都是整份覆盖写的，两场各自拿着开场读到的副本收尾，
 # 后完成的那场就会把先完成的那场的更新整个抹掉。锁必须罩住**重读**
-# （见 `_apply_world_delta`），只锁写等于把过时副本安全地写了进去。
+# （见 `_apply_world_delta` / `_apply_storyboard_patch`），只锁写等于把过时副本安全地
+# 写了进去。分镜稿的用户编辑（PUT）也用这一把：版本比对与写入必须在同一个临界区内。
+# 只能有一把（工单18）：两把锁各管一份文件时，跨文件的一致性无从谈起。
 # 与 `_active_scenes` 同属【契约9】的单进程假设：多 worker 要先把它外置。
-_world_state_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_branch_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
 
-def _world_state_lock(project_id: str, branch_id: str) -> asyncio.Lock:
+def _branch_lock(project_id: str, branch_id: str) -> asyncio.Lock:
     """取分支专用的锁。首次访问时创建 —— 取与写之间没有 await，单线程事件循环下原子。
 
     用完不删：删除看似省内存，实则有一个真实的竞态 —— 某个任务可能已经拿到了锁对象、
@@ -76,10 +93,10 @@ def _world_state_lock(project_id: str, branch_id: str) -> asyncio.Lock:
     锁本身只有几十字节，分支数量又是有界的。
     """
     key = (project_id, branch_id)
-    lock = _world_state_locks.get(key)
+    lock = _branch_locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
-        _world_state_locks[key] = lock
+        _branch_locks[key] = lock
     return lock
 
 
@@ -101,6 +118,7 @@ def is_scene_active(scene_id: str) -> bool:
 # 因此分叉前必须能看见"这份快照还差一次世界状态补写"，在窗口内拒绝分叉，
 # 让用户重试（评估通常几秒到十几秒完成）。守卫必须早于快照可见，所以由引擎的
 # `on_after_snapshot` 在 `create_snapshot` **之前**挂上（见 run_scene）。
+# 分镜稿的补写（工单18，`_apply_storyboard_patch`）落在同一个窗口里，同理受它保护。
 # 与 `_active_scenes` 同属单进程假设，多 worker 需要外置为跨进程可见的状态。
 _pending_world_patch: set[str] = set()
 
@@ -327,39 +345,42 @@ async def plan_scene(
     branch_id: str,
     narrative_goal: str = "",
     scene_intent: str = "",
+    after_scene: Scene | None = None,
 ) -> SceneConfig:
+    """让导演规划下一场（不落库）。
+
+    `after_scene` 是"接在哪一场之后"：next_scene 决策传被决策的那一场；缺省取本分支
+    最近一场。前情与未收束线索沿它的因果谱系取回，与评估同源（工单18 §3.3）——
+    原先按 `list_scenes(branch_id)` 取本分支最近几场，从快照分叉出的新分支规划时
+    完全不知道分叉点之前发生过什么，评估那一侧却知道。
+    """
     project = await repository.get_project(project_id)
     # 主线目标是项目级只读锚点：调用方不显式给才回退，且任何情况下都不会被写回项目
     goal = narrative_goal or project.narrative_goal
     cards = await repository.list_characters(project_id)
-    history = await repository.list_scenes(project_id, branch_id)
-    # 只传已完成的场景作为历史上下文
-    completed = [s for s in history if s.status == SceneStatus.COMPLETED.value]
-    recent_results = await _recent_scene_results(completed)
+    sm = SnapshotManager(project_id)
+    recent = await repository.recent_scenes_on_branch(project_id, branch_id)
+    anchor = after_scene or (recent[-1] if recent else None)
+    synopses: list[str] = []
+    threads: list[str] = []
+    if anchor is not None:
+        _, threads, synopses = await _story_context(anchor, goal, sm=sm)
     world = await repository.get_world_state(project_id, branch_id)
-    director = DirectorAgent(project_id, GraphManager(project_id), SnapshotManager(project_id))
+    storyboard = await repository.get_storyboard(project_id, branch_id)
+    director = DirectorAgent(project_id, GraphManager(project_id), sm)
     return await director.plan_scene(
         branch_id,
         goal,
         cards,
-        history_scenes=completed,
+        # 只剩选角兜底一个用途（按最近出场频次取人），不再是规划的历史来源
+        history_scenes=recent,
         scene_intent=scene_intent,
-        recent_results=recent_results,
         # 看不见世界状态的导演会排出自相矛盾的场次（例如把已被烧毁的城池设为地点）
         world_state=world.variables,
+        prior_synopses=synopses,
+        prior_threads=threads,
+        storyboard=storyboard,
     )
-
-
-async def _recent_scene_results(
-    completed: list[Scene], limit: int = 3
-) -> list[tuple[Scene, SceneEvaluation]]:
-    """取最近若干已完成场景的评估（演出来的结果，而非演之前的预设）。"""
-    results: list[tuple[Scene, SceneEvaluation]] = []
-    for scene in completed[-limit:]:
-        evaluation = await repository.get_evaluation(scene.scene_id)
-        if evaluation is not None:
-            results.append((scene, evaluation))
-    return results
 
 
 async def _story_context(
@@ -401,10 +422,12 @@ async def _story_context(
 
 
 def _story_record(scene: Scene | SceneLineage, evaluation: SceneEvaluation) -> StoryRecord:
-    # 拷一份：记录是时点副本，调用方之后再改这份评估不该追溯改写历史
-    return StoryRecord(
-        scene_id=scene.scene_id, name=scene.name, evaluation=deepcopy(evaluation)
-    )
+    # 拷一份：记录是时点副本，调用方之后再改这份评估不该追溯改写历史。
+    # 分镜稿 patch 不进副本：副本只供回溯梗概/进度/线索，而它随谱系逐场复制进
+    # 每个快照，带着 patch（可能含整段备忘）等于把每场的改稿都复制 N 遍
+    copy = deepcopy(evaluation)
+    copy.storyboard_patch = StoryboardPatch()
+    return StoryRecord(scene_id=scene.scene_id, name=scene.name, evaluation=copy)
 
 
 def _merge_story_records(
@@ -565,7 +588,12 @@ async def run_scene(scene_id: str) -> None:
         # 分支级世界变量（工单07）。每次运行都重新读：它在场次之间演进，
         # 但整场冻结，因此可以安全地进 system 消息（契约3 补充条款）。
         world = await repository.get_world_state(scene.project_id, scene.branch_id)
-        engine = SceneEngine(scene, config, agents, sm, world_variables=world.variables)
+        # 分镜稿只进前/后置快照的时点副本，不进任何角色上下文（红线 R1）
+        opening_board = await repository.get_storyboard(scene.project_id, scene.branch_id)
+        engine = SceneEngine(
+            scene, config, agents, sm,
+            world_variables=world.variables, storyboard=opening_board,
+        )
         # continue 续跑：注入历史 transcript，让角色知道之前说了什么
         if scene.dialogue_log:
             engine.inject_history(scene.dialogue_log)
@@ -620,6 +648,10 @@ async def run_scene(scene_id: str) -> None:
                 prior_progress, prior_threads, prior_synopses = await _story_context(
                     scene, project.narrative_goal, sm=sm
                 )
+                # 记下导演这次**实际看到的**分镜稿与目标版本：patch 是相对它给出的，
+                # 合并时逐条校验前提；goal_revision 只能写回这里看到的版本（工单18 §3.3）
+                board_seen = await repository.get_storyboard(scene.project_id, scene.branch_id)
+                seen_revision = goal_revision(project.narrative_goal)
                 evaluation = await director.evaluate_scene(
                     scene,
                     result.dialogue_log,
@@ -630,6 +662,7 @@ async def run_scene(scene_id: str) -> None:
                     prior_threads=prior_threads,
                     prior_synopses=prior_synopses,
                     world_state=world.variables,
+                    storyboard=board_seen,
                 )
                 # 保留 9fe7e99 的快照归属戳；副本中同样留存，供追溯与审查。
                 evaluation.evaluated_snapshot_id = result.snapshot_id_after
@@ -647,6 +680,10 @@ async def run_scene(scene_id: str) -> None:
                         "fatal": False,
                     })
                 await _apply_world_delta(scene, evaluation, result.snapshot_id_after, sm)
+                # 同在 _pending_world_patch 守卫的窗口内：补写完成前该快照不可分叉
+                await _apply_storyboard_patch(
+                    scene, evaluation, board_seen, seen_revision, result.snapshot_id_after, sm
+                )
                 await events.publish(scene_id, "evaluation", to_dict(evaluation))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
@@ -707,7 +744,7 @@ async def _apply_world_delta(
     if not snapshot_id_after:
         return
     try:
-        async with _world_state_lock(scene.project_id, scene.branch_id):
+        async with _branch_lock(scene.project_id, scene.branch_id):
             world = await repository.get_world_state(scene.project_id, scene.branch_id)
             merged, dropped = merge_world_variables(
                 world.variables, evaluation.world_state_delta
@@ -732,6 +769,108 @@ async def _apply_world_delta(
             "message": "世界状态更新失败；本场对世界层的改动可能未生效。",
             "fatal": False,
         })
+
+
+async def _apply_storyboard_patch(
+    scene: Scene,
+    evaluation: SceneEvaluation,
+    board_seen: Storyboard,
+    seen_revision: str,
+    snapshot_id_after: str,
+    sm: SnapshotManager,
+) -> None:
+    """把本场评估给出的分镜稿 patch 合并进分支，并补写后置快照（工单18 §3.4）。
+
+    与 `_apply_world_delta` 同构，多一层：patch 是**相对导演读到的那一版**给出的，
+    锁内重读只挡得住整份覆盖，挡不住"导演读到 v1 → 用户改成 v2 → 导演基于 v1 的
+    改写覆盖用户"。`merge_storyboard_patch` 逐条核对前提，冲突的跳过、其余照常，
+    被跳过的写 changelog 并推一条非致命 `scene_error`。
+
+    独占一个 try：失败不能把场景打回 paused，也不能连累已落库的评估与世界变量。
+    patch 为空也要补写快照 —— 后置快照里是开场那份，期间用户可能已编辑过。
+    """
+    if not snapshot_id_after:
+        return
+    try:
+        async with _branch_lock(scene.project_id, scene.branch_id):
+            current = await repository.get_storyboard(scene.project_id, scene.branch_id)
+            merge = merge_storyboard_patch(
+                current,
+                board_seen,
+                evaluation.storyboard_patch,
+                scene_id=scene.scene_id,
+                seen_revision=seen_revision,
+            )
+            if merge.evicted:
+                logger.warning(
+                    "场景 %s 合并后分镜稿超出预算，已淘汰：%s",
+                    scene.scene_id,
+                    "、".join(merge.evicted),
+                )
+            if merge.skipped:
+                logger.warning(
+                    "场景 %s 的分镜稿修改有 %d 处被跳过：%s",
+                    scene.scene_id,
+                    len(merge.skipped),
+                    "；".join(merge.skipped),
+                )
+            if merge.applied or merge.skipped or merge.evicted:
+                await repository.save_storyboard(merge.storyboard)
+            # 补写留在锁内：快照副本与落盘的那份必须是同一份
+            await sm.record_storyboard(snapshot_id_after, merge.storyboard)
+        if merge.skipped:
+            await events.publish(scene.scene_id, "scene_error", {
+                "message": "导演对分镜稿的部分修改与他人改动冲突或无效，已跳过："
+                + "；".join(merge.skipped),
+                "fatal": False,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("场景 %s 的分镜稿更新失败：%s", scene.scene_id, exc, exc_info=True)
+        await events.publish(scene.scene_id, "scene_error", {
+            "message": "分镜稿更新失败；本场导演对路线图的调整可能未生效。",
+            "fatal": False,
+        })
+
+
+async def get_storyboard_view(project_id: str, branch_id: str) -> tuple[Storyboard, bool]:
+    """读取分支分镜稿，并给出"路线图是否基于旧版主线目标"（供前端显示确认入口）。"""
+    project = await repository.get_project(project_id)
+    board = await repository.get_storyboard(project_id, branch_id)
+    return board, is_goal_stale(board, project.narrative_goal)
+
+
+async def update_storyboard(
+    project_id: str,
+    branch_id: str,
+    outline: list[StoryBeat],
+    memo: str,
+    *,
+    base_revision: int,
+    confirm_goal: bool = False,
+) -> tuple[Storyboard, bool]:
+    """用户整份替换路线图与备忘（工单18 §3.6）。返回 (结果, 路线图是否基于旧版目标)。
+
+    版本比对与写入在同一把分支锁内：锁外比对、锁内写，比对之后导演一合并，
+    用户的写入就又把导演的改动整份覆盖了。
+    """
+    project = await repository.get_project(project_id)
+    branches = await SnapshotManager(project_id).list_branches()
+    if not any(b.branch_id == branch_id for b in branches):
+        # 写接口不能凭一个拼错的 id 凭空建出一份分镜稿文件
+        raise BranchNotFoundError(f"分支不存在: {branch_id}")
+    async with _branch_lock(project_id, branch_id):
+        current = await repository.get_storyboard(project_id, branch_id)
+        board, changed = apply_user_edit(
+            current,
+            outline,
+            memo,
+            base_revision=base_revision,
+            confirm_goal=confirm_goal,
+            current_goal_revision=goal_revision(project.narrative_goal),
+        )
+        if changed:
+            await repository.save_storyboard(board)
+    return board, is_goal_stale(board, project.narrative_goal)
 
 
 async def _persist_character_states(agents: list[CharacterAgent]) -> None:
@@ -792,7 +931,8 @@ async def fork_from_snapshot(
     - I2 无副作用：全程只读来源分支，只新增记录；
     - I3 相互隔离：复制来源分支的长期记忆到新分支的 Chroma 集合；
       分支级世界变量同理（工单07）—— 它是分支级文件、不随快照目录走，
-      不从快照搬进新分支的话，一分叉整个世界层就重置了；
+      不从快照搬进新分支的话，一分叉整个世界层就重置了；分镜稿同理（工单18），
+      并附上确定性模板生成的分叉说明；
     - I4 可追溯：`parent_branch_id` / `parent_scene_id` 指回来源；
     - I5 条件生效：`conditions` 覆盖同名的继承条件。
 
@@ -832,6 +972,29 @@ async def fork_from_snapshot(
             project_id=project_id,
             branch_id=branch_id,
             variables=dict(snap.world_state_variables),
+        )
+    )
+    # 分镜稿同理（工单18 §3.5）：失败就不该留下一条"导演失忆"的分支。
+    # 分叉说明走确定性模板，不调 LLM（红线 R4）
+    if snap.storyboard is None:
+        # 不回读来源分支的当前分镜稿：那是分叉之后才写的，会越过继承边界
+        logger.warning("快照 %s 没有分镜稿副本，新分支以空分镜稿起步", snapshot_id)
+    source_name = next(
+        (b.name for b in await sm.list_branches() if b.branch_id == snap.branch_id), ""
+    )
+    await repository.save_storyboard(
+        fork_storyboard(
+            snap.storyboard,
+            project_id=project_id,
+            branch_id=branch_id,
+            origin=ForkOrigin(
+                source_branch_id=snap.branch_id,
+                source_branch_name=source_name,
+                source_snapshot_id=snapshot_id,
+                source_snapshot_label=snap.label,
+                conditions={str(k): str(v) for k, v in (conditions or {}).items()},
+                director_notes=director_notes,
+            ),
         )
     )
     branch = await sm.fork_branch(
@@ -1014,6 +1177,7 @@ async def apply_decision(
                 scene.project_id,
                 scene.branch_id,
                 scene_intent=decision.next_scene_description or "",
+                after_scene=scene,
             )
             if decision.next_participating_characters:
                 config.participating_characters = decision.next_participating_characters

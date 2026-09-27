@@ -37,6 +37,16 @@ class ConflictError(PlotSystemError):
     pass
 
 
+class InvalidRequestError(PlotSystemError):
+    """请求内容不合法（如分镜稿超出预算、引用了不存在的节拍）→ 422。
+
+    Pydantic 只校验得了形状；预算这类要按 token 估算的约束只能在业务层判断，
+    又不能静默截断用户写的内容，所以需要一个显式的 422。
+    """
+
+    pass
+
+
 class GraphRAGError(PlotSystemError):
     pass
 

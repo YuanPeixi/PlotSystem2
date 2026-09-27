@@ -111,7 +111,7 @@ async def test_run_scene_injects_world_and_keeps_scene_conditions_clean(monkeypa
     seen: dict = {}
 
     class FakeEngine:
-        def __init__(self, scene_obj, config, agents, sm, world_variables=None):
+        def __init__(self, scene_obj, config, agents, sm, world_variables=None, **kwargs):
             self.scene = scene_obj
             seen["world"] = dict(world_variables or {})
             seen["conditions"] = dict(config.initial_conditions)
@@ -633,9 +633,9 @@ async def test_concurrent_scenes_on_one_branch_do_not_lose_world_updates(monkeyp
 @pytest.mark.asyncio
 async def test_world_state_locks_are_per_branch():
     """锁按 (project_id, branch_id) 分桶：两条分支互不阻塞。"""
-    assert orchestrator._world_state_lock("p", "b1") is orchestrator._world_state_lock("p", "b1")
-    assert orchestrator._world_state_lock("p", "b1") is not orchestrator._world_state_lock("p", "b2")
-    assert orchestrator._world_state_lock("p1", "b") is not orchestrator._world_state_lock("p2", "b")
+    assert orchestrator._branch_lock("p", "b1") is orchestrator._branch_lock("p", "b1")
+    assert orchestrator._branch_lock("p", "b1") is not orchestrator._branch_lock("p", "b2")
+    assert orchestrator._branch_lock("p1", "b") is not orchestrator._branch_lock("p2", "b")
 
 
 # ---------------------------------------------------------------------------

@@ -94,6 +94,22 @@ class OutputFormat(str, Enum):
     RAW_LOG = "raw"
 
 
+class BeatStatus(str, Enum):
+    """分镜稿节拍状态（工单18）。"""
+
+    PLANNED = "planned"
+    DONE = "done"
+    DROPPED = "dropped"
+
+
+class StoryboardSource(str, Enum):
+    """分镜稿改动的来源，只用于 changelog 留痕。"""
+
+    DIRECTOR = "director"
+    USER = "user"
+    FORK = "fork"
+
+
 # ---------------------------------------------------------------------------
 # 基础值对象
 # ---------------------------------------------------------------------------
@@ -257,6 +273,108 @@ class WorldState:
     updated_at: datetime = field(default_factory=now)
 
 
+@dataclass
+class StoryBeat:
+    """路线图上的一个节拍（工单18）。
+
+    `beat_id` 是节拍的身份：形如 `b7`、分支内唯一、只由后端分配，改名/重排/改状态
+    都不改变它。导演的 patch 按它定位 —— 按标题或下标定位的话，用户改一次名、插一条
+    节拍，导演的"标记完成"就会落到别的节拍上，而且不报错。ID 会进 prompt，所以要短。
+    """
+
+    beat_id: str = ""
+    title: str = ""
+    description: str = ""
+    status: str = BeatStatus.PLANNED.value
+    # 在哪一场完成或放弃；只供溯源与前端展示，不进 prompt（uuid 白吃预算）
+    resolved_scene_id: str = ""
+
+
+@dataclass
+class ForkOrigin:
+    """本分支从哪里分叉、改了什么（工单18 §3.5）。分叉时按确定性模板生成，不调 LLM。"""
+
+    source_branch_id: str = ""
+    source_branch_name: str = ""
+    source_snapshot_id: str = ""
+    source_snapshot_label: str = ""
+    conditions: dict[str, str] = field(default_factory=dict)
+    director_notes: str = ""
+
+
+@dataclass
+class StoryboardChange:
+    """分镜稿的一条改动留痕。限条数，不进 prompt。"""
+
+    source: str = StoryboardSource.DIRECTOR.value
+    scene_id: str = ""
+    summary: str = ""
+    at: datetime = field(default_factory=now)
+
+
+@dataclass
+class Storyboard:
+    """分支级导演分镜稿（工单18）：路线图 + 长期备忘 + 分叉说明。
+
+    三层目标模型里的第 2 层：主线目标（第 1 层）只读、只有用户能改；本场意图
+    （第 3 层）一次性；分镜稿是导演唯一的**持久可写空间**，记录"这条分支打算
+    怎么走到目标"。
+
+    **只进导演 prompt**（红线 R1）：它含导演对全部角色 `unknown_facts` 的安排，
+    进了任何角色或 selector 的上下文，角色就"知道剧本"了（契约1）。
+    存放照搬 `WorldState`：权威值是 `storyboard/{branch_id}.json`，快照带时点副本。
+    """
+
+    project_id: str = ""
+    branch_id: str = ""
+    outline: list[StoryBeat] = field(default_factory=list)
+    memo: str = ""
+    # 这份路线图对照的是哪个版本的主线目标（models.goal_revision）。写回必须有确认，
+    # 见 services/storyboard.py；与当前目标不一致时 prompt 标注"基于旧版主线目标"
+    goal_revision: str = ""
+    fork_origin: ForkOrigin | None = None
+    changelog: list[StoryboardChange] = field(default_factory=list)
+    # 单调递增的修订号：导演合并与用户写入都推进，用作 PUT 的并发版本。
+    # 不用 updated_at —— 精度与时钟都不可靠
+    revision: int = 0
+    # 下一个待分配的节拍序号。删除后的 ID 不复用：否则一条基于旧稿的 patch
+    # 会命中同名的新节拍
+    next_beat_seq: int = 1
+    updated_at: datetime = field(default_factory=now)
+
+
+@dataclass
+class StoryboardPatch:
+    """导演随评估产出的分镜稿修改（工单18 §3.4）。
+
+    所有操作都是**相对于导演读到的那一版**给出的，合并时逐条校验前提仍成立
+    （`services.storyboard.merge_storyboard_patch`）。字段全空 = 本场不改分镜稿。
+    """
+
+    add: list[StoryBeat] = field(default_factory=list)  # 只取 title / description
+    complete: list[str] = field(default_factory=list)  # beat_id
+    drop: list[str] = field(default_factory=list)  # beat_id
+    update: list[StoryBeat] = field(default_factory=list)  # 按 beat_id 改写标题/说明
+    # 全部 planned 节拍 ID 的新顺序；None = 不重排
+    reorder: list[str] | None = None
+    # 新的完整备忘；None = 不改
+    memo: str | None = None
+    # 导演显式确认"已按当前主线目标重排"。只有它能让 goal_revision 前进
+    goal_realigned: bool = False
+
+
+@dataclass
+class StoryboardMerge:
+    """`services.storyboard.merge_storyboard_patch` 的结果（运行时，不落库）。"""
+
+    storyboard: Storyboard
+    applied: list[str] = field(default_factory=list)
+    # 前提在当前稿上已不成立、或导演给了未知 ID 而被跳过的操作（带原因）
+    skipped: list[str] = field(default_factory=list)
+    # 超出预算被淘汰的节拍
+    evicted: list[str] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # 对话与场景
 # ---------------------------------------------------------------------------
@@ -388,7 +506,9 @@ class SceneEvaluation:
     # INSERT OR REPLACE，一场只留最新一份：continue 续跑会覆盖掉旧评估。
     # 归属戳随历史副本保留用于追溯；分叉实际继承快照的历史副本（空 = 旧记录）。
     evaluated_snapshot_id: str = ""
-
+    # 本场对分镜稿的修改（工单18）。解析失败时必须为空，与 world_state_delta 同理。
+    # 导演历史副本（StoryRecord）里会清掉它：副本只供回溯梗概/进度/线索
+    storyboard_patch: StoryboardPatch = field(default_factory=StoryboardPatch)
 
 @dataclass
 class StoryRecord:
@@ -449,6 +569,9 @@ class Snapshot:
     world_state_variables: dict[str, str] = field(default_factory=dict)
     # 时点化的导演评估副本。不能通过 scene_id 回读后来被 continue 覆盖的评估。
     story_history: list[StoryRecord] | None = None
+    # 时点化的分镜稿副本（工单18）。None = 本功能上线前的旧快照，分叉时以空稿起步，
+    # 绝不回读来源分支的当前分镜稿（那是分叉之后才写的，会越过继承边界）
+    storyboard: Storyboard | None = None
 
 
 @dataclass
