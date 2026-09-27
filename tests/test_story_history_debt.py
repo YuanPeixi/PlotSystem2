@@ -17,6 +17,7 @@ from backend.agents import CharacterAgent, DirectorAgent
 from backend.memory import MemoryManager
 from backend.models import (
     CharacterCard,
+    DialogueTurn,
     DirectorDecision,
     Project,
     Scene,
@@ -306,3 +307,88 @@ async def test_d1_legacy_snapshot_history_reads_back_typed(request):
     loaded = await sm.get_snapshot(snap.snapshot_id)
     assert [type(r) for r in loaded.story_history] == [StoryRecord, StoryRecord]
     assert [r.threads_known for r in loaded.story_history] == [False, False]
+
+
+# ---------------------------------------------------------------------------
+# D2 谱系回溯的查询次数与谱系长度无关
+# ---------------------------------------------------------------------------
+
+
+async def _long_chain(project_id: str, length: int) -> Scene:
+    """建一条 parent_scene_id 相连、每场都有评估和一段对白的主线，返回最末一场。"""
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+    parent: str | None = None
+    scene: Scene | None = None
+    for i in range(length):
+        scene = Scene(
+            scene_id=f"{project_id}-s{i}",
+            project_id=project_id,
+            branch_id="main",
+            parent_scene_id=parent,
+            name=f"S{i}",
+            status="completed",
+            dialogue_log=[DialogueTurn(turn_number=1, dialogue="台词" * 50)],
+        )
+        await repository.save_scene(scene)
+        await repository.save_evaluation(SceneEvaluation(
+            scene_id=scene.scene_id, story_progress=i / length, goal_revision=REV,
+            synopsis=f"梗概{i}",
+        ))
+        parent = scene.scene_id
+    assert scene is not None
+    return scene
+
+
+async def _count_queries(monkeypatch, tail: Scene) -> dict[str, int]:
+    counts = {"get_evaluation": 0, "get_evaluations": 0, "deserialize_scene": 0, "list_scenes": 0}
+
+    def counting(name, real):
+        if asyncio.iscoroutinefunction(real):
+            async def wrapper(*a, **k):
+                counts[name] += 1
+                return await real(*a, **k)
+        else:
+            def wrapper(*a, **k):
+                counts[name] += 1
+                return real(*a, **k)
+        return wrapper
+
+    monkeypatch.setattr(repository, "get_evaluation",
+                        counting("get_evaluation", repository.get_evaluation))
+    monkeypatch.setattr(repository, "get_evaluations",
+                        counting("get_evaluations", repository.get_evaluations))
+    monkeypatch.setattr(repository, "list_scenes",
+                        counting("list_scenes", repository.list_scenes))
+    monkeypatch.setattr(repository, "_deserialize_scene",
+                        counting("deserialize_scene", repository._deserialize_scene))
+    _, _, synopses = await orchestrator._story_context(tail, GOAL, synopsis_limit=1000)
+    assert len(synopses) == int(tail.name[1:]) + 1  # 确实走完了整条谱系
+    return counts
+
+
+@pytest.mark.parametrize("length", [3, 30])
+async def test_d2_lineage_queries_are_constant(monkeypatch, request, length):
+    """谱系 N 场时评估查询是一次批量读，且不反序列化任何一场的 dialogue_log。"""
+    tail = await _long_chain(request.node.name, length)
+    counts = await _count_queries(monkeypatch, tail)
+    assert counts == {
+        "get_evaluation": 0, "get_evaluations": 1, "deserialize_scene": 0, "list_scenes": 0,
+    }
+
+
+async def test_d2_batch_evaluations_chunk_large_id_lists(request):
+    """IN 列表要分批：老版本 SQLite 的绑定参数上限是 999。"""
+    pid = request.node.name
+    ids = [f"{pid}-{i}" for i in range(repository._IN_CHUNK * 2 + 7)]
+    for sid in ids[::97]:
+        await repository.save_evaluation(SceneEvaluation(scene_id=sid, synopsis=sid))
+    found = await repository.get_evaluations([*ids, ids[0]])
+    assert sorted(found) == sorted(ids[::97])
+    assert all(found[sid].synopsis == sid for sid in found)
+
+
+async def test_d2_lineage_projection_tolerates_scalar_history(request):
+    """被手改成标量的副本：json_extract 返回裸值，不能当 JSON 文本去解析。"""
+    sid = await _raw_scene_with_history(request, "被手改坏了")
+    [row] = [s for s in await repository.list_scene_lineage(request.node.name) if s.scene_id == sid]
+    assert row.inherited_story_history == []

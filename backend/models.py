@@ -313,6 +313,23 @@ class Scene:
 
 
 @dataclass
+class SceneLineage:
+    """回溯导演历史所需的场景字段投影（工单18 D2）。
+
+    谱系回溯只看因果链与冻结副本，连带反序列化每一场的完整 `dialogue_log` 是纯开销。
+    **只读投影，不可存回**：它缺字段，拿去 `save_scene` 会把整场对白抹掉，
+    所以刻意做成独立类型而不是"半填的 Scene"。
+    """
+
+    scene_id: str = ""
+    branch_id: str = ""
+    parent_scene_id: str | None = None
+    name: str = ""
+    restore_snapshot_id: str = ""
+    inherited_story_history: list[StoryRecord] | None = None
+
+
+@dataclass
 class SceneConfig:
     """导演规划场景时产生的配置。"""
 

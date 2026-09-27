@@ -30,6 +30,7 @@ from backend.models import (
     Scene,
     SceneConfig,
     SceneEvaluation,
+    SceneLineage,
     SceneStatus,
     StoryRecord,
     WorldState,
@@ -399,7 +400,7 @@ async def _story_context(
     return progress, threads, synopses
 
 
-def _story_record(scene: Scene, evaluation: SceneEvaluation) -> StoryRecord:
+def _story_record(scene: Scene | SceneLineage, evaluation: SceneEvaluation) -> StoryRecord:
     # 拷一份：记录是时点副本，调用方之后再改这份评估不该追溯改写历史
     return StoryRecord(
         scene_id=scene.scene_id, name=scene.name, evaluation=deepcopy(evaluation)
@@ -439,20 +440,31 @@ async def _story_records(
 
     `sm` 由调用方传入复用：orchestrator 其余部分一律复用同一个实例，此处若各自
     新建，将来 SnapshotManager 一旦持有连接或缓存就会失配。
+
+    查询次数与谱系长度无关（工单18 D2）：先只用谱系投影走完因果链、确定要哪些场景
+    的评估，再一次批量取回。原先每个祖先各一次 `get_evaluation`，并且每次调用都把
+    全项目场景连同完整 `dialogue_log` 反序列化一遍。
     """
-    all_scenes = await repository.list_scenes(scene.project_id)
-    by_id = {s.scene_id: s for s in all_scenes}
-    order = {s.scene_id: i for i, s in enumerate(all_scenes)}
+    lineage = await repository.list_scene_lineage(scene.project_id)
+    by_id = {s.scene_id: s for s in lineage}
+    order = {s.scene_id: i for i, s in enumerate(lineage)}
     snapshots = sm or SnapshotManager(scene.project_id)
-    records: list[dict] = []
+    # 起点用调用方手里这份：run_scene 可能正拿着尚未落库的修改
+    cursor: SceneLineage | None = SceneLineage(
+        scene_id=scene.scene_id,
+        branch_id=scene.branch_id,
+        parent_scene_id=scene.parent_scene_id,
+        name=scene.name,
+        restore_snapshot_id=scene.restore_snapshot_id,
+        inherited_story_history=scene.inherited_story_history,
+    )
+    chain: list[SceneLineage] = []  # 需要取评估的场景，从新到旧
+    boundary: list[StoryRecord] | None = None
     seen: set[str] = set()
-    cursor: Scene | None = scene
     while cursor is not None and cursor.scene_id not in seen:
         seen.add(cursor.scene_id)
         if include_current or cursor.scene_id != scene.scene_id:
-            ev = await repository.get_evaluation(cursor.scene_id)
-            if ev is not None:
-                records.append(_story_record(cursor, ev))
+            chain.append(cursor)
         inherited = cursor.inherited_story_history
         if inherited is None and cursor.restore_snapshot_id:
             snap = await snapshots.get_snapshot(cursor.restore_snapshot_id)
@@ -461,15 +473,25 @@ async def _story_records(
                 logger.warning("场景 %s 的旧分叉快照没有导演历史，停止跨分支继承", cursor.scene_id)
                 inherited = []
         if inherited is not None:
-            return _merge_story_records(deepcopy(inherited), list(reversed(records)))
+            boundary = inherited
+            break
         parent = by_id.get(cursor.parent_scene_id or "")
         if parent is None:
             # 手建场景也应继承本分支前情；保存场景不能改变其创建时间。
-            position = order.get(cursor.scene_id, len(all_scenes))
-            parent = next((s for s in reversed(all_scenes[:position])
+            position = order.get(cursor.scene_id, len(lineage))
+            parent = next((s for s in reversed(lineage[:position])
                            if s.branch_id == cursor.branch_id and s.scene_id not in seen), None)
         cursor = parent
-    return list(reversed(records))
+
+    evaluations = await repository.get_evaluations([c.scene_id for c in chain])
+    tail = [
+        _story_record(c, evaluations[c.scene_id])
+        for c in reversed(chain)
+        if c.scene_id in evaluations
+    ]
+    if boundary is not None:
+        return _merge_story_records(deepcopy(boundary), tail)
+    return tail
 
 
 async def create_scene_from_config(
