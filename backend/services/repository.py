@@ -442,6 +442,7 @@ def _deserialize_storyboard_patch(data: object) -> StoryboardPatch:
         reorder=[str(x) for x in reorder] if isinstance(reorder, list) else None,
         memo=str(memo) if memo is not None else None,
         goal_realigned=data.get("goal_realigned") is True,
+        rejected=_ids("rejected"),
     )
 
 

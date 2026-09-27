@@ -145,18 +145,21 @@ function cancelEdit() {
   saveError.value = ''
 }
 
+// 保存期间草稿只读（模板里用 fieldset 禁用），这几个入口同样拦住
 function addBeat() {
+  if (saving.value) return
   draft.value?.outline.push({ beat_id: '', title: '', description: '', status: 'planned' })
 }
 
 function removeBeat(index: number) {
+  if (saving.value) return
   draft.value?.outline.splice(index, 1)
 }
 
 function moveBeat(index: number, delta: number) {
   const outline = draft.value?.outline
   const target = index + delta
-  if (!outline || target < 0 || target >= outline.length) return
+  if (saving.value || !outline || target < 0 || target >= outline.length) return
   const [beat] = outline.splice(index, 1)
   outline.splice(target, 0, beat)
 }
@@ -213,7 +216,17 @@ async function save() {
       request_id: d.requestId,
     })
     if (draft.value !== d) return
+    // 保存结果比此前发出、尚未返回的刷新更新：让它们作废，否则旧稿会把面板盖回去
+    loadSeq++
+    loading.value = false
     board.value = data
+    if (JSON.stringify(toPayload(d)) !== key) {
+      // 保存期间草稿又被改过：发出去的那份已落盘，之后的修改还没有。不清草稿，也不把它的
+      // 基准改成新修订号 —— 幂等重放时返回的稿子可能已含他人后来的改动，改了基准下一次
+      // 保存就会悄悄覆盖它们；保留旧基准，冲突就走 409 提示
+      saveError.value = '已保存发出时的内容，之后的修改尚未保存。草稿已保留供对照，请重新加载后再编辑。'
+      return
+    }
     draft.value = null
   } catch (err) {
     if (draft.value !== d) return
@@ -284,32 +297,34 @@ async function reloadAfterConflict() {
 
       <!-- 编辑视图 -->
       <div v-else class="editor">
-        <div v-for="(b, i) in draft.outline" :key="b.beat_id || `new-${i}`" class="edit-beat">
-          <div class="row" style="gap: 6px">
-            <span class="beat-id">{{ b.beat_id || '新' }}</span>
-            <select v-model="b.status">
-              <option value="planned">计划</option>
-              <option value="done">已完成</option>
-              <option value="dropped">已放弃</option>
-            </select>
-            <button class="ghost" :disabled="i === 0" @click="moveBeat(i, -1)">↑</button>
-            <button class="ghost" :disabled="i === draft.outline.length - 1" @click="moveBeat(i, 1)">↓</button>
-            <button class="ghost danger" @click="removeBeat(i)">✕</button>
+        <fieldset :disabled="saving" class="edit-fields">
+          <div v-for="(b, i) in draft.outline" :key="b.beat_id || `new-${i}`" class="edit-beat">
+            <div class="row" style="gap: 6px">
+              <span class="beat-id">{{ b.beat_id || '新' }}</span>
+              <select v-model="b.status">
+                <option value="planned">计划</option>
+                <option value="done">已完成</option>
+                <option value="dropped">已放弃</option>
+              </select>
+              <button class="ghost" :disabled="i === 0" @click="moveBeat(i, -1)">↑</button>
+              <button class="ghost" :disabled="i === draft.outline.length - 1" @click="moveBeat(i, 1)">↓</button>
+              <button class="ghost danger" @click="removeBeat(i)">✕</button>
+            </div>
+            <input v-model="b.title" placeholder="节拍标题" />
+            <input v-model="b.description" placeholder="打算怎么走（可留空）" />
           </div>
-          <input v-model="b.title" placeholder="节拍标题" />
-          <input v-model="b.description" placeholder="打算怎么走（可留空）" />
-        </div>
-        <button class="ghost" @click="addBeat">＋ 新增节拍</button>
-        <div class="field">
-          <label>备忘</label>
-          <textarea v-model="draft.memo" rows="4" placeholder="人物弧光、已埋伏笔的打算、刻意留白的东西"></textarea>
-        </div>
-        <template v-if="board.goal_stale">
-          <p class="dim goal-text">当前主线目标：{{ draft.goalText || '（未设定）' }}</p>
-          <label class="confirm">
-            <input v-model="draft.confirmGoal" type="checkbox" /> 已按上面这版主线目标重排
-          </label>
-        </template>
+          <button class="ghost" @click="addBeat">＋ 新增节拍</button>
+          <div class="field">
+            <label>备忘</label>
+            <textarea v-model="draft.memo" rows="4" placeholder="人物弧光、已埋伏笔的打算、刻意留白的东西"></textarea>
+          </div>
+          <template v-if="board.goal_stale">
+            <p class="dim goal-text">当前主线目标：{{ draft.goalText || '（未设定）' }}</p>
+            <label class="confirm">
+              <input v-model="draft.confirmGoal" type="checkbox" /> 已按上面这版主线目标重排
+            </label>
+          </template>
+        </fieldset>
         <p v-if="conflict" class="err">
           ⚠ {{ conflict }}
           <button class="ghost" @click="reloadAfterConflict">重新加载</button>
@@ -421,6 +436,15 @@ async function reloadAfterConflict() {
 }
 .confirm {
   font-size: 12px;
+}
+.edit-fields {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .goal-text {
   font-size: 12px;
