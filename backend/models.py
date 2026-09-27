@@ -310,6 +310,10 @@ class StoryboardChange:
     scene_id: str = ""
     summary: str = ""
     at: datetime = field(default_factory=now)
+    # 用户编辑的幂等键与请求摘要（契约5）。响应丢失时客户端拿不到新节拍的 ID，
+    # 只能原样重发，"内容与当前相同"判不出这种重放，只能靠它。导演与分叉的条目留空
+    request_id: str = ""
+    request_digest: str = ""
 
 
 @dataclass
@@ -373,6 +377,20 @@ class StoryboardMerge:
     skipped: list[str] = field(default_factory=list)
     # 超出预算被淘汰的节拍
     evicted: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StoryboardView:
+    """分镜稿 + 用户确认"已按当前目标重排"所需的目标上下文（运行时组装，不落库）。
+
+    目标原文必须随分镜稿一起返回：确认框旁显示的得是**这次响应里**的目标，
+    PUT 带回的 `goal_revision_seen` 才对得上用户实际看到的那一版。
+    """
+
+    storyboard: Storyboard
+    narrative_goal: str = ""
+    goal_revision: str = ""  # 当前主线目标的版本
+    goal_stale: bool = False
 
 
 # ---------------------------------------------------------------------------

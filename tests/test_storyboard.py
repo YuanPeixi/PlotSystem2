@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from unittest.mock import AsyncMock
 
 import httpx
@@ -448,6 +449,31 @@ def test_reorder_rejected_when_planned_set_changed_since_read():
     assert "已被他人调整" in merge.skipped[0]
 
 
+def test_reorder_skipped_when_user_reordered_since_read():
+    """重排的前提是**顺序**没被改过，不只是集合：只比集合的话，用户刚调好的顺序
+    会被导演基于旧稿的重排悄悄覆盖，且没有任何冲突记录。"""
+    base = _board("甲", "乙", "丙")
+    current = _board("甲", "乙", "丙")
+    current.outline = [current.outline[2], current.outline[0], current.outline[1]]
+    merge = sb.merge_storyboard_patch(
+        current, base, StoryboardPatch(reorder=["b2", "b1", "b3"]), scene_id="s", seen_revision=REV
+    )
+    assert [b.beat_id for b in merge.storyboard.outline] == ["b3", "b1", "b2"]
+    assert "已被他人调整" in merge.skipped[0]
+
+
+def test_reorder_matching_current_order_is_idempotent():
+    """别人已经排成了导演想要的顺序：不算冲突，也不算一次改动。"""
+    base = _board("甲", "乙", "丙")
+    current = _board("甲", "乙", "丙")
+    current.outline = [current.outline[1], current.outline[0], current.outline[2]]
+    merge = sb.merge_storyboard_patch(
+        current, base, StoryboardPatch(reorder=["b2", "b1", "b3"]), scene_id="s", seen_revision=REV
+    )
+    assert [b.beat_id for b in merge.storyboard.outline] == ["b2", "b1", "b3"]
+    assert not merge.skipped and not merge.applied
+
+
 def test_parse_patch_is_strict_about_booleans_and_shapes():
     assert parse_storyboard_patch({"goal_realigned": "false"}).goal_realigned is False
     assert parse_storyboard_patch({"goal_realigned": "true"}).goal_realigned is True
@@ -612,7 +638,7 @@ async def test_goal_change_marks_roadmap_stale_without_deleting_it(env):
     plan_prompt = [p for p in env[2].of("director") if PLAN_MARK in p][-1]
     assert "基于旧版主线目标" in plan_prompt
     assert [b.title for b in (await repository.get_storyboard(pid, main)).outline] == ["查账"]
-    _, stale = await orchestrator.get_storyboard_view(pid, main)
+    stale = (await orchestrator.get_storyboard_view(pid, main)).goal_stale
     assert stale is True
 
 
@@ -630,6 +656,26 @@ def test_goal_revision_moves_only_on_explicit_confirmation(patch):
         base, base, StoryboardPatch(goal_realigned=True), scene_id="s", seen_revision=REV
     )
     assert confirmed.storyboard.goal_revision == REV
+
+
+@pytest.mark.parametrize("case", ["op_skipped", "roadmap_changed", "planned_evicted"])
+def test_goal_confirmation_needs_the_roadmap_the_director_confirmed(case):
+    """确认是对导演读到的那一版路线图的判断。三种情况各自单独成立，任一都挡住确认：
+    本次有节拍操作被跳过 / 路线图在导演读取后被他人改过 / 计划中节拍被预算淘汰。"""
+    base = _board("查账", "对质")
+    base.goal_revision = goal_revision("旧目标")
+    current = deepcopy(base)
+    patch = StoryboardPatch(goal_realigned=True)
+    if case == "op_skipped":
+        patch.complete = ["b99"]
+    elif case == "roadmap_changed":
+        current.outline[1].title = "用户改过"
+    else:
+        patch.add = [StoryBeat(title=f"节拍{i}", description="说" * 60) for i in range(30)]
+    merge = sb.merge_storyboard_patch(current, base, patch, scene_id="s", seen_revision=REV)
+    assert merge.storyboard.goal_revision == goal_revision("旧目标")
+    assert any(s.startswith("确认已按当前主线目标重排") for s in merge.skipped)
+    assert sb.is_goal_stale(merge.storyboard, GOAL)
 
 
 async def test_parse_failure_does_not_confirm_goal(env):
@@ -655,7 +701,7 @@ async def test_goal_changed_during_evaluation_writes_back_the_revision_seen(env)
     await _run(pid, main)
     live = await repository.get_storyboard(pid, main)
     assert live.goal_revision == REV  # 评估 prompt 看到的是 GOAL
-    _, stale = await orchestrator.get_storyboard_view(pid, main)
+    stale = (await orchestrator.get_storyboard_view(pid, main)).goal_stale
     assert stale is True  # 下一场照样提示过期
 
 
@@ -698,7 +744,7 @@ async def test_put_storyboard_versioning_validation_and_replay(env, client):
     assert [c["source"] for c in data["changelog"]] == ["user"]
     assert data["goal_revision"] == REV  # 首次产生节拍，盖上当前目标版本
 
-    # 响应丢失后原样重发：修订号已过期，但内容相同 → 视为重放
+    # 内容与当前完全相同：修订号已过期也不报冲突（无操作，不记 changelog）
     replay = await client.put(_url(pid, main), json={
         **body, "outline": [{"beat_id": "b1", "title": "查账"},
                             {"beat_id": "b2", "title": "对质", "description": "当面"}],
@@ -731,6 +777,32 @@ async def test_put_storyboard_versioning_validation_and_replay(env, client):
     assert board.revision == 1 and len(board.changelog) == 1
 
 
+async def test_put_retry_with_identical_body_is_replayed_by_request_id(env, client):
+    """契约5：响应丢失时客户端拿不到后端分配的新节拍 ID，只能**原样**重发。
+    不认幂等键的话，这份请求与当前内容永远判不等（当前稿里新节拍已有 ID），只会 409。"""
+    pid, main, _ = env
+    body = {"outline": [{"title": "查账"}, {"title": "对质"}], "memo": "",
+            "revision": 0, "request_id": "req-1"}
+    first = await client.put(_url(pid, main), json=body)
+    assert first.status_code == 200
+
+    # 重试到达之前，分镜稿又被另一次编辑推进了（另一条路径：不同的幂等键）
+    now = await repository.get_storyboard(pid, main)
+    await orchestrator.update_storyboard(
+        pid, main, now.outline, "后来的备忘", base_revision=now.revision, request_id="req-2"
+    )
+
+    retry = await client.put(_url(pid, main), json=body)
+    assert retry.status_code == 200
+    data = retry.json()["data"]
+    assert [b["beat_id"] for b in data["outline"]] == ["b1", "b2"]  # 没有再建一遍
+    assert data["memo"] == "后来的备忘"  # 也没有覆盖后来的编辑
+    assert data["revision"] == 2 and len(data["changelog"]) == 2
+
+    reused = await client.put(_url(pid, main), json={**body, "memo": "换了内容"})
+    assert reused.status_code == 422
+
+
 async def test_put_goal_confirmation_is_explicit(env, client):
     pid, main, _ = env
     await _seed_board(pid, main, "查账", rev=goal_revision("旧目标"))
@@ -745,10 +817,38 @@ async def test_put_goal_confirmation_is_explicit(env, client):
 
     confirmed = await client.put(_url(pid, main), json={
         "outline": outline, "memo": "只改备忘", "revision": 2, "confirm_goal": True,
+        "goal_revision_seen": REV,
     })
     assert confirmed.status_code == 200
     data = confirmed.json()["data"]
     assert data["goal_revision"] == REV and data["goal_stale"] is False
+
+
+async def test_put_goal_confirmation_writes_back_the_revision_user_saw(env, client):
+    """读取时目标是 A → 另一个页面把目标改成 B → 原页面确认。确认的是 A，
+    写回 B 就把旧稿标成了适配一个用户根本没看过的目标。"""
+    pid, main, _ = env
+    await _seed_board(pid, main, "查账", rev=goal_revision("旧目标"))
+    view = (await client.get(_url(pid, main))).json()["data"]
+    assert view["narrative_goal"] == GOAL and view["current_goal_revision"] == REV
+    assert view["goal_stale"] is True
+
+    project = await repository.get_project(pid)
+    project.narrative_goal = "另一个页面改的目标"
+    await repository.save_project(project)
+
+    body = {"outline": [{"beat_id": "b1", "title": "查账"}], "memo": "", "revision": 1,
+            "confirm_goal": True, "goal_revision_seen": view["current_goal_revision"]}
+    resp = await client.put(_url(pid, main), json=body)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["goal_revision"] == REV
+    assert data["goal_stale"] is True and data["narrative_goal"] == "另一个页面改的目标"
+
+    missing = await client.put(_url(pid, main), json={
+        **body, "revision": 2, "goal_revision_seen": "",
+    })
+    assert missing.status_code == 422
 
 
 def test_user_edit_rejects_budget_overflow_instead_of_truncating():
