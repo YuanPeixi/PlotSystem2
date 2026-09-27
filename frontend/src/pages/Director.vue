@@ -11,6 +11,7 @@ import SceneTree from '@/components/SceneTree.vue'
 import DialogLog from '@/components/DialogLog.vue'
 import DirectorPanel from '@/components/DirectorPanel.vue'
 import CharacterInspector from '@/components/CharacterInspector.vue'
+import StoryboardPanel from '@/components/StoryboardPanel.vue'
 
 const props = defineProps<{ projectId: string }>()
 
@@ -30,6 +31,8 @@ const scenes = ref<Scene[]>([])
 const forkingId = ref('')
 const forkName = ref('')
 const forkConditions = ref('')
+// 给导演的分叉说明：进入新分支分镜稿的"分叉说明"，首场起就在导演的规划/评估 prompt 里
+const forkNotes = ref('')
 // 首次加载期间不让 branchId 的 watcher 推翻刚从 URL 恢复出来的场景
 let bootstrapped = false
 
@@ -175,11 +178,12 @@ async function confirmFork() {
       forkingId.value,
       forkName.value.trim(),
       parseConditions(forkConditions.value),
-      '',
+      forkNotes.value.trim(),
     )
     forkingId.value = ''
     forkName.value = ''
     forkConditions.value = ''
+    forkNotes.value = ''
     // 切到新分支并打开首场。只 attach 不 start：分叉是探索性操作，不该隐式烧掉一整场 LLM。
     branchId.value = branch.branch_id
     await refreshBranchData()
@@ -335,6 +339,12 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
           @decision="onDecision"
           @generate-output="router.push(`/output/${props.projectId}?branch=${sceneStore.currentScene?.branch_id || branchId}`)"
         />
+        <!-- 本场评估到达时刷新：导演的路线图调整随评估一起落盘 -->
+        <StoryboardPanel
+          :project-id="props.projectId"
+          :branch-id="branchId"
+          :refresh-key="sceneStore.evaluation"
+        />
         <div class="card">
           <h3>快照</h3>
           <ul class="snap-list">
@@ -353,6 +363,11 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
                   v-model="forkConditions"
                   rows="3"
                   placeholder="IF 条件，每行一条 key=value，如：公主知情=是"
+                ></textarea>
+                <textarea
+                  v-model="forkNotes"
+                  rows="2"
+                  placeholder="给导演的说明（可留空），如：这条线想试试公主提前摊牌的走向"
                 ></textarea>
                 <span class="dim" style="font-size: 12px">
                   分叉不会改动当前分支的任何数据；新分支会承接该快照的角色状态与长期记忆，
