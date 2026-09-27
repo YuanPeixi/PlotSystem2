@@ -143,6 +143,10 @@ class UpdateStoryboardRequest(BaseModel):
     revision: int
     # 显式确认"已按当前主线目标重排"，不带则不动 goal_revision
     confirm_goal: bool = False
+    # 读取时响应里的 current_goal_revision；confirm_goal 时必填，后端写回的就是它
+    goal_revision_seen: str = Field("", max_length=64)
+    # 幂等键（契约5）：同一份内容的重试沿用同一个，换了内容就换新的
+    request_id: str = Field("", max_length=64)
 
 
 class OutputRequest(BaseModel):

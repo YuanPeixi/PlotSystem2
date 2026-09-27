@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from copy import deepcopy
 
@@ -57,6 +59,8 @@ STORYBOARD_BUDGET_TOKENS = 2000
 MAX_CHANGELOG = 50
 #: changelog 单条摘要上限
 _CHANGE_SUMMARY_CHARS = 200
+#: 用户编辑幂等键的长度上限（与 API 校验一致）
+_REQUEST_ID_CHARS = 64
 
 _BEAT_ID_RE = re.compile(r"^b(\d+)$")
 _STATUS_LABELS = {
@@ -260,6 +264,7 @@ def clamp_storyboard(board: Storyboard) -> list[str]:
 
     for change in board.changelog:
         change.summary = single_line(change.summary)[:_CHANGE_SUMMARY_CHARS]
+        change.request_id = single_line(change.request_id)[:_REQUEST_ID_CHARS]
     board.changelog = board.changelog[-MAX_CHANGELOG:]
     board.revision = max(0, board.revision)
 
@@ -305,6 +310,12 @@ def is_patch_empty(patch: StoryboardPatch) -> bool:
     )
 
 
+def _outline_key(beats: list[StoryBeat]) -> list[tuple[str, str, str, str]]:
+    """路线图的可比形状：身份、文本、状态与顺序。"""
+    return [(single_line(b.beat_id), single_line(b.title), single_line(b.description), b.status)
+            for b in beats]
+
+
 def merge_storyboard_patch(
     current: Storyboard,
     base: Storyboard,
@@ -321,9 +332,12 @@ def merge_storyboard_patch(
     - 节拍只按 `beat_id` 定位。导演没见过的 ID（`base` 里没有）一律当未知处理 ——
       哪怕当前稿里恰好有同名 ID（别人后加的），它也不该被一个没见过它的导演改动；
     - `memo` 改写只在当前备忘仍等于导演读到的那份时生效；
-    - `reorder` 必须是导演读到的全部计划中节拍的完整排列，且当前稿的计划中节拍集合
-      没被别人改过；先于其余操作应用（它描述的是导演读到的那一版的顺序）；
-    - `goal_realigned` 写回 `seen_revision` 而不是最新目标：LLM 调用期间用户又改了
+    - `reorder` 必须是导演读到的全部计划中节拍的完整排列，且当前稿计划中节拍的**顺序**
+      仍等于导演读到的（已经是导演要的顺序则按幂等处理）；先于其余操作应用（它描述的
+      是导演读到的那一版的顺序）；
+    - `goal_realigned` 是对导演读到的那一版路线图的判断：路线图之后被别人改过、本次有
+      节拍操作被跳过、或计划中节拍被预算淘汰，确认都不成立 —— 否则旧路线图会被标成
+      已适配新目标。成立时写回 `seen_revision` 而不是最新目标：LLM 调用期间用户又改了
       目标的话，下一场仍应提示过期。
 
     用户↔导演、导演↔导演（同分支两场并发）走的是同一套规则。
@@ -333,6 +347,7 @@ def merge_storyboard_patch(
     skipped: list[str] = []
     base_beats = {b.beat_id: b for b in base.outline}
     was_empty = not merged.outline
+    roadmap_unchanged = _outline_key(current.outline) == _outline_key(base.outline)
 
     def target(bid: str, op: str) -> tuple[StoryBeat | None, StoryBeat | None]:
         bid = single_line(bid)
@@ -353,9 +368,12 @@ def merge_storyboard_patch(
         ]
         if len(set(order)) != len(order) or sorted(order) != sorted(base_planned):
             skipped.append("重排：不是计划中节拍的完整排列（缺、多或重复）")
-        elif sorted(current_planned) != sorted(base_planned):
+        elif order == current_planned:
+            pass  # 已经是导演要的顺序（别人排好了，或导演没改顺序）：幂等
+        elif current_planned != base_planned:
+            # 比的是顺序不只是集合：用户刚调好的顺序不能被基于旧稿的重排悄悄覆盖
             skipped.append("重排：路线图的计划中节拍已被他人调整")
-        elif order != current_planned:
+        else:
             by_id = {b.beat_id: b for b in merged.outline}
             queue = iter(order)
             merged.outline = [
@@ -415,6 +433,7 @@ def merge_storyboard_patch(
         merged.next_beat_seq += 1
         merged.outline.append(StoryBeat(beat_id=bid, title=title, description=desc))
         applied.append(f"新增 {bid}")
+    beat_ops_skipped = bool(skipped)
 
     # 5. 备忘
     if patch.memo is not None:
@@ -428,15 +447,28 @@ def merge_storyboard_patch(
             merged.memo = memo
             applied.append("改写备忘")
 
-    # 6. 目标版本：只有显式确认能让它前进；首次产生节拍时盖上当次看到的版本
-    if patch.goal_realigned:
+    # 6. 预算：先淘汰，目标确认要看淘汰之后的路线图
+    planned_before = {b.beat_id for b in merged.outline if b.status == BeatStatus.PLANNED.value}
+    evicted = fit_storyboard(merged)
+    planned_evicted = planned_before - {b.beat_id for b in merged.outline}
+
+    # 7. 目标版本：只有成立的显式确认能让它前进；首次产生节拍时盖上当次看到的版本
+    blockers = [
+        reason for reason, hit in (
+            ("路线图在导演读取后已被他人修改", not roadmap_unchanged),
+            ("本次有节拍操作被跳过", beat_ops_skipped),
+            ("计划中节拍被预算淘汰", bool(planned_evicted)),
+        ) if hit
+    ]
+    if patch.goal_realigned and blockers:
+        skipped.append("确认已按当前主线目标重排：" + "、".join(blockers))
+    if patch.goal_realigned and not blockers:
         if merged.goal_revision != seen_revision:
             merged.goal_revision = seen_revision
             applied.append("确认已按当前主线目标重排")
     elif was_empty and merged.outline:
         merged.goal_revision = seen_revision
 
-    evicted = fit_storyboard(merged)
     if applied or evicted:
         merged.revision += 1
         summary = "；".join(applied) or "（仅预算淘汰）"
@@ -456,11 +488,18 @@ def merge_storyboard_patch(
 
 
 def _content_equal(board: Storyboard, outline: list[StoryBeat], memo: str) -> bool:
-    def key(beats: list[StoryBeat]) -> list[tuple[str, str, str, str]]:
-        return [(b.beat_id, single_line(b.title), single_line(b.description), b.status)
-                for b in beats]
+    return _outline_key(board.outline) == _outline_key(outline) and board.memo == normalize_memo(memo)
 
-    return key(board.outline) == key(outline) and board.memo == normalize_memo(memo)
+
+def _request_digest(
+    outline: list[StoryBeat], memo: str, base_revision: int, confirm_goal: bool,
+    seen_goal_revision: str,
+) -> str:
+    payload = [_outline_key(outline), normalize_memo(memo), base_revision, confirm_goal,
+               seen_goal_revision]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def apply_user_edit(
@@ -471,17 +510,40 @@ def apply_user_edit(
     base_revision: int,
     confirm_goal: bool,
     current_goal_revision: str,
+    seen_goal_revision: str = "",
+    request_id: str = "",
 ) -> tuple[Storyboard, bool]:
     """用户整份替换路线图与备忘（§3.6）。返回 (结果, 是否真的写了)。
 
     调用方须在分支锁内重读 `current`。判定顺序有讲究：
 
-    1. **内容与当前完全相同 → 视为重放**，不写、不记 changelog。响应丢失后的重试带着
-       过期的修订号，不先认出它就会误报 409（请求其实已经成功了）；
-    2. 修订号不匹配 → 409（`ConflictError`，由调用方抛）；
-    3. 形状与预算不合法 → 422，**不静默截断**：用户写的东西被悄悄改掉比报错更糟。
+    1. **幂等键命中 → 重放**（契约5），返回当前稿、不写。响应丢失时客户端拿不到新节拍
+       分配到的 ID，只能原样重发，这份请求与当前内容永远判不等，不认键就只会误报 409。
+       同一个键配了不同内容 → 422；
+    2. 内容与当前完全相同（且不需要确认目标）→ 无操作，同样不先报 409；
+    3. 修订号不匹配 → 409（`ConflictError`）；
+    4. 形状与预算不合法 → 422，**不静默截断**：用户写的东西被悄悄改掉比报错更糟。
+
+    确认"已按当前目标重排"写回的是 `seen_goal_revision`（用户读取时看到的目标版本），
+    不是写入这一刻的最新版本：期间目标被另一个页面改掉的话，确认的仍是旧的那个，
+    写回最新版本就把旧稿标成了适配一个用户没看过的目标。
     """
-    wants_goal = confirm_goal and current.goal_revision != current_goal_revision
+    seen_goal_revision = single_line(seen_goal_revision)
+    if confirm_goal and not seen_goal_revision:
+        raise InvalidRequestError("确认已按当前主线目标重排时必须带上读取时看到的目标版本")
+    digest = _request_digest(outline, memo, base_revision, confirm_goal, seen_goal_revision)
+    if request_id:
+        earlier = next(
+            (c for c in reversed(current.changelog)
+             if c.source == StoryboardSource.USER.value and c.request_id == request_id),
+            None,
+        )
+        if earlier is not None:
+            if earlier.request_digest != digest:
+                raise InvalidRequestError(f"幂等键 {request_id!r} 已用于另一份内容，请换一个")
+            return current, False
+
+    wants_goal = confirm_goal and current.goal_revision != seen_goal_revision
     if _content_equal(current, outline, memo) and not wants_goal:
         return current, False
     if base_revision != current.revision:
@@ -540,12 +602,14 @@ def apply_user_edit(
     if new_memo != current.memo:
         changes.append("备忘已改")
     if wants_goal:
-        board.goal_revision = current_goal_revision
+        board.goal_revision = seen_goal_revision
         changes.append("确认已按当前主线目标重排")
     elif was_empty and beats:
-        board.goal_revision = current_goal_revision
+        board.goal_revision = seen_goal_revision or current_goal_revision
     board.revision += 1
     _log(board, StoryboardSource.USER, "", "用户编辑：" + "；".join(changes))
+    board.changelog[-1].request_id = request_id
+    board.changelog[-1].request_digest = digest if request_id else ""
     return board, True
 
 

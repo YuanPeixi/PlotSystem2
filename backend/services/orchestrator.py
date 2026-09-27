@@ -41,6 +41,7 @@ from backend.models import (
     StoryBeat,
     Storyboard,
     StoryboardPatch,
+    StoryboardView,
     StoryRecord,
     WorldState,
     goal_revision,
@@ -832,11 +833,20 @@ async def _apply_storyboard_patch(
         })
 
 
-async def get_storyboard_view(project_id: str, branch_id: str) -> tuple[Storyboard, bool]:
-    """读取分支分镜稿，并给出"路线图是否基于旧版主线目标"（供前端显示确认入口）。"""
+def _storyboard_view(board: Storyboard, narrative_goal: str) -> StoryboardView:
+    return StoryboardView(
+        storyboard=board,
+        narrative_goal=narrative_goal,
+        goal_revision=goal_revision(narrative_goal),
+        goal_stale=is_goal_stale(board, narrative_goal),
+    )
+
+
+async def get_storyboard_view(project_id: str, branch_id: str) -> StoryboardView:
+    """读取分支分镜稿，附当前主线目标原文与版本、以及"路线图是否基于旧版目标"。"""
     project = await repository.get_project(project_id)
     board = await repository.get_storyboard(project_id, branch_id)
-    return board, is_goal_stale(board, project.narrative_goal)
+    return _storyboard_view(board, project.narrative_goal)
 
 
 async def update_storyboard(
@@ -847,11 +857,14 @@ async def update_storyboard(
     *,
     base_revision: int,
     confirm_goal: bool = False,
-) -> tuple[Storyboard, bool]:
-    """用户整份替换路线图与备忘（工单18 §3.6）。返回 (结果, 路线图是否基于旧版目标)。
+    goal_revision_seen: str = "",
+    request_id: str = "",
+) -> StoryboardView:
+    """用户整份替换路线图与备忘（工单18 §3.6）。
 
     版本比对与写入在同一把分支锁内：锁外比对、锁内写，比对之后导演一合并，
-    用户的写入就又把导演的改动整份覆盖了。
+    用户的写入就又把导演的改动整份覆盖了。幂等键的查找也在锁内，否则同一请求的
+    两次并发重试会各自判定"没见过"、写两遍。
     """
     project = await repository.get_project(project_id)
     branches = await SnapshotManager(project_id).list_branches()
@@ -867,10 +880,12 @@ async def update_storyboard(
             base_revision=base_revision,
             confirm_goal=confirm_goal,
             current_goal_revision=goal_revision(project.narrative_goal),
+            seen_goal_revision=goal_revision_seen,
+            request_id=request_id,
         )
         if changed:
             await repository.save_storyboard(board)
-    return board, is_goal_stale(board, project.narrative_goal)
+    return _storyboard_view(board, project.narrative_goal)
 
 
 async def _persist_character_states(agents: list[CharacterAgent]) -> None:

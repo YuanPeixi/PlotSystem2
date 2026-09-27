@@ -190,6 +190,9 @@ export interface StoryboardChange {
   scene_id: string
   summary: string
   at: string
+  /** 用户编辑的幂等键（导演与分叉条目为空） */
+  request_id?: string
+  request_digest?: string
 }
 
 export interface StoryboardPatch {
@@ -217,6 +220,9 @@ export interface Storyboard {
   updated_at: string
   /** 路线图基于旧版主线目标（后端按当前目标算出） */
   goal_stale: boolean
+  /** 这次响应时的主线目标原文与版本：确认"已按当前目标重排"时显示前者、带回后者 */
+  narrative_goal: string
+  current_goal_revision: string
 }
 
 /** PUT 分镜稿的请求体。已有节拍带回 beat_id，新节拍不带。 */
@@ -225,6 +231,10 @@ export interface StoryboardUpdate {
   memo: string
   revision: number
   confirm_goal: boolean
+  /** confirm_goal 时必填：用户看到的目标版本（读取响应里的 current_goal_revision） */
+  goal_revision_seen: string
+  /** 幂等键：同一份内容的重试沿用同一个，内容改过就换新的 */
+  request_id: string
 }
 
 /** 分支级世界变量（GET /projects/{pid}/branches/{bid}/world-state）。 */
