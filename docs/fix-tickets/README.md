@@ -61,7 +61,7 @@
 | [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | ✅ PR #16（合入 main：`3f8d4d7`，阶段 A+B） | [两轮 review 教训](./NOTES.md#t08) |
 | [28](./28-narrative-goal-and-ending.md) | 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | ✅ PR #18（合入 main：`82f4dd4`到`8e37a87`） | [三层目标模型 + 两条禁令](./NOTES.md#director-goal) |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 ✅ | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整展示） | — |
-| [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | ✅ PR #20（合入 main：`cc8a021`到`d7ccde3`） | [三处偏离、红线与 review 复盘](./NOTES.md#t07) |
+| [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | ✅ PR #20（合入 main：`cc8a021`到`53d36c5`） | [三处偏离、红线与 review 复盘](./NOTES.md#t07) |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16 ✅（硬前置） | 待处理 | [硬前置已解除](./NOTES.md#t16) |
 
 ---
@@ -70,7 +70,7 @@
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 | 备注 |
 |---|---|---|---|---|---|
-| [18](./18-storyboard.md) | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 ✅ | ✅ PR #21（合入 main：`31ce25f`到`2eaa4b3`） | [选择与落地结论](./NOTES.md#t18) |
+| [18](./18-storyboard.md) | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 ✅ | ✅ PR #21（合入 main：`b7dabe6`到`07688f2`） | [选择与落地结论](./NOTES.md#t18) |
 | [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 ✅（可选） | 待处理 | — |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 ✅ | 待处理（前置已齐） | [前置说明](./NOTES.md#t09) |
 

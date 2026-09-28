@@ -1239,7 +1239,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      每个在场角色的 system prompt 里凭空多出一条变量。修在 `normalize_world_key`，
      写入侧与读取侧都经过它。另：`normalize_world_delta` 超 `MAX_WORLD_VARIABLES`
      时由静默截断改为 warning。同步更新 4.2 陷阱 19。
-     工单07 以 PR #20 合入 main（`cc8a021`→`d7ccde3`），review 复盘见 NOTES.md#t07。
+     工单07 以 PR #20 合入 main（`cc8a021`→`53d36c5`），review 复盘见 NOTES.md#t07。
 -->
 <!-- 2026-08-27: 工单08（分叉语义收敛）落地。长期记忆 collection 补分支维度
      （`char_{cid}__{branch_id}`，留空仍是项目级共享，无需迁移）；新增
