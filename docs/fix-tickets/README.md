@@ -14,8 +14,11 @@
 `✅ PR #N（合入 main：起始hash到结束hash）`。完整口径与 hash 填写规则见
 [CONVENTIONS.md](./CONVENTIONS.md)。**索引标注可能滞后于实际合并状态，以 git 为准。**
 
-**当前推进中**：18（导演分镜稿），已在分支 `feat/director-storyboard` 完成，待开 PR。上一单（07 WorldState 分支级世界变量）
-已随 PR #20 合入 main，工单 20 表内依赖（07、11）随之齐备，但仍需先建 24（见阶段 D 下方「其他待建单」）。
+**最近完成**：28 / 18 的收尾补丁——主线目标为空时的口径（不单独建单，见
+[NOTES#goal-missing](./NOTES.md#goal-missing)），✅ 快速修复、无 PR，以合并提交
+`合入 fix/empty-narrative-goal` 直接进 main。
+18 导演分镜稿已随 PR #21 合入 main，12（AutoPilot）与 22（MCTS 存档）
+的依赖随之齐备；工单 20 表内依赖（07、11）已齐，但仍需先建 24（见阶段 D 下方「其他待建单」）。
 
 ---
 
@@ -59,7 +62,7 @@
 | [08](./08-fork-branch-conditions.md) | 分叉（fork）语义收敛 | P2 | 01 ✅、13 ✅、14 ✅、17 ✅ | ✅ PR #16（合入 main：`3f8d4d7`，阶段 A+B） | [两轮 review 教训](./NOTES.md#t08) |
 | [28](./28-narrative-goal-and-ending.md) | 项目叙事目标持久化 + 结局判定 | **P1** | 04 ✅ | ✅ PR #18（合入 main：`82f4dd4`到`8e37a87`） | [三层目标模型 + 两条禁令](./NOTES.md#director-goal) |
 | [05](./05-character-inspector.md) | 角色 Inspect 前端入口 | P1 | 17 ✅、04 ✅ | 待处理（17 已带最小只读面板，本单只剩编辑/微调与更完整展示） | — |
-| [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | ✅ PR #20（合入 main：`cc8a021`到`d7ccde3`） | [三处偏离、红线与 review 复盘](./NOTES.md#t07) |
+| [07](./07-world-state.md) | WorldState 动态世界变量（跨场次信息传递通道） | P2 | 01 ✅ | ✅ PR #20（合入 main：`cc8a021`到`53d36c5`） | [三处偏离、红线与 review 复盘](./NOTES.md#t07) |
 | [06](./06-dynamic-graph-writeback.md) | 场景结束后动态回写知识图谱 | P2 | 16 ✅（硬前置） | 待处理 | [硬前置已解除](./NOTES.md#t16) |
 
 ---
@@ -68,8 +71,8 @@
 
 | 编号 | 标题 | 优先级 | 依赖 | 状态 | 备注 |
 |---|---|---|---|---|---|
-| [18](./18-storyboard.md) | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 ✅ | ⏳ 等待 PR（feat/director-storyboard） | [选择与落地结论](./NOTES.md#t18) |
-| [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 可选 | 待处理 | — |
+| [18](./18-storyboard.md) | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 ✅ | ✅ PR #21（合入 main：`b7dabe6`到`07688f2`） | [选择与落地结论](./NOTES.md#t18) |
+| [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 ✅（可选） | 待处理 | — |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 ✅ | 待处理（前置已齐） | [前置说明](./NOTES.md#t09) |
 
 ---
@@ -80,7 +83,7 @@
 |---|---|---|---|---|---|
 | 20 | 环境智能体（裁决角色动作与环境规则） | P3 | 07 ✅、11 ✅ | 待建单 | [为何排最后](./NOTES.md#t20) · [契约 3 已裁定 + 公开性红线](./NOTES.md#t07) |
 | 21 | 私有内心 OS（角色输出前的自适应思考，**不入档**） | P3 | 20 | 待建单 | [说明](./NOTES.md#t21) |
-| 22 | 评估 + 分镜稿存档 → 支撑 MCTS / 多结局搜索 | P3 | 18 | 待建单 | [说明](./NOTES.md#t22) |
+| 22 | 评估 + 分镜稿存档 → 支撑 MCTS / 多结局搜索 | P3 | 18 ✅ | 待建单 | [说明](./NOTES.md#t22) |
 
 **其他待建单**（尚未进表）：24 结构化动作通道（20 与 06 的共同前置，只解析不裁决）、
 25 场景级 token/调用计数（20 的软前置）。
@@ -100,7 +103,7 @@ graph LR
   T17 --> T04[04 导演上下文 ✅]
   T27[27-A 压缩管线 ✅] --> T04
   T04 --> T28[28 叙事目标与结局判定 ✅]
-  T28 --> T18[18 导演场记板]
+  T28 --> T18[18 导演场记板 ✅]
   T17 --> T05[05 角色 Inspect 前端]
   T17 --> T18
   T18 --> T12[12 AutoPilot]

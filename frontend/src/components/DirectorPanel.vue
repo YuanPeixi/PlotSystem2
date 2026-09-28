@@ -39,22 +39,25 @@ const locked = computed(() => !!props.pending || !!decided.value)
 
 // 后端在评估 JSON 解析失败时把四项分数置为 -1（工单04），不能当成正常低分展示
 const evalFailed = computed(() => (props.evaluation?.narrative_goal_score ?? 0) < 0)
+// 评估时没有主线目标：对照目标的两项分数只是噪声，不判红、不画推进度
+const goalMissing = computed(() => props.evaluation?.goal_missing === true)
 
 const scores = computed(() => {
   const e = props.evaluation
   if (!e || evalFailed.value) return []
+  const free = goalMissing.value
   return [
-    { label: '目标达成', value: e.narrative_goal_score, danger: e.narrative_goal_score < 4 },
-    { label: '戏剧张力', value: e.dramatic_tension_score, danger: e.dramatic_tension_score < 3 },
-    { label: '主线偏离', value: e.plot_deviation_score, danger: e.plot_deviation_score > 7 },
-    { label: '角色一致', value: e.character_consistency_score, danger: e.character_consistency_score < 5 },
+    { label: '目标达成', value: e.narrative_goal_score, unanchored: free, danger: !free && e.narrative_goal_score < 4 },
+    { label: '戏剧张力', value: e.dramatic_tension_score, unanchored: false, danger: e.dramatic_tension_score < 3 },
+    { label: '主线偏离', value: e.plot_deviation_score, unanchored: free, danger: !free && e.plot_deviation_score > 7 },
+    { label: '角色一致', value: e.character_consistency_score, unanchored: false, danger: e.character_consistency_score < 5 },
   ]
 })
 
 // 负值 = 本场未度量到推进度，不能当成“进度 0”画成空进度条
 const progress = computed(() => {
   const v = props.evaluation?.story_progress ?? -1
-  return v >= 0 ? v : null
+  return v >= 0 && !goalMissing.value ? v : null
 })
 const ending = computed(() => props.evaluation?.is_ending_reached === true)
 
@@ -134,11 +137,14 @@ function confirmRollback() {
     <div v-if="!evaluation" class="dim" style="margin: 16px 0">场景完成后将自动生成评估。</div>
     <template v-else>
       <p v-if="evalFailed" class="eval-failed">⚠ 本场评估未能生成（模型返回内容无法解析），评分不可用，请自行判断。</p>
+      <p v-else-if="goalMissing" class="no-anchor">
+        ⚠ 本场评估时项目未设定主线目标：「目标达成」「主线偏离」没有参照，仅供参考；主线推进度不度量。可在工作台补填主线目标。
+      </p>
       <p class="synopsis">{{ evaluation.synopsis }}</p>
       <div class="scores">
-        <div v-for="s in scores" :key="s.label" class="score-bar">
+        <div v-for="s in scores" :key="s.label" class="score-bar" :class="{ unanchored: s.unanchored }">
           <div class="score-label">
-            <span>{{ s.label }}</span>
+            <span>{{ s.label }}<span v-if="s.unanchored" class="dim">（无锚点）</span></span>
             <span :class="{ danger: s.danger }">{{ s.value.toFixed(1) }}</span>
           </div>
           <div class="bar">
@@ -152,12 +158,13 @@ function confirmRollback() {
         <div class="score-label">
           <span>主线推进度</span>
           <span v-if="progress !== null">{{ Math.round(progress * 100) }}%</span>
+          <span v-else-if="goalMissing" class="dim">未设定主线目标</span>
           <span v-else class="dim">未评估</span>
         </div>
         <div v-if="progress !== null" class="bar">
           <div class="fill" :style="{ width: progress * 100 + '%' }"></div>
         </div>
-        <p v-if="evaluation.progress_stalled" class="dim stalled">
+        <p v-if="evaluation.progress_stalled && !goalMissing" class="dim stalled">
           本场未推进主线（导演自评 {{ Math.round(evaluation.story_progress_raw * 100) }}%，不低于历史值才算推进）
         </p>
       </div>
@@ -240,6 +247,15 @@ function confirmRollback() {
   font-size: 12px;
   color: #e94560;
   margin: 10px 0 0;
+}
+.no-anchor {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 10px 0 0;
+}
+.score-bar.unanchored {
+  opacity: 0.55;
 }
 .scores {
   display: flex;

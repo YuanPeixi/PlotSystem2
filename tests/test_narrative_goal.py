@@ -102,6 +102,43 @@ async def test_evaluation_round_trip_keeps_new_fields():
     assert loaded.goal_revision == "abc123"
 
 
+async def test_goal_missing_round_trips():
+    await repository.save_evaluation(
+        SceneEvaluation(scene_id="scene-goal-missing", goal_missing=True)
+    )
+    loaded = await repository.get_evaluation("scene-goal-missing")
+    assert loaded is not None
+    assert loaded.goal_missing is True
+
+
+async def _insert_raw_evaluation(scene_id: str, data: dict) -> None:
+    async with db.connect() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO evaluations (scene_id, created_at, data_json) "
+            "VALUES (?, ?, ?)",
+            (scene_id, "", json.dumps({"scene_id": scene_id, **data})),
+        )
+        await conn.commit()
+
+
+async def test_goal_missing_backfilled_from_empty_goal_revision():
+    """字段上线前、在空目标下写入的评估：它的 goal_revision 就是空目标的版本，据此回填。
+
+    不回填的话，恰恰是"没填目标就跑起来"的那些老项目看不到无锚点提示。
+    """
+    await _insert_raw_evaluation("scene-empty-rev", {"goal_revision": goal_revision("")})
+    await _insert_raw_evaluation("scene-real-rev", {"goal_revision": goal_revision("扳倒丞相")})
+    await _insert_raw_evaluation("scene-no-rev", {})
+
+    empty = await repository.get_evaluation("scene-empty-rev")
+    real = await repository.get_evaluation("scene-real-rev")
+    legacy = await repository.get_evaluation("scene-no-rev")
+    assert empty is not None and empty.goal_missing is True
+    assert real is not None and real.goal_missing is False
+    # 工单28 之前的记录不知道当时有没有目标，不猜
+    assert legacy is not None and legacy.goal_missing is False
+
+
 class _CapturingDirector:
     """记录导演收到的规划参数，避免真实 LLM 调用。"""
 

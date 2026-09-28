@@ -517,6 +517,9 @@ class SceneEvaluation:
     progress_stalled: bool = False  # 本场自评未超过历史最高值
     # 本场推进度是对照哪个版本的主线目标给出的（空 = 旧记录，不参与钳制）
     goal_revision: str = ""
+    # 评估时项目没有主线目标：目标达成 / 主线偏离没有参照，推进度不度量，
+    # 目标达成分也不进决策阈值。老记录按 goal_revision 是否为空目标的版本回填
+    goal_missing: bool = False
     is_ending_reached: bool = False
     ending_reason: str = ""
     unresolved_threads: list[str] = field(default_factory=list)

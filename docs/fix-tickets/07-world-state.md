@@ -1,6 +1,6 @@
 # 工单07：新增动态世界变量（WorldState）模型与流程
 
-> **已完成**：PR #20，合入 main `cc8a021`→`d7ccde3`。
+> **已完成**：PR #20，合入 main `cc8a021`→`53d36c5`。
 > 本文写于工单 08 / 14 / 26 之前，**下面 §3.3 与 §3.6 的实现建议已与现行架构冲突**，
 > 实际落地走了三处偏离（不改 `restore_snapshot()`、合并不写回 `Scene.initial_conditions`、
 > 后置快照需补写），理由与红线见 [NOTES.md#t07](./NOTES.md#t07)，那里还记了 review

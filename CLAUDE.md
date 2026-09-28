@@ -237,7 +237,7 @@ frontend/src/
 | `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
 | `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
-| `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 推荐决策 | SQLite `evaluations` |
+| `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 无锚点标记 `goal_missing` + 推荐决策 | SQLite `evaluations` |
 | `StoryRecord` | 导演历史的一条（场景 id + 名 + 评估 + `threads_known`），`inherited_story_history` / `story_history` 的元素 | 内嵌于场景 / 快照 |
 | `DirectorDecision` | 导演决策 + 人工覆盖字段 | SQLite `decisions` |
 | `Snapshot` / `Branch` / `BranchTree` | 快照与分支 | SQLite `snapshots`/`branches` + 快照目录 |
@@ -367,6 +367,13 @@ frontend/src/
       推进度衡量的是"离这个目标还有多远"，用户改目标就是换了尺子；不比对版本的话，
       旧目标下的 0.9 会把新目标的真实进度永久钳到顶。旧记录的 revision 为空串，
       与任何现行目标都不相等，因此不参与继承；
+    - **没有主线目标就不度量**（`SceneEvaluation.goal_missing`，NOTES#goal-missing）：目标去空白后
+      为空时推进度记为 `PROGRESS_UNAVAILABLE`、不收自评，否则单调钳制会让它一路爬向不存在的终点；
+      其余评分照留，但"目标达成""主线偏离"没有参照 —— 前端不判红，`make_decision` 的
+      "目标达成 < 4 → 回滚"不生效（一致性规则照常）。有了分镜稿以后，导演自拟的路线图最容易
+      被当成目标、拿来给自己打分，评估 prompt 明确禁止（禁令1 的另一个入口）。字段上线前的记录按
+      `goal_revision == goal_revision("")` 回填（`repository._goal_missing`），没有版本的更老记录不猜。
+      **不要把空目标的版本改成空串来省掉这个字段**：空串是"旧记录"的标记，撞上就互相继承进度；
     - **导演历史按快照时点冻结**（`orchestrator._story_records`）。
       `Snapshot.story_history` 保存当时已知的评估记录；前置快照不含本场结果，
       后置快照创建时先带此前历史，自动评估完成后补入本轮结果。
@@ -993,6 +1000,9 @@ prefix cache**，落地时必须改走 user 块。
 - **结局是提示不是闸门**：`is_ending_reached` 为真时 `DirectorPanel` 显示结局提示与
   "生成结局输出"入口，但**三个决策按钮保持可用** —— 结局是导演的判断，用户完全可能
   不认同（想继续演、想回滚）。别让 LLM 的一个布尔值锁死用户操作。
+- **主线目标为空时规划只提示不拦**：`Director.vue` 的"让导演规划"在目标为空时弹一次确认
+  （同一项目只问一次），说明导演将自由发挥、主线相关评分没有参照；没有目标也可以先看看角色
+  会演出什么。`DirectorPanel` 按评估的 `goal_missing` 显示无锚点提示，不画推进度。
 - 数据模型变更需同步 `frontend/src/types/index.ts`。
 
 ---
@@ -1229,7 +1239,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
      每个在场角色的 system prompt 里凭空多出一条变量。修在 `normalize_world_key`，
      写入侧与读取侧都经过它。另：`normalize_world_delta` 超 `MAX_WORLD_VARIABLES`
      时由静默截断改为 warning。同步更新 4.2 陷阱 19。
-     工单07 以 PR #20 合入 main（`cc8a021`→`d7ccde3`），review 复盘见 NOTES.md#t07。
+     工单07 以 PR #20 合入 main（`cc8a021`→`53d36c5`），review 复盘见 NOTES.md#t07。
 -->
 <!-- 2026-08-27: 工单08（分叉语义收敛）落地。长期记忆 collection 补分支维度
      （`char_{cid}__{branch_id}`，留空仍是项目级共享，无需迁移）；新增

@@ -125,7 +125,19 @@ async function resume() {
   await refreshBranchData()
 }
 
+const NO_GOAL_WARNING =
+  '项目还没有设定主线目标，导演将自由发挥：本场意图只管这一场，' +
+  '之后的评估里「目标达成」「主线偏离」没有参照，主线推进度也不度量。\n\n' +
+  '可以先去工作台填写主线目标。仍要继续规划吗？'
+// 同一项目确认过一次就不再问：用户已经知道没有锚点，每次规划都弹就成了噪声
+let goalConfirmedFor = ''
+
 async function plan() {
+  // 只提示不拦：没有目标也可以先看看角色自己会演出什么，但不能让用户以为评分有参照
+  if (!narrativeGoal.value.trim() && goalConfirmedFor !== props.projectId) {
+    if (!confirm(NO_GOAL_WARNING)) return
+    goalConfirmedFor = props.projectId
+  }
   planning.value = true
   try {
     // 不再要求必填：主线目标已由后端从项目读，这里只是可选的本场意图
