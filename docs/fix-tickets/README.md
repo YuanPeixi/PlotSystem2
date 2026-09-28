@@ -14,9 +14,10 @@
 `✅ PR #N（合入 main：起始hash到结束hash）`。完整口径与 hash 填写规则见
 [CONVENTIONS.md](./CONVENTIONS.md)。**索引标注可能滞后于实际合并状态，以 git 为准。**
 
-**当前推进中**：28 / 18 的收尾补丁——主线目标为空时的口径（不单独建单，见
-[NOTES#goal-missing](./NOTES.md#goal-missing)），⏳ 等待 PR（`fix/empty-narrative-goal`）。
-上一单（18 导演分镜稿）已随 PR #21 合入 main，12（AutoPilot）与 22（MCTS 存档）
+**最近完成**：28 / 18 的收尾补丁——主线目标为空时的口径（不单独建单，见
+[NOTES#goal-missing](./NOTES.md#goal-missing)），✅ 快速修复、无 PR，以合并提交
+`合入 fix/empty-narrative-goal` 直接进 main。
+18 导演分镜稿已随 PR #21 合入 main，12（AutoPilot）与 22（MCTS 存档）
 的依赖随之齐备；工单 20 表内依赖（07、11）已齐，但仍需先建 24（见阶段 D 下方「其他待建单」）。
 
 ---
