@@ -3,6 +3,8 @@ import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import type { BranchTree } from '@/types'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import Icon from '@/components/ui/Icon.vue'
 
 const props = defineProps<{ projectId: string }>()
 const branchTree = ref<BranchTree>({ project_id: '', roots: [] })
@@ -17,11 +19,11 @@ const loading = ref(false)
 const result = ref('')
 
 const FORMATS = [
-  { value: 'web_novel', label: '网络小说' },
-  { value: 'screenplay', label: '影视剧本' },
-  { value: 'stage_play', label: '舞台剧本' },
-  { value: 'summary', label: '推演报告' },
-  { value: 'raw', label: '原始日志(JSON)' },
+  { value: 'web_novel', label: '网络小说', desc: '第三人称叙事，按章节' },
+  { value: 'screenplay', label: '影视剧本', desc: '场景标题、动作与对白' },
+  { value: 'stage_play', label: '舞台剧本', desc: '幕、场与舞台提示' },
+  { value: 'summary', label: '推演报告', desc: '评分、分支与关键决策' },
+  { value: 'raw', label: '原始日志', desc: '逐轮记录的 JSON，不经改写' },
 ]
 
 // 分支范围完成校验前不得生成；失效的预选不能静默扩大成全部分支。
@@ -93,69 +95,219 @@ function flatten(roots: any[]): any[] {
 </script>
 
 <template>
-  <div class="output">
-    <h1>输出导出</h1>
-    <div class="grid">
-      <section class="card config">
+  <div class="output-page">
+    <PageHeader title="输出导出" />
+    <div class="out">
+      <!-- 左：基础设置 -->
+      <aside class="settings">
         <div class="field">
-          <label>输出格式</label>
-          <select v-model="format">
-            <option v-for="f in FORMATS" :key="f.value" :value="f.value">{{ f.label }}</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>分支范围</label>
-          <select v-model="branchId" :disabled="!scopeReady" @change="scopeError = ''">
+          <label for="out-branch">分支范围</label>
+          <select id="out-branch" v-model="branchId" :disabled="!scopeReady" @change="scopeError = ''">
             <option value="">全部分支</option>
-            <option
-              v-for="b in flatten(branchTree.roots)"
-              :key="b.branch_id"
-              :value="b.branch_id"
-            >{{ b.name }}</option>
+            <option v-for="b in flatten(branchTree.roots)" :key="b.branch_id" :value="b.branch_id">{{ b.name }}</option>
           </select>
         </div>
-        <p v-if="scopeError" role="alert">{{ scopeError }}</p>
+        <p v-if="scopeError" role="alert" class="notice danger"><Icon name="alert" :size="15" />{{ scopeError }}</p>
         <!-- 每条错误路径都要有出口：分支不存在/参数无效会把 scopeReady 置真，
              按 !scopeReady 显示等于这两种情况下没有重试按钮，而项目一个分支
              都没有时下拉框只有"全部分支"，选它不触发 change，用户彻底卡死。 -->
-        <button v-if="scopeError" class="ghost" @click="loadScope">重试</button>
-        <button :disabled="loading || !scopeReady || !!scopeError" @click="generate">{{ loading ? '生成中...' : '✨ 生成' }}</button>
-        <button class="ghost" :disabled="!result" @click="download" style="margin-top: 8px">⬇ 下载</button>
-      </section>
+        <button v-if="scopeError" class="ghost retry" @click="loadScope"><Icon name="refresh" :size="15" />重试</button>
 
-      <section class="card preview">
-        <h3>预览</h3>
-        <pre v-if="result" class="result">{{ result }}</pre>
-        <div v-else class="dim empty">选择格式并生成，结果将显示在此处。</div>
-      </section>
+        <div class="field">
+          <label>格式</label>
+          <div class="formats" role="radiogroup" aria-label="输出格式">
+            <button
+              v-for="f in FORMATS"
+              :key="f.value"
+              role="radio"
+              :aria-checked="format === f.value"
+              @click="format = f.value"
+            >
+              <b>{{ f.label }}</b>
+              <small>{{ f.desc }}</small>
+            </button>
+          </div>
+        </div>
+        <button class="primary generate" :disabled="loading || !scopeReady || !!scopeError" @click="generate">
+          <Icon :name="loading ? 'spinner' : 'generate'" :size="15" />{{ loading ? '生成中' : '生成' }}
+        </button>
+      </aside>
+
+      <!-- 中：纸面预览 -->
+      <main class="preview">
+        <div v-if="result" class="paper-wrap">
+          <div class="paper-actions">
+            <button class="ghost" @click="download"><Icon name="download" :size="15" />下载</button>
+          </div>
+          <pre class="paper" :class="{ mono: format === 'raw' }">{{ result }}</pre>
+        </div>
+        <div v-else class="empty">
+          <Icon name="output" :size="28" />
+          <p>选择分支范围和格式，点生成，结果会排在这里。</p>
+        </div>
+      </main>
+
+      <!-- 右：预留给后续的导出能力，不挤占左侧的基础设置 -->
+      <aside class="reserved-col">
+        <div class="reserved">
+          <b>预留区域</b>
+          <p class="dim">后续新增的导出能力放在这里。</p>
+          <i></i><i></i><i class="short"></i>
+        </div>
+      </aside>
     </div>
   </div>
 </template>
 
 <style scoped>
-.output h1 {
-  margin-bottom: 16px;
+.output-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  container: out / inline-size;
 }
-.grid {
+.out {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 18px;
+  grid-template-columns: 264px minmax(0, 1fr) 260px;
+  grid-template-rows: minmax(0, 1fr);
 }
-.config button {
+.settings {
+  border-right: 1px solid var(--line);
+  padding: 16px;
+  overflow: auto;
+}
+.retry {
+  margin: -4px 0 14px;
+}
+.formats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.formats button {
+  height: auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  padding: 8px 10px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+}
+.formats button:hover {
+  background: var(--hover);
+  border-color: transparent;
+}
+.formats button[aria-checked='true'] {
+  background: var(--panel);
+  border-color: var(--line-strong);
+}
+.formats b {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.formats small {
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: normal;
+}
+.generate {
   width: 100%;
+  height: 34px;
 }
 .preview {
-  min-height: 60vh;
+  overflow: auto;
+  padding: 28px 24px 48px;
 }
-.result {
+.paper-wrap {
+  max-width: 680px;
+  margin: 0 auto;
+}
+.paper-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.paper {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 48px 56px;
+  font-family: var(--font-script);
+  font-size: 16px;
+  line-height: 1.95;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: inherit;
-  margin-top: 12px;
-  line-height: 1.8;
+}
+[data-theme='dark'] .paper {
+  color: #d4d6db;
+}
+.paper.mono {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
 }
 .empty {
-  padding: 60px 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--ink-2);
   text-align: center;
+}
+.reserved-col {
+  border-left: 1px solid var(--line);
+  padding: 16px;
+}
+.reserved {
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: 13px;
+}
+.reserved p {
+  margin: 4px 0 12px;
+}
+.reserved i {
+  display: block;
+  height: 8px;
+  margin-top: 8px;
+  border-radius: 4px;
+  background: var(--hover);
+}
+.reserved i.short {
+  width: 60%;
+}
+@container out (max-width: 1100px) {
+  .out {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+  .reserved-col {
+    display: none;
+  }
+}
+@container out (max-width: 760px) {
+  .out {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .settings {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .formats {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .formats small {
+    display: none;
+  }
+  .paper {
+    padding: 28px 22px;
+  }
 }
 </style>

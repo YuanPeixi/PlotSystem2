@@ -7,12 +7,15 @@ import GraphViewer from '@/components/GraphViewer.vue'
 import GraphViewer2 from '@/components/GraphViewer2.vue'
 import CharacterCardView from '@/components/CharacterCard.vue'
 import CharacterInspector from '@/components/CharacterInspector.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import Icon from '@/components/ui/Icon.vue'
 
 const router = useRouter()
 const store = useProjectStore()
 const charStore = useCharacterStore()
 
 const inspectingId = ref('')
+const showCreate = ref(false)
 
 const newName = ref('')
 const newDesc = ref('')
@@ -52,7 +55,14 @@ async function create() {
   newName.value = ''
   newDesc.value = ''
   newGoal.value = ''
+  showCreate.value = false
   await open(p.project_id)
+}
+
+// 删除会连带清空整个项目目录（角色卡、快照、向量库），不可恢复
+async function removeProject(id: string, name: string) {
+  if (!confirm(`删除项目「${name}」？它的角色、场景、快照和记忆都会被一并删除，无法恢复。`)) return
+  await store.deleteProject(id)
 }
 
 function startEditGoal() {
@@ -144,147 +154,162 @@ async function build() {
 
 <template>
   <div class="workspace">
-    <h1>工作台</h1>
+    <PageHeader title="工作台">
+      <button
+        v-if="store.current"
+        class="primary"
+        @click="router.push(`/director/${store.current.project_id}`)"
+      >
+        <Icon name="director" :size="15" />进入导演台
+      </button>
+    </PageHeader>
 
-    <div class="grid">
-      <!-- 左：项目列表 + 创建 -->
-      <section class="card">
-        <h3>项目</h3>
-        <div class="field" style="margin-top: 12px">
-          <input v-model="newName" placeholder="新项目名称" />
+    <div class="ws">
+      <!-- 左：项目列表 -->
+      <aside class="projects">
+        <div class="section-title">
+          项目
+          <button class="icon sm" title="新建项目" @click="showCreate = !showCreate"><Icon name="plus" :size="15" /></button>
         </div>
-        <div class="field">
-          <input v-model="newDesc" placeholder="简述（可选）" />
-        </div>
-        <div class="field">
-          <input v-model="newGoal" placeholder="主线目标（可选，之后也可修改）" />
-        </div>
-        <button @click="create">＋ 创建项目</button>
-
+        <form v-if="showCreate || !store.projects.length" class="create" @submit.prevent="create">
+          <div class="field">
+            <label for="np-name">名称</label>
+            <input id="np-name" v-model="newName" placeholder="例如：雪夜长安" />
+          </div>
+          <div class="field">
+            <label for="np-desc">简述（可选）</label>
+            <input id="np-desc" v-model="newDesc" />
+          </div>
+          <div class="field">
+            <label for="np-goal">主线目标（可选，之后也能改）</label>
+            <textarea id="np-goal" v-model="newGoal" rows="2" placeholder="故事最终要走到哪里"></textarea>
+          </div>
+          <div class="create-actions">
+            <button v-if="store.projects.length" type="button" class="ghost" @click="showCreate = false">取消</button>
+            <button type="submit" class="primary" :disabled="!newName.trim()">新建项目</button>
+          </div>
+        </form>
         <ul class="project-list">
-          <li
-            v-for="p in store.projects"
-            :key="p.project_id"
-            :class="{ active: store.current?.project_id === p.project_id }"
-            @click="open(p.project_id)"
-          >
-            <div>
-              <div class="p-name">{{ p.name }}</div>
-              <div class="dim">{{ p.status }}</div>
-            </div>
-            <button class="ghost danger" @click.stop="store.deleteProject(p.project_id)">✕</button>
+          <li v-for="p in store.projects" :key="p.project_id">
+            <button
+              class="project"
+              :aria-current="store.current?.project_id === p.project_id"
+              @click="open(p.project_id)"
+            >
+              <span class="p-name">{{ p.name }}</span>
+              <span class="p-status dim">{{ p.status }}</span>
+            </button>
+            <button class="icon sm danger remove" title="删除项目" @click="removeProject(p.project_id, p.name)">
+              <Icon name="trash" :size="14" />
+            </button>
           </li>
         </ul>
-      </section>
+      </aside>
 
-      <!-- 右：当前项目操作 -->
-      <section class="card" v-if="store.current">
-        <div class="row" style="justify-content: space-between">
-          <h3>{{ store.current.name }}</h3>
-          <div class="row">
-            <button class="ghost" @click="router.push(`/director/${store.current.project_id}`)">进入导演视角 →</button>
-          </div>
-        </div>
-        <p class="dim">{{ store.current.description }}</p>
+      <!-- 右：当前项目 -->
+      <main v-if="store.current" class="detail">
+        <header class="detail-head">
+          <h2>{{ store.current.name }}</h2>
+          <p v-if="store.current.description" class="dim">{{ store.current.description }}</p>
+        </header>
 
-        <div class="goal-box">
-          <div class="row" style="justify-content: space-between">
-            <span class="dim">主线目标（导演的只读锚点）</span>
-            <button v-if="!editingGoal" class="ghost" @click="startEditGoal">编辑</button>
+        <section class="panel">
+          <div class="section-title">
+            主线目标
+            <button v-if="!editingGoal" class="ghost small-btn" @click="startEditGoal"><Icon name="edit" :size="14" />编辑</button>
           </div>
           <template v-if="editingGoal">
             <div class="field">
-              <textarea v-model="goalDraft" placeholder="例如：王子查明丞相通敌并最终将其拉下马"></textarea>
+              <textarea v-model="goalDraft" rows="3" placeholder="例如：王子查明丞相通敌，并最终把他拉下马"></textarea>
             </div>
             <div class="field">
-              <textarea v-model="criteriaDraft" placeholder="结局判定标准（可选）：什么情形算故事讲完了"></textarea>
+              <label>结局判定标准（可选）</label>
+              <textarea v-model="criteriaDraft" rows="2" placeholder="什么情形算故事讲完了"></textarea>
             </div>
-            <div class="row">
-              <button :disabled="savingGoal" @click="saveGoal">{{ savingGoal ? '保存中...' : '保存' }}</button>
+            <div class="row actions">
               <button class="ghost" @click="cancelEditGoal">取消</button>
+              <button class="primary" :disabled="savingGoal" @click="saveGoal">{{ savingGoal ? '保存中' : '保存' }}</button>
             </div>
           </template>
           <template v-else>
             <p v-if="store.current.narrative_goal" class="goal-text">{{ store.current.narrative_goal }}</p>
-            <p v-else class="dim">尚未设定。没有它，导演只能顺着上一场的惯性往下演，也无法判定结局。</p>
-            <p v-if="store.current.ending_criteria" class="dim">结局标准：{{ store.current.ending_criteria }}</p>
+            <p v-else class="dim">还没有设定。没有它，导演只能顺着上一场的惯性往下演，也无法判定结局。</p>
+            <p v-if="store.current.ending_criteria" class="dim criteria">结局标准：{{ store.current.ending_criteria }}</p>
+            <p class="dim hint">导演只读这个目标，不会改写它。</p>
           </template>
-        </div>
-        <div class="seed-box">
-          <div class="row" style="justify-content: space-between">
-            <span class="dim">种子文本（{{ store.current.seed_texts.length }}）</span>
-            <button class="ghost" @click="fileInput?.click()">上传种子文本</button>
+        </section>
+
+        <section class="panel">
+          <div class="section-title">
+            种子文本
+            <button class="ghost small-btn" @click="fileInput?.click()"><Icon name="upload" :size="14" />上传</button>
             <input ref="fileInput" type="file" multiple accept=".txt,.md" hidden @change="onUpload" />
           </div>
-          <ul class="seed-list">
-            <li v-for="(s, i) in store.current.seed_texts" :key="i" class="dim">📄 {{ s.split(/[\\/]/).pop() }}</li>
+          <ul v-if="store.current.seed_texts.length" class="seeds">
+            <li v-for="(s, i) in store.current.seed_texts" :key="i">
+              <Icon name="file" :size="15" />{{ s.split(/[\\/]/).pop() }}
+            </li>
           </ul>
-        </div>
+          <p v-else class="dim">上传小说、剧本或世界观设定（.txt / .md），构建时会从中抽取角色与世界规则。</p>
+          <div class="build">
+            <button :disabled="building || !store.current.seed_texts.length" @click="build">
+              <Icon :name="building ? 'spinner' : 'build'" :size="15" />{{ building ? '构建中' : '构建知识图谱与角色' }}
+            </button>
+            <div v-if="building || store.buildStatus.progress > 0" class="build-progress">
+              <span class="meter"><i :style="{ width: store.buildStatus.progress * 100 + '%', background: 'var(--spot)' }"></i></span>
+              <span class="dim">
+                {{ store.buildStatus.stage }}
+                <template v-if="store.buildStatus.character_total">
+                  ，角色卡 <span class="num">{{ store.buildStatus.character_done ?? 0 }} / {{ store.buildStatus.character_total }}</span>
+                </template>
+              </span>
+            </div>
+          </div>
+        </section>
 
-        <div class="build-box">
-          <button :disabled="building || !store.current.seed_texts.length" @click="build">
-            {{ building ? '构建中...' : '🔨 运行 GraphRAG 构建' }}
-          </button>
-          <div v-if="building || store.buildStatus.progress > 0" class="progress">
-            <div class="progress-bar" :style="{ width: store.buildStatus.progress * 100 + '%' }"></div>
-            <span class="dim">{{ store.buildStatus.stage }}</span>
-            <span
-              v-if="store.buildStatus.character_total"
-              class="dim char-progress"
-            >
-              角色卡：{{ store.buildStatus.character_done ?? 0 }} / {{ store.buildStatus.character_total }}
+        <section class="panel graph-panel">
+          <div class="section-title">
+            知识图谱
+            <div class="seg" role="group" aria-label="图谱查看器版本">
+              <button :aria-pressed="graphViewerVersion === 'legacy'" @click="graphViewerVersion = 'legacy'">概览</button>
+              <button :aria-pressed="graphViewerVersion === 'focused'" @click="graphViewerVersion = 'focused'">聚焦</button>
+            </div>
+          </div>
+          <div class="graph-body">
+            <GraphViewer v-if="graphViewerVersion === 'legacy'" :data="store.graph" />
+            <GraphViewer2 v-else :data="store.graph" />
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-title">
+            <span>
+              角色 <span class="num">{{ charStore.characters.length }}<template
+                v-if="building && store.buildStatus.character_total"
+              > / {{ store.buildStatus.character_total }}</template></span>
             </span>
           </div>
-        </div>
-      </section>
-      <section class="card placeholder dim" v-else>← 请选择或创建一个项目</section>
-    </div>
-
-    <!-- 图谱 + 角色 -->
-    <div class="grid bottom" v-if="store.current">
-      <section class="card graph-card">
-        <div class="graph-heading">
-          <h3>知识图谱</h3>
-          <div class="graph-switch" role="group" aria-label="图谱查看器版本">
-            <button
-              type="button"
-              :class="{ active: graphViewerVersion === 'legacy' }"
-              @click="graphViewerVersion = 'legacy'"
-            >旧版</button>
-<button
-  type="button"
-  :class="{ active: graphViewerVersion === 'focused' }"
-  :aria-pressed="graphViewerVersion === 'focused'"
-  @click="graphViewerVersion = 'focused'"
->Graph Viewer 2</button>
+          <div class="char-grid">
+            <CharacterCardView
+              v-for="c in charStore.characters"
+              :key="c.character_id"
+              :character="c"
+              @inspect="inspectingId = $event"
+            />
+            <div
+              v-if="building && store.buildStatus.character_total && charStore.characters.length < store.buildStatus.character_total"
+              class="generating dim"
+            >
+              <Icon name="spinner" :size="15" />正在生成角色卡
+            </div>
           </div>
-        </div>
-        <GraphViewer v-if="graphViewerVersion === 'legacy'" :data="store.graph" />
-        <GraphViewer2 v-else :data="store.graph" />
-      </section>
-      <section class="card">
-        <h3>
-          角色（{{ charStore.characters.length }}<template
-            v-if="building && store.buildStatus.character_total"
-            > / {{ store.buildStatus.character_total }}</template
-          >）
-        </h3>
-        <div class="char-grid">
-          <CharacterCardView
-            v-for="c in charStore.characters"
-            :key="c.character_id"
-            :character="c"
-            @inspect="inspectingId = $event"
-          />
-          <div
-            v-if="building && store.buildStatus.character_total && charStore.characters.length < store.buildStatus.character_total"
-            class="dim generating"
-          >
-            ⏳ 正在生成角色卡…
-          </div>
-          <div v-else-if="!charStore.characters.length" class="dim">构建后将自动生成角色。</div>
-        </div>
-      </section>
+          <p v-if="!charStore.characters.length && !building" class="dim">构建完成后会自动生成角色。</p>
+        </section>
+      </main>
+      <main v-else class="detail empty">
+        <Icon name="workspace" :size="28" />
+        <p class="dim">从左侧选择一个项目，或者新建一个。</p>
+      </main>
     </div>
 
     <CharacterInspector
@@ -297,124 +322,187 @@ async function build() {
 </template>
 
 <style scoped>
-.workspace h1 {
-  margin-bottom: 18px;
+.workspace {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
-.grid {
+.ws {
+  flex: 1;
   display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 18px;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 0;
 }
-.grid.bottom {
-  grid-template-columns: 1.4fr 1fr;
-  margin-top: 18px;
+.projects {
+  border-right: 1px solid var(--line);
+  padding: 14px 10px 24px;
+}
+.projects .section-title {
+  padding: 0 8px;
+}
+.create {
+  margin: 0 8px 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .project-list {
   list-style: none;
-  margin-top: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 .project-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  border: 1px solid transparent;
+  position: relative;
 }
-.project-list li:hover,
-.project-list li.active {
-  background: var(--accent);
-  border-color: var(--border);
+.project {
+  width: 100%;
+  height: auto;
+  min-height: 44px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  padding: 6px 36px 6px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.project:hover {
+  background: var(--hover);
+}
+.project[aria-current='true'] {
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--line);
 }
 .p-name {
   font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.seed-box,
-.build-box {
-  margin-top: 18px;
+.p-status {
+  font-size: 12px;
 }
-.goal-box {
-  margin-top: 18px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+.remove {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+}
+.project-list li:hover .remove,
+.remove:focus-visible {
+  opacity: 1;
+}
+.detail {
+  padding: 28px 32px 48px;
+  max-width: 1080px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.detail.empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-2);
+  max-width: none;
+}
+.detail-head h2 {
+  font-size: 22px;
+}
+.panel {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.small-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-weight: 400;
 }
 .goal-text {
-  margin-top: 8px;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.75;
+  white-space: pre-wrap;
 }
-.seed-list {
-  list-style: none;
+.criteria {
   margin-top: 8px;
   font-size: 13px;
 }
-.progress {
-  margin-top: 12px;
+.hint {
+  margin-top: 8px;
+  font-size: 12px;
 }
-.progress-bar {
-  height: 6px;
-  background: var(--highlight);
-  border-radius: 3px;
-  transition: width 0.4s;
+.actions {
+  justify-content: flex-end;
+  gap: 8px;
 }
-.char-progress {
-  margin-left: 10px;
+.seeds {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.seeds li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+}
+.build {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.build-progress {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.graph-panel {
+  display: flex;
+  flex-direction: column;
+}
+.graph-body {
+  height: 460px;
+  display: flex;
+  flex-direction: column;
+}
+.char-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
 }
 .generating {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   padding: 18px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
 }
-.graph-card {
-  height: 480px;
-  display: flex;
-  flex-direction: column;
-}
-.graph-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-.graph-switch {
-  display: inline-flex;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-}
-.graph-switch button {
-  border: 0;
-  padding: 4px 8px;
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 12px;
-}
-.graph-switch button.active {
-  background: var(--accent);
-  color: var(--text);
-}
-.char-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 12px;
-  max-height: 420px;
-  overflow-y: auto;
-}
-.placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+@media (max-width: 900px) {
+  .ws {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .projects {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .detail {
+    padding: 20px 16px 40px;
+  }
 }
 </style>

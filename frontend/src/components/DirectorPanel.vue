@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import Icon from '@/components/ui/Icon.vue'
 import type { CharacterCard, SceneEvaluation, SnapshotMeta } from '@/types'
 
 const props = defineProps<{
@@ -9,6 +10,8 @@ const props = defineProps<{
   snapshots?: SnapshotMeta[]
   appliedDecision?: Record<string, unknown> | null
   pending?: boolean
+  /** 检查器里分成两个标签页：eval 只看评估，decide 只做决策；不传则两者都显示 */
+  mode?: 'eval' | 'decide'
 }>()
 const emit = defineEmits<{
   // done 回调由父组件在请求结束后调用：ok=true 时面板才关闭/清空表单，
@@ -60,6 +63,10 @@ const progress = computed(() => {
   return v >= 0 && !goalMissing.value ? v : null
 })
 const ending = computed(() => props.evaluation?.is_ending_reached === true)
+const showEval = computed(() => props.mode !== 'decide')
+const showDecide = computed(() => props.mode !== 'eval')
+// 世界变量增量：值为 null 表示该变量已被收束删除
+const worldDelta = computed(() => Object.entries(props.evaluation?.world_state_delta || {}))
 
 function decide(type: string) {
   if (locked.value) return
@@ -132,219 +139,332 @@ function confirmRollback() {
 </script>
 
 <template>
-  <div class="director-panel card">
-    <h3>导演决策面板</h3>
-    <div v-if="!evaluation" class="dim" style="margin: 16px 0">场景完成后将自动生成评估。</div>
-    <template v-else>
-      <p v-if="evalFailed" class="eval-failed">⚠ 本场评估未能生成（模型返回内容无法解析），评分不可用，请自行判断。</p>
-      <p v-else-if="goalMissing" class="no-anchor">
-        ⚠ 本场评估时项目未设定主线目标：「目标达成」「主线偏离」没有参照，仅供参考；主线推进度不度量。可在工作台补填主线目标。
-      </p>
-      <p class="synopsis">{{ evaluation.synopsis }}</p>
-      <div class="scores">
-        <div v-for="s in scores" :key="s.label" class="score-bar" :class="{ unanchored: s.unanchored }">
-          <div class="score-label">
-            <span>{{ s.label }}<span v-if="s.unanchored" class="dim">（无锚点）</span></span>
-            <span :class="{ danger: s.danger }">{{ s.value.toFixed(1) }}</span>
-          </div>
-          <div class="bar">
-            <div class="fill" :class="{ danger: s.danger }" :style="{ width: s.value * 10 + '%' }"></div>
-          </div>
-        </div>
-      </div>
-      <div class="recommend dim">AI 建议：{{ evaluation.recommended_decision }}</div>
-
-      <div class="story-progress">
-        <div class="score-label">
-          <span>主线推进度</span>
-          <span v-if="progress !== null">{{ Math.round(progress * 100) }}%</span>
-          <span v-else-if="goalMissing" class="dim">未设定主线目标</span>
-          <span v-else class="dim">未评估</span>
-        </div>
-        <div v-if="progress !== null" class="bar">
-          <div class="fill" :style="{ width: progress * 100 + '%' }"></div>
-        </div>
-        <p v-if="evaluation.progress_stalled && !goalMissing" class="dim stalled">
-          本场未推进主线（导演自评 {{ Math.round(evaluation.story_progress_raw * 100) }}%，不低于历史值才算推进）
+  <div class="director-panel">
+    <!-- ============ 评估 ============ -->
+    <template v-if="showEval">
+      <p v-if="!evaluation" class="dim empty">本场结束后会自动生成评估。</p>
+      <template v-else>
+        <p v-if="evalFailed" class="notice danger">
+          <Icon name="alert" :size="15" />本场评估没能生成（模型返回的内容无法解析），评分不可用，请自行判断。
         </p>
-      </div>
+        <p v-else-if="goalMissing" class="notice">
+          <Icon name="info" :size="15" />
+          评估时项目还没有主线目标：「目标达成」「主线偏离」没有参照，仅供参考，也不度量主线推进度。可以在工作台补填主线目标。
+        </p>
+        <p v-if="ending" class="ending-flag"><Icon name="flag" :size="15" />导演判定故事已抵达结局</p>
+        <p v-if="evaluation.synopsis" class="synopsis">{{ evaluation.synopsis }}</p>
 
-      <div v-if="evaluation.unresolved_threads.length" class="threads">
-        <div class="dim">未收束线索</div>
-        <ul>
-          <li v-for="t in evaluation.unresolved_threads" :key="t">{{ t }}</li>
-        </ul>
-      </div>
+        <div class="section-title">主线推进度</div>
+        <template v-if="progress !== null">
+          <div class="progress">
+            <b class="num">{{ Math.round(progress * 100) }}%</b>
+            <span v-if="evaluation.progress_stalled" class="dim">
+              本场未推进（导演自评 {{ Math.round(evaluation.story_progress_raw * 100) }}%，不高于历史值）
+            </span>
+          </div>
+          <span class="meter progress-bar"><i :style="{ width: progress * 100 + '%', background: 'var(--spot)' }"></i></span>
+        </template>
+        <p v-else class="dim small">{{ goalMissing ? '未设定主线目标，不度量。' : '本场没有度量到推进度。' }}</p>
 
-      <div v-if="ending" class="ending-box">
-        <div class="ending-title">🏁 导演判定故事已抵达结局</div>
-        <p v-if="evaluation.ending_reason" class="dim">{{ evaluation.ending_reason }}</p>
-        <button @click="emit('generate-output')">✒ 生成结局输出</button>
-        <p class="dim" style="font-size: 12px">不认同这个判定？下方三个决策依然可用。</p>
-      </div>
+        <template v-if="scores.length">
+          <div class="section-title">四维评分</div>
+          <div class="scores">
+            <div v-for="s in scores" :key="s.label" class="score" :class="{ unanchored: s.unanchored }">
+              <span class="score-name">
+                {{ s.label }}
+                <small v-if="s.label === '主线偏离'">越低越好</small>
+                <small v-if="s.unanchored">无锚点</small>
+              </span>
+              <span class="score-val num" :class="{ danger: s.danger }">{{ s.value.toFixed(1) }}</span>
+              <span class="meter"><i :class="{ danger: s.danger }" :style="{ width: s.value * 10 + '%' }"></i></span>
+            </div>
+          </div>
+        </template>
+
+        <template v-if="evaluation.unresolved_threads.length">
+          <div class="section-title">未收束线索</div>
+          <ul class="bullets">
+            <li v-for="t in evaluation.unresolved_threads" :key="t">{{ t }}</li>
+          </ul>
+        </template>
+
+        <template v-if="worldDelta.length">
+          <div class="section-title">世界变量变化</div>
+          <dl class="kv">
+            <template v-for="[k, v] in worldDelta" :key="k">
+              <dt>{{ k }}</dt>
+              <dd :class="v === null ? 'removed' : 'changed'">{{ v === null ? '已收束' : v }}</dd>
+            </template>
+          </dl>
+        </template>
+      </template>
     </template>
 
-    <div class="actions">
-      <button :disabled="locked" @click="decide('continue')">▶ 继续</button>
-      <button :disabled="locked" @click="decide('next_scene')">⏭ 下一场</button>
-      <button class="danger" :disabled="locked" @click="decide('rollback')">↩ 回滚</button>
-    </div>
-    <div v-if="decided" class="dim" style="margin-top: 8px; font-size: 12px">
-      本场已做出决策：{{ DECISION_LABEL[decided] || decided }}。请在左侧场景列表选择后续场次。
-    </div>
-    <div v-if="pending" class="dim" style="margin-top: 8px; font-size: 12px">
-      决策正在处理中，请勿重复提交...
-    </div>
+    <!-- ============ 决策 ============ -->
+    <template v-if="showDecide">
+      <div v-if="ending && evaluation" class="ending-box">
+        <div class="ending-title"><Icon name="flag" :size="15" />导演判定故事已抵达结局</div>
+        <p v-if="evaluation.ending_reason" class="dim small">{{ evaluation.ending_reason }}</p>
+        <button class="primary" @click="emit('generate-output')"><Icon name="output" :size="15" />生成结局输出</button>
+        <p class="dim small">不认同这个判定？下面三个决策依然可用。</p>
+      </div>
 
-    <div v-if="showNextScene" class="rollback-box">
-      <label>下一场意图（可不填，导演自动接续）</label>
-      <textarea v-model="nextSceneGoal" placeholder="例：两人在业余中和解，或新冲突将起"></textarea>
-      <label style="margin-top: 8px">参与角色（不选则由导演自动决定）</label>
-      <div class="char-pills">
-        <label v-for="c in characters || []" :key="c.character_id" class="check-pill">
-          <input type="checkbox" :value="c.character_id" v-model="nextChars" />
-          {{ c.name }}
-        </label>
-      </div>
-      <label style="margin-top: 8px">地点（留空则由导演自动决定）</label>
-      <input v-model="nextLocation" placeholder="例：雨夜的酒馆" />
-      <label style="margin-top: 8px">初始条件/环境变量（JSON，留空则由导演自动决定）</label>
-      <textarea v-model="nextConditions" placeholder='{"weather": "storm"}'></textarea>
-      <div class="row" style="margin-top: 8px">
-        <button :disabled="pending" @click="confirmNextScene">确认下一场</button>
-        <button class="ghost" @click="showNextScene = false">取消</button>
-      </div>
-    </div>
+      <p v-if="!evaluation && !decided" class="dim small">本场结束、评估生成后即可决策。</p>
+      <p v-else-if="evaluation && !evalFailed" class="recommend">
+        导演建议：<b>{{ DECISION_LABEL[evaluation.recommended_decision] || evaluation.recommended_decision }}</b>
+      </p>
 
-    <div v-if="showRollback" class="rollback-box">
-      <label>回滚到哪份快照（留空 = 本场开始前）</label>
-      <select v-model="rollbackSnapshotId">
-        <option value="">本场开始前的快照</option>
-        <option v-for="s in props.snapshots || []" :key="s.snapshot_id" :value="s.snapshot_id">
-          {{ s.label || s.snapshot_id.slice(0, 8) }}
-        </option>
-      </select>
-      <label style="margin-top: 8px">新初始条件（JSON 或文本）</label>
-      <textarea v-model="rollbackConditions" placeholder='{"tension": "高", "note": "让对话更激烈"}'></textarea>
-      <div class="row" style="margin-top: 8px">
-        <button class="danger" :disabled="pending" @click="confirmRollback">确认回滚</button>
-        <button class="ghost" @click="showRollback = false">取消</button>
+      <div class="decide">
+        <button :disabled="locked" @click="decide('continue')">
+          <Icon name="continue" :size="15" />继续本场<small>加演 6 轮</small>
+        </button>
+        <button :disabled="locked" @click="decide('next_scene')">
+          <Icon name="next" :size="15" />进入下一场<small>导演规划</small>
+        </button>
+        <button class="danger" :disabled="locked" @click="decide('rollback')">
+          <Icon name="rollback" :size="15" />回滚重演<small>新建分支</small>
+        </button>
       </div>
-    </div>
+      <p v-if="decided" class="notice">
+        <Icon name="check" :size="15" />本场已决策：{{ DECISION_LABEL[decided] || decided }}。后续场次在左侧场景列表里。
+      </p>
+      <p v-if="pending" class="notice"><Icon name="spinner" :size="15" />决策处理中，请勿重复提交。</p>
+
+      <form v-if="showNextScene" class="decision-form" @submit.prevent="confirmNextScene">
+        <div class="section-title">下一场</div>
+        <div class="field">
+          <label>本场意图（可留空，导演自动接续）</label>
+          <textarea v-model="nextSceneGoal" rows="2" placeholder="例如：两人和解，或新的冲突将起"></textarea>
+        </div>
+        <div class="field">
+          <label>在场角色（不选则由导演决定）</label>
+          <div class="pills">
+            <label v-for="c in characters || []" :key="c.character_id" class="pill">
+              <input v-model="nextChars" type="checkbox" :value="c.character_id" />{{ c.name }}
+            </label>
+          </div>
+        </div>
+        <div class="field">
+          <label>地点（留空则由导演决定）</label>
+          <input v-model="nextLocation" placeholder="例如：雨夜的酒馆" />
+        </div>
+        <div class="field">
+          <label>初始条件（JSON，留空则由导演决定）</label>
+          <textarea v-model="nextConditions" rows="2" placeholder='{"天气": "暴雨"}'></textarea>
+        </div>
+        <div class="row form-actions">
+          <button type="button" class="ghost" @click="showNextScene = false">取消</button>
+          <button type="submit" class="primary" :disabled="pending">进入下一场</button>
+        </div>
+      </form>
+
+      <form v-if="showRollback" class="decision-form" @submit.prevent="confirmRollback">
+        <div class="section-title">回滚重演</div>
+        <p class="dim small">会从所选快照新建一条分支重演，不改动当前分支的任何数据。</p>
+        <div class="field">
+          <label>从哪份快照重演</label>
+          <select v-model="rollbackSnapshotId">
+            <option value="">本场开场前</option>
+            <option v-for="s in props.snapshots || []" :key="s.snapshot_id" :value="s.snapshot_id">
+              {{ s.label || s.snapshot_id.slice(0, 8) }}
+            </option>
+          </select>
+        </div>
+        <div class="field">
+          <label>新的初始条件（JSON 或文本）</label>
+          <textarea v-model="rollbackConditions" rows="2" placeholder='{"氛围": "更紧张"}'></textarea>
+        </div>
+        <div class="row form-actions">
+          <button type="button" class="ghost" @click="showRollback = false">取消</button>
+          <button type="submit" class="danger" :disabled="pending">回滚重演</button>
+        </div>
+      </form>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.director-panel {
+.empty {
+  padding: 24px 0;
+  text-align: center;
+}
+.small {
+  font-size: 12.5px;
+}
+.notice {
+  margin-bottom: 12px;
+}
+.ending-flag {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--ok);
+  font-size: 13px;
+  margin-bottom: 10px;
 }
 .synopsis {
-  font-size: 13px;
-  margin: 10px 0 16px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  margin-bottom: 4px;
 }
-.eval-failed {
-  font-size: 12px;
-  color: #e94560;
-  margin: 10px 0 0;
+.section-title {
+  margin-top: 18px;
 }
-.no-anchor {
-  font-size: 12px;
-  color: var(--text-dim);
-  line-height: 1.5;
-  margin: 10px 0 0;
+.progress {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
 }
-.score-bar.unanchored {
-  opacity: 0.55;
+.progress b {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.progress-bar {
+  margin-top: 8px;
 }
 .scores {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
-.score-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-  margin-bottom: 4px;
+.score {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 4px;
+  align-items: end;
 }
-.bar {
-  height: 6px;
-  background: var(--bg);
-  border-radius: 3px;
-  overflow: hidden;
+.score .meter {
+  grid-column: 1 / -1;
+  height: 3px;
 }
-.fill {
-  height: 100%;
-  background: #3ec46d;
+.score .meter i.danger {
+  background: var(--danger);
 }
-.fill.danger,
-.danger {
-  color: #ffffff;
-}
-.fill.danger {
-  background: var(--highlight);
-}
-.recommend {
-  margin: 14px 0;
+.score-name {
   font-size: 13px;
 }
-.story-progress {
-  margin: 4px 0 12px;
+.score-name small {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--ink-3);
 }
-.stalled {
-  font-size: 12px;
-  margin-top: 6px;
-}
-.threads {
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-.threads ul {
-  list-style: none;
-  margin-top: 4px;
-}
-.threads li::before {
-  content: '· ';
-}
-.ending-box {
-  border: 1px solid var(--highlight);
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-}
-.ending-title {
+.score-val {
+  font-size: 20px;
   font-weight: 600;
-  margin-bottom: 6px;
+  line-height: 1.2;
 }
-.ending-box button {
-  margin: 8px 0;
+.score-val.danger {
+  color: var(--danger);
 }
-.actions {
+.score.unanchored .score-val,
+.score.unanchored .meter {
+  opacity: 0.5;
+}
+.bullets {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.bullets li {
   display: flex;
   gap: 8px;
-  margin-top: 12px;
 }
-.rollback-box {
-  margin-top: 14px;
+.bullets li::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  margin-top: 8px;
 }
-.rollback-box label {
-  display: block;
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.kv dt {
+  color: var(--ink-2);
+}
+.kv dd.changed {
+  color: var(--ok);
+}
+.kv dd.removed {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+.ending-box {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 12px;
+  background: var(--panel-2);
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.ending-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--ok);
+}
+.recommend {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-bottom: 10px;
+}
+.recommend b {
+  color: var(--ink);
+}
+.decide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.decide button {
+  justify-content: flex-start;
+  height: 36px;
+}
+.decide small {
+  margin-left: auto;
+  color: var(--ink-3);
   font-size: 12px;
-  margin-bottom: 4px;
 }
-.char-pills {
+.decision-form {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+}
+.pills {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.check-pill {
+.pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  background: var(--bg);
-  border-radius: 12px;
-  padding: 2px 8px;
+  gap: 6px;
+  margin: 0;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--r-xs);
+  background: var(--hover);
+  color: var(--ink);
+  font-weight: 400;
+  font-size: 13px;
+  cursor: pointer;
+}
+.form-actions {
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

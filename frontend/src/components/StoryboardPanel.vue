@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { api, ApiError } from '@/api/client'
+import Icon from '@/components/ui/Icon.vue'
 import type { BeatStatus, Storyboard, StoryboardUpdate } from '@/types'
 
 /**
@@ -197,7 +198,7 @@ async function save() {
   }
   const untitled = d.outline.find((b) => b.beat_id && !b.title.trim())
   if (untitled) {
-    saveError.value = `节拍 ${untitled.beat_id} 的标题不能为空。清空标题不会删除节拍，要删除请点 ✕`
+    saveError.value = `节拍 ${untitled.beat_id} 的标题不能为空。清空标题不会删除节拍；要删除，请点这个节拍右上角的删除按钮`
     return
   }
   const body = toPayload(d)
@@ -250,194 +251,212 @@ async function reloadAfterConflict() {
 </script>
 
 <template>
-  <div class="card storyboard">
-    <div class="row head">
-      <h3>分镜稿</h3>
-      <div class="row" style="gap: 6px">
-        <button v-if="!draft && board" class="ghost" @click="startEdit">✏ 编辑</button>
-        <button v-if="!draft" class="ghost" :disabled="loading" @click="load">↻</button>
+  <div class="storyboard">
+    <p class="private-note"><Icon name="private" :size="14" />仅导演可见，不会进入任何角色的上下文</p>
+    <div class="head">
+      <span class="section-title">导演分镜稿</span>
+      <div class="head-actions">
+        <button v-if="!draft && board" class="ghost" @click="startEdit"><Icon name="edit" :size="15" />编辑</button>
+        <button v-if="!draft" class="icon" title="重新加载" :disabled="loading" @click="load"><Icon name="refresh" :size="15" /></button>
       </div>
     </div>
-    <p class="dim hint">仅导演可见，不会进入任何角色的上下文。路线图服务于主线目标。</p>
 
-    <p v-if="loadError" class="err">⚠ {{ loadError }}</p>
-    <p v-else-if="loading && !board" class="dim">加载中...</p>
+    <p v-if="loadError" class="notice danger"><Icon name="alert" :size="15" />{{ loadError }}</p>
+    <p v-else-if="loading && !board" class="dim small">加载中</p>
 
     <template v-if="board">
       <div v-if="board.fork_origin" class="fork-origin">
         <div>
+          <Icon name="fork" :size="15" />
           从「{{ board.fork_origin.source_branch_name || '来源分支' }}」的快照「{{
             board.fork_origin.source_snapshot_label || board.fork_origin.source_snapshot_id.slice(0, 8)
           }}」分叉
         </div>
         <div v-if="forkConditions.length" class="dim">条件：{{ forkConditions.join('；') }}</div>
-        <div v-if="board.fork_origin.director_notes" class="dim notes">
-          备注：{{ board.fork_origin.director_notes }}
-        </div>
+        <div v-if="board.fork_origin.director_notes" class="dim notes">说明：{{ board.fork_origin.director_notes }}</div>
       </div>
 
-      <p v-if="board.goal_stale" class="stale">
-        ⚠ 路线图基于旧版主线目标。导演会在下一次评估时重排；你也可以编辑后勾选“已按当前目标重排”。
+      <p v-if="board.goal_stale" class="notice warn">
+        <Icon name="alert" :size="15" />路线图基于旧版主线目标。导演会在下一次评估时重排；你也可以编辑后勾选“已按当前目标重排”。
       </p>
 
       <!-- 只读视图 -->
       <template v-if="!draft">
-        <p v-if="isEmpty" class="dim">暂无分镜稿。路线图会在第一场评估之后由导演建立。</p>
-        <ol v-else-if="board.outline.length" class="beats">
-          <li v-for="b in board.outline" :key="b.beat_id" :class="b.status">
-            <span class="beat-id">{{ b.beat_id }}</span>
-            <span class="tag" :class="b.status">{{ STATUS_LABEL[b.status] }}</span>
-            <span class="beat-title">{{ b.title }}</span>
-            <span v-if="b.description" class="dim beat-desc">{{ b.description }}</span>
-          </li>
-        </ol>
-        <div v-if="board.memo" class="memo">
-          <label class="dim">备忘</label>
-          <p>{{ board.memo }}</p>
-        </div>
+        <p v-if="isEmpty" class="dim small empty">还没有分镜稿。第一场评估之后，导演会建立路线图。</p>
+        <template v-else>
+          <div v-if="board.outline.length" class="section-title">路线图</div>
+          <ol v-if="board.outline.length" class="beats">
+            <li v-for="b in board.outline" :key="b.beat_id" :class="b.status">
+              <span class="beat-id num">{{ b.beat_id }}</span>
+              <div>
+                <div class="beat-title">{{ b.title }}</div>
+                <div v-if="b.description" class="beat-desc">{{ b.description }}</div>
+                <div class="beat-status">{{ STATUS_LABEL[b.status] }}</div>
+              </div>
+            </li>
+          </ol>
+          <template v-if="board.memo">
+            <div class="section-title">导演备忘</div>
+            <p class="memo">{{ board.memo }}</p>
+          </template>
+        </template>
       </template>
 
       <!-- 编辑视图 -->
       <div v-else class="editor">
         <fieldset :disabled="saving" class="edit-fields">
           <div v-for="(b, i) in draft.outline" :key="b.beat_id || `new-${i}`" class="edit-beat">
-            <div class="row" style="gap: 6px">
-              <span class="beat-id">{{ b.beat_id || '新' }}</span>
-              <select v-model="b.status">
-                <option value="planned">计划</option>
+            <div class="edit-row">
+              <span class="beat-id num">{{ b.beat_id || '新' }}</span>
+              <select v-model="b.status" class="status-select">
+                <option value="planned">计划中</option>
                 <option value="done">已完成</option>
                 <option value="dropped">已放弃</option>
               </select>
-              <button class="ghost" :disabled="i === 0" @click="moveBeat(i, -1)">↑</button>
-              <button class="ghost" :disabled="i === draft.outline.length - 1" @click="moveBeat(i, 1)">↓</button>
-              <button class="ghost danger" @click="removeBeat(i)">✕</button>
+              <span class="spacer"></span>
+              <button class="icon sm" title="上移" :disabled="i === 0" @click="moveBeat(i, -1)"><Icon name="arrow-up" :size="14" /></button>
+              <button class="icon sm" title="下移" :disabled="i === draft.outline.length - 1" @click="moveBeat(i, 1)"><Icon name="arrow-down" :size="14" /></button>
+              <button class="icon sm danger" title="删除节拍" @click="removeBeat(i)"><Icon name="close" :size="14" /></button>
             </div>
             <input v-model="b.title" placeholder="节拍标题" />
             <input v-model="b.description" placeholder="打算怎么走（可留空）" />
           </div>
-          <button class="ghost" @click="addBeat">＋ 新增节拍</button>
+          <button class="ghost add" @click="addBeat"><Icon name="plus" :size="15" />新增节拍</button>
           <div class="field">
-            <label>备忘</label>
+            <label>导演备忘</label>
             <textarea v-model="draft.memo" rows="4" placeholder="人物弧光、已埋伏笔的打算、刻意留白的东西"></textarea>
           </div>
           <template v-if="board.goal_stale">
             <p class="dim goal-text">当前主线目标：{{ draft.goalText || '（未设定）' }}</p>
-            <label class="confirm">
-              <input v-model="draft.confirmGoal" type="checkbox" /> 已按上面这版主线目标重排
-            </label>
+            <label class="confirm"><input v-model="draft.confirmGoal" type="checkbox" />已按上面这版主线目标重排</label>
           </template>
         </fieldset>
-        <p v-if="conflict" class="err">
-          ⚠ {{ conflict }}
-          <button class="ghost" @click="reloadAfterConflict">重新加载</button>
+        <p v-if="conflict" class="notice danger">
+          <Icon name="alert" :size="15" /><span>{{ conflict }} <button class="ghost inline" @click="reloadAfterConflict">重新加载</button></span>
         </p>
-        <p v-if="saveError" class="err">⚠ {{ saveError }}</p>
-        <div class="row" style="gap: 6px">
-          <button :disabled="saving" @click="save">{{ saving ? '保存中...' : '保存' }}</button>
+        <p v-if="saveError" class="notice danger"><Icon name="alert" :size="15" />{{ saveError }}</p>
+        <div class="edit-actions">
           <button class="ghost" @click="cancelEdit">取消</button>
+          <button class="primary" :disabled="saving" @click="save">{{ saving ? '保存中' : '保存' }}</button>
         </div>
       </div>
 
-      <div v-if="board.changelog.length" class="log">
-        <button class="ghost" @click="showLog = !showLog">
-          {{ showLog ? '收起' : '展开' }}改动记录（{{ board.changelog.length }}）
-        </button>
-        <ul v-if="showLog">
+      <details v-if="board.changelog.length" class="log" :open="showLog" @toggle="showLog = ($event.target as HTMLDetailsElement).open">
+        <summary><Icon name="chevron-right" :size="15" class="caret" />改动记录（{{ board.changelog.length }}）</summary>
+        <ul>
           <li v-for="(c, i) in changelog" :key="i">
             <span class="tag">{{ SOURCE_LABEL[c.source] || c.source }}</span>
-            <span class="dim">{{ (c.at || '').replace('T', ' ').slice(0, 19) }}</span>
+            <span class="dim num">{{ (c.at || '').replace('T', ' ').slice(0, 16) }}</span>
             <div>{{ c.summary }}</div>
           </li>
         </ul>
-      </div>
+      </details>
     </template>
   </div>
 </template>
 
 <style scoped>
+.private-note {
+  margin-bottom: 12px;
+}
 .head {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
 }
-.hint {
-  font-size: 12px;
-  margin-top: 4px;
+.head .section-title {
+  margin: 0;
 }
-.err,
-.stale {
-  font-size: 12px;
-  color: var(--highlight);
-  margin-top: 8px;
+.head-actions {
+  display: flex;
+  gap: 2px;
+}
+.small {
+  font-size: 12.5px;
+}
+.empty {
+  padding: 16px 0;
+}
+.notice {
+  margin-bottom: 12px;
 }
 .fork-origin {
-  margin-top: 10px;
-  padding: 8px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
   line-height: 1.6;
+}
+.fork-origin > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .notes {
   white-space: pre-wrap;
 }
 .beats {
   list-style: none;
-  margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
 }
 .beats li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.beats li:first-child {
+  border-top: 0;
+}
+.beat-id {
+  color: var(--ink-3);
+  font-size: 12px;
+  padding-top: 2px;
+}
+.beat-title {
+  font-size: 13.5px;
+}
+.beat-desc {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  margin-top: 2px;
+}
+.beat-status {
+  font-size: 12px;
+  color: var(--ink-3);
 }
 .beats li.done .beat-title {
+  color: var(--ink-3);
   text-decoration: line-through;
-  color: var(--text-dim);
+  text-decoration-color: var(--line-strong);
 }
 .beats li.dropped {
   opacity: 0.55;
-  font-style: italic;
 }
-.beat-id {
-  font-family: monospace;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-.tag.planned {
-  color: var(--highlight);
-}
-.beat-desc {
-  flex: 1 0 100%;
-  font-size: 12px;
-  padding-left: 28px;
+.beats li.planned .beat-status {
+  color: var(--ink-2);
 }
 .memo {
-  margin-top: 10px;
-  font-size: 13px;
-}
-.memo p {
+  font-family: var(--font-script);
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--ink-2);
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
   white-space: pre-wrap;
-  margin-top: 4px;
 }
 .editor {
-  margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-.edit-beat {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.confirm {
-  font-size: 12px;
 }
 .edit-fields {
   border: none;
@@ -448,20 +467,85 @@ async function reloadAfterConflict() {
   flex-direction: column;
   gap: 8px;
 }
-.goal-text {
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-.log {
-  margin-top: 10px;
-  font-size: 12px;
-}
-.log ul {
-  list-style: none;
-  margin-top: 6px;
+.edit-beat {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.status-select {
+  width: auto;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 12.5px;
+}
+.add {
+  align-self: flex-start;
+}
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+  color: var(--ink);
+  font-size: 13px;
+}
+.goal-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.inline {
+  height: 22px;
+  padding: 0 6px;
+  color: inherit;
+  text-decoration: underline;
+}
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.log {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  font-size: 12.5px;
+}
+.log summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.log summary::-webkit-details-marker {
+  display: none;
+}
+.caret {
+  transition: transform 0.15s;
+}
+.log[open] .caret {
+  transform: rotate(90deg);
+}
+.log ul {
+  list-style: none;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.log li .tag {
+  margin-right: 6px;
 }
 </style>
