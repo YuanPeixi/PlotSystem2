@@ -61,7 +61,19 @@ function render() {
     edge: {
       style: { stroke: c.edge, labelFill: c.edgeLabel, labelFontSize: 10, endArrow: true },
     },
-    layout: { type: 'force', preventOverlap: true, nodeStrength: -60, linkDistance: 120 },
+    // G6 的 force（不是 d3-force）把 nodeStrength 当斥力权重用：正数才是互相排斥，
+    // 类型注释写反了。曾配成 -60，节点互相吸引、再被向心力拉拢，整张图塌成一团。
+    // preventOverlap 要配 nodeSize 才生效。
+    layout: {
+      type: 'force',
+      preventOverlap: true,
+      nodeSize: 36,
+      nodeSpacing: 16,
+      nodeStrength: 1000,
+      edgeStrength: 200,
+      linkDistance: 140,
+      gravity: 8,
+    },
     behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
   })
   graph.render()

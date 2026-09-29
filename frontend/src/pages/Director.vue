@@ -28,6 +28,9 @@ const directorStore = useDirectorStore()
 
 const intent = ref('')
 const planning = ref(false)
+// 规划/创建失败的原因，显示在规划界面顶部；重新点规划或开演时清掉
+const composeError = ref('')
+const creating = ref(false)
 const draft = ref<SceneConfig | null>(null)
 const branchId = ref('')
 const inspectingId = ref('')
@@ -114,9 +117,11 @@ function onKeydown(e: KeyboardEvent) {
 
 watch(branchId, async () => {
   if (!bootstrapped) return
-  // 草稿属于规划它的那条分支，切走就作废
+  // 草稿属于规划它的那条分支，切走就作废（连同在途的规划/创建响应）
+  planSeq++
   composing.value = false
   draft.value = null
+  composeError.value = ''
   await refreshBranchData()
   // 切分支必须连当前场景一起切，否则中间的日志与右侧的决策面板还停在上一条线上
   const last = scenes.value[scenes.value.length - 1]
@@ -154,7 +159,12 @@ async function attach(sceneId: string) {
 async function resume() {
   const scene = sceneStore.currentScene
   if (!scene) return
-  await sceneStore.resumeScene(scene.scene_id)
+  // /start 失败由 store 复位并写进 lastError；这里只兜住取场景本身失败的情况
+  try {
+    await sceneStore.resumeScene(scene.scene_id)
+  } catch (err) {
+    sceneStore.lastError = err instanceof Error ? err.message : '启动失败，请重试'
+  }
   await refreshBranchData()
 }
 
@@ -165,54 +175,91 @@ const NO_GOAL_WARNING =
 // 同一项目确认过一次就不再问：用户已经知道没有锚点，每次规划都弹就成了噪声
 let goalConfirmedFor = ''
 
+// 规划请求的序号：重新规划/取消/开演都会作废在途的旧响应，
+// 否则迟到的响应会把草稿填回已取消或已开演的舞台（甚至填进切走之后的另一条分支）
+let planSeq = 0
+
 async function plan() {
   // 只提示不拦：没有目标也可以先看看角色自己会演出什么，但不能让用户以为评分有参照
   if (!narrativeGoal.value.trim() && goalConfirmedFor !== props.projectId) {
     if (!confirm(NO_GOAL_WARNING)) return
     goalConfirmedFor = props.projectId
   }
+  const seq = ++planSeq
+  const forBranch = branchId.value
   planning.value = true
+  composeError.value = ''
   try {
     // 不再要求必填：主线目标已由后端从项目读，这里只是可选的本场意图
-    draft.value = await sceneStore.plan(props.projectId, branchId.value, intent.value)
+    const config = await sceneStore.plan(props.projectId, forBranch, intent.value)
+    // 已重新规划/已取消或开演（composer 已收起）/已切到别的分支：这份草稿过期，丢弃
+    if (seq !== planSeq || forBranch !== branchId.value || (!composing.value && !draft.value)) return
+    draft.value = config
+  } catch (err) {
+    if (seq === planSeq) composeError.value = err instanceof Error ? err.message : '规划失败，请重试'
   } finally {
-    planning.value = false
+    // 只有最后一次请求才能收 planning 的状态，否则旧请求会关掉新请求的"规划中"
+    if (seq === planSeq) planning.value = false
   }
 }
 
 async function startScene() {
-  if (!draft.value) return
+  if (!draft.value || creating.value) return
   // branch_id 为空的场景会从所有按分支过滤的列表里消失，建之前先拦下
   if (!branchId.value) {
     alert('当前没有可用分支，请先完成项目构建或选中一条分支')
     return
   }
-  const scene = await sceneStore.createScene(props.projectId, {
-    branch_id: branchId.value,
-    name: draft.value.name,
-    description: draft.value.description,
-    participating_characters: draft.value.participating_characters,
-    location: draft.value.location,
-    initial_conditions: draft.value.initial_conditions,
-    max_turns: draft.value.max_turns,
-    opening_narration: draft.value.opening_narration,
-    speaker_mode: draft.value.speaker_mode || 'round_robin',
-  })
-  // 草稿已落库成场景，舞台切回剧本视图
+  const seq = planSeq
+  const forBranch = branchId.value
+  creating.value = true
+  composeError.value = ''
+  let scene: Scene
+  try {
+    scene = await sceneStore.createScene(props.projectId, {
+      branch_id: forBranch,
+      name: draft.value.name,
+      description: draft.value.description,
+      participating_characters: draft.value.participating_characters,
+      location: draft.value.location,
+      initial_conditions: draft.value.initial_conditions,
+      max_turns: draft.value.max_turns,
+      opening_narration: draft.value.opening_narration,
+      speaker_mode: draft.value.speaker_mode || 'round_robin',
+    })
+  } catch (err) {
+    // 留在规划界面、草稿不丢，改一改或直接重试
+    composeError.value = err instanceof Error ? err.message : '创建场景失败，请重试'
+    return
+  } finally {
+    creating.value = false
+  }
+  // 创建期间已取消/点开别的场景/切到别的分支：场景已按原分支落库为未开演，
+  // 不再把它拉上舞台，更不能替用户开演
+  if (seq !== planSeq || forBranch !== branchId.value) {
+    await refreshBranchData()
+    return
+  }
+  // 草稿已落库成场景，作废在途的重新规划响应，舞台切回剧本视图
+  planSeq++
   draft.value = null
   composing.value = false
   void router.replace({ query: { ...route.query, scene: scene.scene_id } })
-  await sceneStore.startSimulation(scene.scene_id)
+  // 启动失败不抛出：store 会复位状态并把原因显示在舞台上，场景留在未开演、可重试
+  await sceneStore.startNewScene(scene)
   await refreshBranchData()
 }
 
 function startCompose() {
   composing.value = true
+  composeError.value = ''
 }
 
 function cancelCompose() {
+  planSeq++ // 在途的规划响应回来后直接丢弃
   composing.value = false
   draft.value = null
+  composeError.value = ''
 }
 
 async function selectScene(sceneId: string) {
@@ -269,6 +316,17 @@ async function removeSnapshot(snapshotId: string) {
   } catch (err) {
     alert(err instanceof Error ? err.message : '删除失败')
   }
+}
+
+/** 舞台底栏的快捷决策：继续/下一场不带人工覆盖，等价于决策面板里的默认提交。 */
+function quickDecision(type: 'continue' | 'next_scene') {
+  void onDecision({ decision_type: type, extra_turns: type === 'continue' ? 6 : null })
+}
+
+/** 回滚要填 IF 条件/选快照，引导到决策面板而不是在舞台栏里塞表单。 */
+function openDecide() {
+  inspTab.value = 'decide'
+  inspOpen.value = true
 }
 
 async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean) => void) {
@@ -348,6 +406,8 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
           v-model:intent="intent"
           :draft="draft"
           :planning="planning"
+          :creating="creating"
+          :error="composeError"
           :busy="sceneStore.running"
           :goal="narrativeGoal"
           :characters="charStore.characters"
@@ -363,9 +423,13 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
           :status-text="sceneStore.statusMsg || STATUS_LABEL[sceneStore.currentScene.status] || ''"
           :last-error="sceneStore.lastError"
           :resumable="resumable"
+          :decidable="sceneStore.currentScene.status === 'completed' && !sceneStore.running && !sceneStore.appliedDecision"
+          :deciding="sceneStore.decisionPending"
           :name-of="charStore.nameOf"
           @inspect="openCharacter"
           @resume="resume"
+          @decide="quickDecision"
+          @open-decide="openDecide"
         />
         <div v-else class="stage-empty">
           <Icon name="director" :size="28" />

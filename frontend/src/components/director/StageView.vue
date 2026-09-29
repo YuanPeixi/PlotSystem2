@@ -12,11 +12,17 @@ const props = defineProps<{
   lastError: string
   /** pending / paused 且未在跑：可以开演或续跑 */
   resumable: boolean
+  /** 已完成、未在跑、尚未决策：舞台底栏直接给出决策入口 */
+  decidable: boolean
+  /** 决策请求在途 */
+  deciding: boolean
   nameOf: (cid: string) => string
 }>()
 const emit = defineEmits<{
   (e: 'inspect', cid: string): void
   (e: 'resume'): void
+  (e: 'decide', type: 'continue' | 'next_scene'): void
+  (e: 'open-decide'): void
 }>()
 
 const only = ref('')
@@ -110,6 +116,18 @@ watch(
         <option value="">全部角色</option>
         <option v-for="[id, name] in speakers" :key="id" :value="id">只看{{ name }}</option>
       </select>
+      <!-- 快捷决策：与决策面板的默认提交等价；回滚要选快照、填条件，引导到决策页 -->
+      <span v-if="decidable" class="decide">
+        <button :disabled="deciding" title="同一场再演 6 轮" @click="emit('decide', 'continue')">
+          <Icon name="continue" :size="15" />继续
+        </button>
+        <button :disabled="deciding" title="让导演规划并开演下一场" @click="emit('decide', 'next_scene')">
+          <Icon name="next" :size="15" />下一场
+        </button>
+        <button :disabled="deciding" title="在决策面板里选择快照与新条件" @click="emit('open-decide')">
+          <Icon name="rollback" :size="15" />回滚…
+        </button>
+      </span>
     </footer>
   </div>
 </template>
@@ -210,6 +228,10 @@ watch(
   height: 28px;
   padding: 0 8px;
   font-size: 13px;
+}
+.decide {
+  display: inline-flex;
+  gap: 6px;
 }
 @container director (max-width: 860px) {
   .script {

@@ -27,12 +27,20 @@ export const useSceneStore = defineStore('scenes', () => {
     return api.planScene(projectId, branchId, sceneIntent)
   }
 
-  async function createScene(projectId: string, payload: Record<string, unknown>) {
-    currentScene.value = await api.createScene(projectId, payload)
+  /**
+   * 只落库，不碰舞台：创建请求在途时用户可能已取消或切走，
+   * 由调用方判断这份结果还该不该上台（再调 startNewScene）。
+   */
+  async function createScene(projectId: string, payload: Record<string, unknown>): Promise<Scene> {
+    return api.createScene(projectId, payload)
+  }
+
+  /** 把刚建好的场景设为当前并开演。 */
+  async function startNewScene(scene: Scene) {
+    currentScene.value = scene
     turns.value = []
-    evaluation.value = null
     appliedDecision.value = null
-    return currentScene.value
+    return startSimulation(scene.scene_id)
   }
 
   /** 只订阅事件流，不触发启动。首帧 status 由后端回放当前状态。 */
@@ -93,13 +101,33 @@ export const useSceneStore = defineStore('scenes', () => {
       statusMsg.value = '连接中断'
       running.value = false
     })
+    return source
   }
 
-  function startSimulation(sceneId: string, opts: { keepLog?: boolean } = {}) {
+  /**
+   * 开流并请求启动。返回是否启动成功；失败时不抛出，原因写进 lastError。
+   *
+   * 流必须先于 /start 建立（否则会漏掉开头几轮），但 /start 失败时后端场景仍是
+   * pending，SSE 首帧回放 pending 会让界面永远停在"准备中"、running 恒为真，
+   * 连重试按钮都不出现。所以失败时要把流关掉、状态复位，让场景回到可开演。
+   */
+  async function startSimulation(sceneId: string, opts: { keepLog?: boolean } = {}): Promise<boolean> {
     evaluation.value = null
     lastError.value = ''
-    openStream(sceneId, opts)
-    return api.startScene(sceneId)
+    const source = openStream(sceneId, opts)
+    try {
+      await api.startScene(sceneId)
+      return true
+    } catch (err) {
+      // 期间已切到别的场景：新流不归这次失败管
+      if (es === source) {
+        stopStream()
+        running.value = false
+        statusMsg.value = '启动失败'
+        lastError.value = err instanceof Error ? err.message : '启动失败，请重试'
+      }
+      return false
+    }
   }
 
   /** 用后端持久化的 dialogue_log 覆盖本地日志，修补 SSE 期间可能遗漏或重复的轮次。 */
@@ -240,6 +268,7 @@ export const useSceneStore = defineStore('scenes', () => {
     decisionPending,
     plan,
     createScene,
+    startNewScene,
     startSimulation,
     joinScene,
     attachScene,
