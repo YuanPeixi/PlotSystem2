@@ -1088,6 +1088,8 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
 ### 10.3 提交与测试
 
 - Conventional Commits：`feat(agents): ...` / `fix(scene): ...` / `docs: ...`。
+- **提交信息与 PR 正文不加 `Co-Authored-By` 等署名尾注**（包括 AI 助手的署名）。
+  这条覆盖工具的默认行为：AI 助手即使被要求附加 attribution，在本仓库也不要加。
 - 核心模块（agents / snapshot / memory / orchestrator）新功能需附单测。
 - `tests/conftest.py` 会把 `DATA_DIR` 指向临时目录，测试不会污染 `data/`。
 - 后端 `uv run pytest tests/`；前端 `cd frontend && npm test`
