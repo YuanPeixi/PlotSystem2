@@ -7,11 +7,15 @@ import { useSceneStore } from '@/stores/scenes'
 import { useDirectorStore } from '@/stores/director'
 import { api } from '@/api/client'
 import type { Scene, SceneConfig } from '@/types'
-import SceneTree from '@/components/SceneTree.vue'
-import DialogLog from '@/components/DialogLog.vue'
 import DirectorPanel from '@/components/DirectorPanel.vue'
 import CharacterInspector from '@/components/CharacterInspector.vue'
 import StoryboardPanel from '@/components/StoryboardPanel.vue'
+import BranchRail from '@/components/director/BranchRail.vue'
+import StageView from '@/components/director/StageView.vue'
+import SceneComposer from '@/components/director/SceneComposer.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import Icon from '@/components/ui/Icon.vue'
+import { branchColors, flattenBranches } from '@/utils/branches'
 
 const props = defineProps<{ projectId: string }>()
 
@@ -33,6 +37,11 @@ const forkName = ref('')
 const forkConditions = ref('')
 // 给导演的分叉说明：进入新分支分镜稿的"分叉说明"，首场起就在导演的规划/评估 prompt 里
 const forkNotes = ref('')
+// 舞台处于"开演前"：写本场意图 → 导演规划 → 就地改草稿 → 开演
+const composing = ref(false)
+// 右侧检查器：当前标签页；窄屏下它是抽屉，inspOpen 控制显隐
+const inspTab = ref<'eval' | 'decide' | 'board' | 'snaps'>('eval')
+const inspOpen = ref(false)
 // 首次加载期间不让 branchId 的 watcher 推翻刚从 URL 恢复出来的场景
 let bootstrapped = false
 
@@ -42,6 +51,19 @@ const STATUS_LABEL: Record<string, string> = {
   paused: '已中断',
   completed: '已完成',
 }
+
+const INSP_TABS = [
+  { key: 'eval', label: '评估' },
+  { key: 'decide', label: '决策' },
+  { key: 'board', label: '分镜稿' },
+  { key: 'snaps', label: '快照' },
+] as const
+
+const allBranches = computed(() => flattenBranches(directorStore.branchTree))
+const colors = computed(() => branchColors(directorStore.branchTree))
+const stageTitle = computed(() =>
+  composing.value || draft.value ? '规划下一场' : sceneStore.currentScene?.name || '导演台',
+)
 
 /** 当前分支的快照；分支为空时退回全部，避免刚建项目时面板空白。 */
 const branchSnapshots = computed(() =>
@@ -78,12 +100,23 @@ onMounted(async () => {
     if (last) await attach(last.scene_id)
   }
   bootstrapped = true
+  window.addEventListener('keydown', onKeydown)
 })
 
-onBeforeUnmount(() => sceneStore.stopStream())
+onBeforeUnmount(() => {
+  sceneStore.stopStream()
+  window.removeEventListener('keydown', onKeydown)
+})
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') inspOpen.value = false
+}
 
 watch(branchId, async () => {
   if (!bootstrapped) return
+  // 草稿属于规划它的那条分支，切走就作废
+  composing.value = false
+  draft.value = null
   await refreshBranchData()
   // 切分支必须连当前场景一起切，否则中间的日志与右侧的决策面板还停在上一条线上
   const last = scenes.value[scenes.value.length - 1]
@@ -165,9 +198,33 @@ async function startScene() {
     opening_narration: draft.value.opening_narration,
     speaker_mode: draft.value.speaker_mode || 'round_robin',
   })
+  // 草稿已落库成场景，舞台切回剧本视图
+  draft.value = null
+  composing.value = false
   void router.replace({ query: { ...route.query, scene: scene.scene_id } })
   await sceneStore.startSimulation(scene.scene_id)
   await refreshBranchData()
+}
+
+function startCompose() {
+  composing.value = true
+}
+
+function cancelCompose() {
+  composing.value = false
+  draft.value = null
+}
+
+async function selectScene(sceneId: string) {
+  if (!sceneId) return
+  cancelCompose()
+  await attach(sceneId)
+}
+
+/** 在检查器里打开角色内部视图；窄屏时顺带拉出抽屉。 */
+function openCharacter(cid: string) {
+  inspectingId.value = cid
+  inspOpen.value = true
 }
 
 /** 把每行 `key=value` 解析成初始条件字典（第一个 = 之后全部算值）。 */
@@ -243,291 +300,398 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
 </script>
 
 <template>
-  <div class="director">
-    <h1>导演视角</h1>
-    <div class="layout-grid">
-      <!-- 左侧：分支树 + 规划 -->
-      <section class="left">
-        <div class="card">
-          <h3>分支树</h3>
-          <SceneTree
-            :tree="directorStore.branchTree"
-            :selected-branch-id="branchId"
-            @select="branchId = $event"
-          />
-        </div>
-        <div class="card">
-          <h3>本分支场景</h3>
-          <ul class="scene-list">
-            <li
-              v-for="s in scenes"
-              :key="s.scene_id"
-              :class="{ active: s.scene_id === sceneStore.currentScene?.scene_id }"
-              @click="attach(s.scene_id)"
-            >
-              <span class="scene-name">{{ s.name || '未命名场景' }}</span>
-              <span class="tag" :class="s.status">
-                {{ STATUS_LABEL[s.status] || s.status }} · {{ s.turns_completed }}轮
-              </span>
-            </li>
-            <li v-if="!scenes.length" class="dim">该分支还没有场景</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>角色内部状态</h3>
-          <ul class="char-list">
-            <li v-for="c in charStore.characters" :key="c.character_id">
-              <span>{{ c.name }}<span class="dim"> · {{ c.current_emotion }}</span></span>
-              <button class="ghost" @click="inspectingId = c.character_id">🔍</button>
-            </li>
-            <li v-if="!charStore.characters.length" class="dim">尚未生成角色</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>规划场景</h3>
-          <p class="dim goal-anchor">
-            主线目标：{{ narrativeGoal || '尚未设定（可在工作台填写）' }}
-          </p>
-          <div class="field" style="margin-top: 10px">
-            <label>本场意图（可留空）</label>
-            <textarea v-model="intent" placeholder="例如：让两位主角在雨夜的酒馆中第一次正面冲突"></textarea>
-          </div>
-          <button :disabled="planning" @click="plan">{{ planning ? '规划中...' : '🎬 让导演规划' }}</button>
+  <div class="director-page">
+    <PageHeader :context="projectStore.current?.name" :title="stageTitle">
+      <template #meta>
+        <span v-if="sceneStore.currentScene && !composing && !draft" class="meta">
+          <span class="status-dot" :class="sceneStore.running ? 'running' : sceneStore.currentScene.status"></span>
+          {{ sceneStore.statusMsg || STATUS_LABEL[sceneStore.currentScene.status] }}
+        </span>
+      </template>
+      <button class="icon insp-toggle" title="打开检查器" @click="inspOpen = true"><Icon name="inspector" /></button>
+    </PageHeader>
 
-          <div v-if="draft" class="draft">
-            <div class="field">
-              <label>场景名</label>
-              <input v-model="draft.name" />
-            </div>
-            <div class="field">
-              <label>地点</label>
-              <input v-model="draft.location" />
-            </div>
-            <div class="field">
-              <label>描述</label>
-              <textarea v-model="draft.description"></textarea>
-            </div>
-            <div class="field">
-              <label>开场白</label>
-              <textarea v-model="draft.opening_narration"></textarea>
-            </div>
-            <div class="field">
-              <label>参与角色</label>
-              <div class="char-pills">
-                <span class="tag" v-for="cid in draft.participating_characters" :key="cid">
-                  {{ charStore.nameOf(cid) }}
-                </span>
-              </div>
-            </div>
-            <button :disabled="sceneStore.running" @click="startScene">
-              {{ sceneStore.running ? '模拟中...' : '▶ 开始模拟' }}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 中：对话日志 -->
-      <section class="card center">
-        <div class="row" style="justify-content: space-between">
-          <h3>{{ sceneStore.currentScene?.name || '对话日志' }}</h3>
-          <div class="row" style="gap: 8px">
-            <button v-if="resumable" class="ghost" @click="resume">▶ 继续这一场</button>
-            <span class="tag">{{ sceneStore.statusMsg || '空闲' }}</span>
-          </div>
-        </div>
-        <p v-if="sceneStore.lastError" class="scene-error">⚠ {{ sceneStore.lastError }}</p>
-        <DialogLog :turns="sceneStore.turns" />
-      </section>
-
-      <!-- 右：导演面板 + 快照 -->
-      <section class="right">
-        <DirectorPanel
-          :evaluation="sceneStore.evaluation"
-          :scene-id="sceneStore.currentScene?.scene_id || ''"
-          :characters="charStore.characters"
-          :snapshots="branchSnapshots"
-          :applied-decision="sceneStore.appliedDecision"
-          :pending="sceneStore.decisionPending"
-          @decision="onDecision"
-          @generate-output="router.push(`/output/${props.projectId}?branch=${sceneStore.currentScene?.branch_id || branchId}`)"
-        />
-        <!-- 本场评估到达时刷新：导演的路线图调整随评估一起落盘 -->
-        <StoryboardPanel
-          :project-id="props.projectId"
-          :branch-id="branchId"
-          :refresh-key="sceneStore.evaluation"
-        />
-        <div class="card">
-          <h3>快照</h3>
-          <ul class="snap-list">
-            <li v-for="s in branchSnapshots" :key="s.snapshot_id">
-              <div class="snap-main">
-                <span class="snap-label">{{ s.label || s.snapshot_id.slice(0, 8) }}</span>
-                <span class="dim">{{ (s.created_at || '').replace('T', ' ').slice(0, 19) }}</span>
-              </div>
-              <div class="row" style="gap: 6px">
-                <button class="ghost" @click="forkingId = s.snapshot_id">🌱 分叉</button>
-                <button class="ghost danger" @click="removeSnapshot(s.snapshot_id)">🗑</button>
-              </div>
-              <div v-if="forkingId === s.snapshot_id" class="fork-form">
-                <input v-model="forkName" placeholder="新分支名称，如：IF线·公主提前知情" />
-                <textarea
-                  v-model="forkConditions"
-                  rows="3"
-                  placeholder="IF 条件，每行一条 key=value，如：公主知情=是"
-                ></textarea>
-                <textarea
-                  v-model="forkNotes"
-                  rows="2"
-                  placeholder="给导演的说明（可留空），如：这条线想试试公主提前摊牌的走向"
-                ></textarea>
-                <span class="dim" style="font-size: 12px">
-                  分叉不会改动当前分支的任何数据；新分支会承接该快照的角色状态与长期记忆，
-                  并生成一个未开跑的首场。
-                </span>
-                <div class="row" style="gap: 6px">
-                  <button @click="confirmFork">创建分支</button>
-                  <button class="ghost" @click="forkingId = ''">取消</button>
-                </div>
-              </div>
-            </li>
-            <li v-if="!branchSnapshots.length" class="dim">还没有快照。每场推演会自动生成前后两份。</li>
-          </ul>
-        </div>
-      </section>
+    <!-- 窄屏：左栏收成顶部的两个下拉框 -->
+    <div class="mini-nav">
+      <select v-model="branchId" aria-label="分支">
+        <option v-for="b in allBranches" :key="b.branch_id" :value="b.branch_id">{{ b.name || '未命名分支' }}</option>
+      </select>
+      <select
+        :value="composing || draft ? '' : sceneStore.currentScene?.scene_id || ''"
+        aria-label="场景"
+        @change="selectScene(($event.target as HTMLSelectElement).value)"
+      >
+        <option v-if="composing || draft" value="">规划中的新场景</option>
+        <option v-for="(s, i) in scenes" :key="s.scene_id" :value="s.scene_id">第 {{ i + 1 }} 场　{{ s.name || '未命名场景' }}</option>
+      </select>
+      <button class="icon" title="让导演规划下一场" :disabled="!branchId" @click="startCompose"><Icon name="plus" /></button>
     </div>
 
-    <CharacterInspector
-      v-if="inspectingId"
-      :project-id="props.projectId"
-      :character-id="inspectingId"
-      :scene-id="sceneStore.currentScene?.scene_id || ''"
-      @close="inspectingId = ''"
-    />
+    <div class="director-grid">
+      <BranchRail
+        class="col col-rail"
+        :project-id="props.projectId"
+        :tree="directorStore.branchTree"
+        :branch-id="branchId"
+        :scenes="scenes"
+        :current-scene-id="sceneStore.currentScene?.scene_id || ''"
+        :snapshots="directorStore.snapshots"
+        :composing="composing || !!draft"
+        @select-branch="branchId = $event"
+        @select-scene="selectScene"
+        @compose="startCompose"
+      />
+
+      <section class="col col-stage" aria-label="舞台">
+        <SceneComposer
+          v-if="composing || draft"
+          v-model:intent="intent"
+          :draft="draft"
+          :planning="planning"
+          :busy="sceneStore.running"
+          :goal="narrativeGoal"
+          :characters="charStore.characters"
+          @plan="plan"
+          @start="startScene"
+          @cancel="cancelCompose"
+        />
+        <StageView
+          v-else-if="sceneStore.currentScene"
+          :scene="sceneStore.currentScene"
+          :turns="sceneStore.turns"
+          :running="sceneStore.running"
+          :status-text="sceneStore.statusMsg || STATUS_LABEL[sceneStore.currentScene.status] || ''"
+          :last-error="sceneStore.lastError"
+          :resumable="resumable"
+          :name-of="charStore.nameOf"
+          @inspect="openCharacter"
+          @resume="resume"
+        />
+        <div v-else class="stage-empty">
+          <Icon name="director" :size="28" />
+          <p>{{ branchId ? '这条分支还没有打开的场景。' : '还没有分支。先在工作台完成项目构建。' }}</p>
+          <button v-if="branchId" class="primary" @click="startCompose"><Icon name="plus" :size="15" />规划第一场</button>
+        </div>
+      </section>
+
+      <aside class="col col-insp" :class="{ open: inspOpen }" aria-label="检查器">
+        <CharacterInspector
+          v-if="inspectingId"
+          embedded
+          :project-id="props.projectId"
+          :character-id="inspectingId"
+          :scene-id="sceneStore.currentScene?.scene_id || ''"
+          @close="inspectingId = ''"
+        />
+        <!-- 用 v-show 保留各标签页的状态：分镜稿草稿、决策表单切走再回来不能丢 -->
+        <div v-show="!inspectingId" class="insp-tabs">
+          <div class="tabs" role="tablist">
+            <button
+              v-for="t in INSP_TABS"
+              :key="t.key"
+              role="tab"
+              :aria-selected="inspTab === t.key"
+              @click="inspTab = t.key"
+            >
+              {{ t.label }}
+            </button>
+            <button class="icon drawer-close" title="关闭检查器" @click="inspOpen = false"><Icon name="close" /></button>
+          </div>
+          <div class="pane">
+            <div v-show="inspTab === 'eval'">
+              <DirectorPanel
+                mode="eval"
+                :evaluation="sceneStore.evaluation"
+                :scene-id="sceneStore.currentScene?.scene_id || ''"
+              />
+            </div>
+            <div v-show="inspTab === 'decide'">
+              <DirectorPanel
+                mode="decide"
+                :evaluation="sceneStore.evaluation"
+                :scene-id="sceneStore.currentScene?.scene_id || ''"
+                :characters="charStore.characters"
+                :snapshots="branchSnapshots"
+                :applied-decision="sceneStore.appliedDecision"
+                :pending="sceneStore.decisionPending"
+                @decision="onDecision"
+                @generate-output="router.push(`/output/${props.projectId}?branch=${sceneStore.currentScene?.branch_id || branchId}`)"
+              />
+            </div>
+            <div v-show="inspTab === 'board'">
+              <!-- 本场评估到达时刷新：导演的路线图调整随评估一起落盘 -->
+              <StoryboardPanel :project-id="props.projectId" :branch-id="branchId" :refresh-key="sceneStore.evaluation" />
+            </div>
+            <div v-show="inspTab === 'snaps'">
+              <p v-if="!branchSnapshots.length" class="dim small">还没有快照。每场推演会自动生成开场前与结束后两份。</p>
+              <ul class="snaps">
+                <li v-for="s in branchSnapshots" :key="s.snapshot_id">
+                  <div class="snap-row">
+                    <span class="snap-bar" :style="{ background: colors.get(s.branch_id) || 'var(--line-strong)' }"></span>
+                    <div class="snap-main">
+                      <div class="snap-label">{{ s.label || s.snapshot_id.slice(0, 8) }}</div>
+                      <div class="dim num snap-time">{{ (s.created_at || '').replace('T', ' ').slice(0, 16) }}</div>
+                    </div>
+                    <button class="icon" title="从这里分叉" @click="forkingId = forkingId === s.snapshot_id ? '' : s.snapshot_id">
+                      <Icon name="fork" />
+                    </button>
+                    <button class="icon danger" title="删除快照" @click="removeSnapshot(s.snapshot_id)"><Icon name="trash" /></button>
+                  </div>
+                  <form v-if="forkingId === s.snapshot_id" class="fork-form" @submit.prevent="confirmFork">
+                    <div class="field">
+                      <label>新分支名称</label>
+                      <input v-model="forkName" placeholder="例如：公主提前知情" />
+                    </div>
+                    <div class="field">
+                      <label>IF 条件（每行一条 名称=内容）</label>
+                      <textarea v-model="forkConditions" rows="3" placeholder="公主知情=是"></textarea>
+                    </div>
+                    <div class="field">
+                      <label>给导演的说明（可留空）</label>
+                      <textarea v-model="forkNotes" rows="2" placeholder="这条线想试试公主提前摊牌的走向"></textarea>
+                    </div>
+                    <p class="dim small">分叉不会改动当前分支的任何数据。新分支承接这份快照的角色状态与长期记忆，并生成一个未开演的首场。</p>
+                    <div class="fork-actions">
+                      <button type="button" class="ghost" @click="forkingId = ''">取消</button>
+                      <button type="submit" class="primary" :disabled="!forkName.trim()"><Icon name="fork" :size="15" />分叉</button>
+                    </div>
+                  </form>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </aside>
+      <div class="scrim" :class="{ open: inspOpen }" @click="inspOpen = false"></div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.director h1 {
-  margin-bottom: 16px;
-}
-.layout-grid {
-  display: grid;
-  grid-template-columns: 320px 1fr 320px;
-  gap: 16px;
-  height: calc(100vh - 120px);
-}
-.left {
+/* 导演台是一个尺寸容器：布局按自身宽度而不是视口宽度退让（侧栏收起后可用宽度会变） */
+.director-page {
+  container: director / inline-size;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  overflow-y: auto;
+  height: 100%;
 }
-.right {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  overflow-y: auto;
-}
-.center {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.scene-error {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: var(--highlight);
-}
-.draft {
-  margin-top: 16px;
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
-}
-.char-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.char-list {
-  list-style: none;
-  margin-top: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.char-list li {
-  display: flex;
+.meta {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  font-size: 13px;
-}
-.scene-list,
-.snap-list {
-  list-style: none;
-  margin-top: 10px;
-  display: flex;
-  flex-direction: column;
   gap: 6px;
+  color: var(--ink-2);
   font-size: 13px;
-}
-.scene-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.scene-list li.active {
-  border-color: var(--highlight);
-}
-.scene-list li.dim {
-  border: none;
-  cursor: default;
-}
-.scene-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.goal-anchor {
-  font-size: 12px;
-  line-height: 1.5;
-  margin-top: 8px;
+.director-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(0, 1fr);
 }
-.tag.running {
-  color: var(--highlight);
+.col {
+  min-height: 0;
+  overflow: auto;
 }
-.snap-list li {
+.col-rail {
+  border-right: 1px solid var(--line);
+}
+.col-stage {
+  overflow: hidden;
+}
+.col-insp {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  flex-direction: column;
+  overflow: hidden;
 }
-.snap-list li.dim {
-  border: none;
+.insp-tabs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.tabs [role='tab'] {
+  position: relative;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
+}
+.tabs [role='tab']:hover {
+  color: var(--ink);
+}
+.tabs [role='tab'][aria-selected='true'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+.tabs [role='tab'][aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ink);
+}
+.drawer-close {
+  display: none;
+  margin-left: auto;
+  align-self: center;
+}
+.pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.small {
+  font-size: 12.5px;
+}
+.stage-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--ink-2);
+  padding: 24px;
+  text-align: center;
+}
+.snaps {
+  list-style: none;
+}
+.snaps > li {
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+}
+.snaps > li:first-child {
+  border-top: 0;
+}
+.snap-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.snap-bar {
+  width: 3px;
+  align-self: stretch;
+  border-radius: 2px;
+  flex: none;
 }
 .snap-main {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
 .snap-label {
+  font-size: 13.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.snap-time {
+  font-size: 12px;
+}
 .fork-form {
-  flex: 1 0 100%;
+  margin: 10px 0 4px 11px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+}
+.fork-actions {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.mini-nav {
+  display: none;
+}
+.insp-toggle {
+  display: none;
+}
+.scrim {
+  display: none;
+}
+
+/* 容器变窄：检查器改成浮在右侧的毛玻璃抽屉 */
+@container director (max-width: 1180px) {
+  .director-grid {
+    grid-template-columns: 248px minmax(0, 1fr);
+  }
+  .insp-toggle,
+  .drawer-close {
+    display: inline-flex;
+  }
+  .col-insp {
+    position: fixed;
+    top: 60px;
+    right: 8px;
+    bottom: 8px;
+    width: min(380px, calc(100vw - 16px));
+    z-index: 30;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--material);
+    backdrop-filter: saturate(180%) blur(24px);
+    -webkit-backdrop-filter: saturate(180%) blur(24px);
+    box-shadow: var(--shadow-float);
+    transform: translateX(calc(100% + 16px));
+    visibility: hidden;
+    transition: transform 0.22s ease, visibility 0s linear 0.22s;
+  }
+  .col-insp.open {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.22s ease;
+  }
+  .scrim.open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+  }
+}
+/* 再窄：左栏收成舞台上方的下拉框，舞台永远不让出空间 */
+@container director (max-width: 860px) {
+  .director-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .col-rail {
+    display: none;
+  }
+  .mini-nav {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .mini-nav select {
+    width: auto;
+    max-width: 45%;
+    height: 30px;
+    padding: 0 8px;
+  }
+}
+@supports (corner-shape: squircle) {
+  @container director (max-width: 1180px) {
+    .col-insp {
+      corner-shape: squircle;
+      border-radius: calc(var(--r-lg) * 1.6);
+    }
+  }
 }
 </style>

@@ -116,6 +116,8 @@ PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项�
 | 持久化 | aiosqlite + JSON 文件树 | ✅ 已接入 | `utils/db.py` + `services/repository.py` |
 | 前端 | Vue 3 + Vite + Pinia + Axios | ✅ 已接入 | `frontend/src/` |
 | 图谱可视化 | AntV G6 | ✅ 已接入 | `GraphViewer.vue` / `GraphViewer2.vue` |
+| 衬线字体 | `@fontsource/noto-serif-sc`（思源宋体 400/600） | ✅ 已接入 | `main.ts` 引入。对白、开场白、输出预览用；自托管、按 unicode-range 分片，离线可用，只下载页面上出现过的字 |
+| 图标 | Lucide 图标的 SVG 路径（内联，不是依赖） | ✅ 已接入 | `components/ui/icons.ts`，取自 lucide-static v1.48.0（ISC）；fork / snapshot 两个自绘 |
 | **AutoGen** (`autogen-agentchat`) | 仅 `base_agent.py` 与 `CharacterAgent.get_autogen_agent()` | 🚫 **已评估，倾向不引入** | 无调用方。GroupChat 编排会打破【契约3】的 system 静态 / user 动态结构；未来的"角色动作交由环境智能体裁决"用 OpenAI 原生 function calling 即可，不需要 AutoGen |
 | **LlamaIndex** | 无 | 🚫 **已评估，暂不引入** | 全仓库零 import。它对长期记忆的真实增量价值 = 时间衰减权重 + 混合检索(BM25) + 分层索引，这三项可在现有 Chroma 封装上手写，不必引入整个框架 |
 | **microsoft/graphrag** | 无 | ❌ **未使用** | 已移入 `[project.optional-dependencies].graphrag` |
@@ -201,11 +203,15 @@ backend/
     └── init_db.py     `python -m backend.utils.init_db`
 
 frontend/src/
-├── pages/       Workspace.vue（项目+图谱） / Director.vue（分支树+日志+决策） / Output.vue
-├── components/  GraphViewer.vue、GraphViewer2.vue、SceneTree.vue、
-│                CharacterCard.vue、DialogLog.vue、DirectorPanel.vue、StoryboardPanel.vue
+├── pages/       Workspace.vue（项目+图谱） / Director.vue（导演台） / BranchMap.vue（分支图） / Output.vue
+├── components/  DialogLog.vue（剧本格式台词）、DirectorPanel.vue、StoryboardPanel.vue、
+│                CharacterInspector.vue、CharacterCard.vue、GraphViewer.vue、GraphViewer2.vue
+│   ├── director/  BranchRail.vue（左栏：当前谱系+场景）、StageView.vue（舞台）、SceneComposer.vue（开演前规划）
+│   └── ui/        Icon.vue + icons.ts（内联 SVG 图标）、PageHeader.vue
+├── composables/ theme.ts（亮/暗主题 + 给 G6 取 CSS 变量）
+├── utils/       branches.ts（分支配色、谱系、分支图布局，纯函数）
 ├── stores/      project.ts / characters.ts / scenes.ts / director.ts
-├── router/index.ts、api/client.ts、types/index.ts、styles/global.css
+├── router/index.ts、api/client.ts、types/index.ts、styles/global.css（设计变量的唯一定义处）
 ```
 
 **入口速查**：
@@ -953,14 +959,44 @@ prefix cache**，落地时必须改走 user 块。
 | 页面 | 路由 | 功能 |
 |------|------|------|
 | `Workspace.vue` | `/` | 项目管理、**主线目标编辑**、种子上传、构建进度轮询、G6 图谱 |
-| `Director.vue` | `/director/:projectId` | 分支树、本分支场景列表、场景配置、SSE 实时日志、决策面板、**分镜稿面板**、快照面板 |
-| `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 预览导出 |
+| `Director.vue` | `/director/:projectId` | 三栏：左栏当前谱系与本分支场景；中间舞台（剧本格式实时日志 / 开演前规划）；右侧检查器（评估 / 决策 / 分镜稿 / 快照，角色内部状态也在这里打开） |
+| `BranchMap.vue` | `/branches/:projectId` | 分支图：纵轴第几场、横轴分支，点任意一场回导演台打开 |
+| `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 纸面预览 → 下载；右栏是给后续导出功能的预留区 |
 
-要点：
+### 9.1 设计系统
 
+- **变量是唯一真值**：颜色、圆角、字体全在 `styles/global.css`，组件里不写十六进制色值。
+  亮色默认，`html[data-theme="dark"]` 切暗色；选择存在 `localStorage['plotsystem.theme']`，
+  `index.html` 的内联脚本在挂载前读它，避免闪色。
+- **颜色带语义，别当装饰用**：`--spot`（追光）只标"当前发言者 / 推演中"；`--private`（暗场）
+  只标**仅导演可见**的内容（独白、未知事实、分镜稿）——这是信息不对称在界面上的编码，
+  拿它装饰普通元素就把编码冲掉了。亮色是暖金 + 紫，暗色是钴蓝 + 冰青。
+  `--b-*` 是分支识别色，由 `utils/branches.ts::branchColors` 按深度优先顺序分配（主线用墨色），
+  左栏、分支图、快照必须用同一个函数取色。
+- **圆角随层级变**：4（标签）/ 6（按钮、输入框）/ 10（面板）/ 14（浮层）；嵌套时内圆角 = 外圆角 − 内边距。
+  阴影只给真正浮起来的层（抽屉、侧拉面板）。不要卡片套卡片。
+- **按钮四级**：默认（次要）/ `.primary` / `.ghost` / `.danger`，只放图标用 `.icon`（文字说明写在 `title`）。
+  图标一律 `<Icon name>`，不用 emoji。
+- **G6 读不到 CSS 变量**：两个图谱查看器渲染前经 `composables/theme.ts::cssVar` 现取颜色，
+  并 `watch(theme)` 重建图实例。新增 JS 侧配色的库照此处理。
+- **导演台按容器宽度而不是视口宽度退让**（`container: director`）：≤1180 检查器变抽屉，
+  ≤860 左栏收成顶部下拉框，舞台永远不让出空间。应用侧栏在视口 ≤1440 时默认收成图标栏。
+
+### 9.2 要点
+
+- **舞台的两种状态**：有草稿或正在规划时显示 `SceneComposer`（写本场意图 → 导演规划 →
+  就地改草稿 → 开演），否则显示 `StageView`。**只有尚未落库的草稿能改**：后端没有修改场景的
+  接口，决策 / 分叉产生的 pending 场景只能看、只能开演。切分支时草稿作废。
+- **检查器各标签页用 `v-show` 而不是 `v-if`**：分镜稿的编辑草稿与决策表单切走再回来不能丢。
+  角色内部状态（`CharacterInspector embedded`）盖在标签页上，返回即恢复。
+- **测试直接执行 `Director.vue` / `DirectorPanel.vue` / `Output.vue` / `StoryboardPanel.vue`
+  的脚本块**，环境里只注入了它们用到的全局名。给这几个文件加逻辑时只加 `ref` / 函数，
+  不要在顶层调用新的 store 或 composable；新布局逻辑放进子组件。`Output.vue` 的重试按钮
+  还被测试按 `<button v-if="scopeError" ... @click="loadScope">` 的写法匹配。
 - **SSE 双保险**：`joinScene` 先用已持久化的 `dialogue_log` 铺底，
   `startSimulation({keepLog})` 保留续跑日志，场景完成后 `reconcileLog()` 补齐
   SSE 建立前遗漏的轮次。改动实时日志逻辑时别破坏这个对账。
+  舞台只在用户停在底部附近时才跟随新台词滚动（`StageView` 的 `stick`）。
 - **`attachScene` 与 `joinScene` 不可混用**：前者用于“打开/重连已存在的场景”（刷新恢复、
   点选历史场景），**绝不调 `/start`**；后者用于决策产生的新场景/续跑，会调 `/start`。
   对已完成场景误调 `/start` 会白烧一整场 LLM 并覆盖快照/评估（后端已加拦截，但前端不该依赖它）。
@@ -993,10 +1029,11 @@ prefix cache**，落地时必须改走 user 块。
   新分支的最后一场）。不同步的话，后续“让导演规划”和场景列表仍按旧分支走。
 - **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
   否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
-- `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换。
-- `SceneTree.vue` 是纯 `h()` 渲染的嵌套列表（**不是 G6**），节点是 **Branch** 不是 Scene，
-  仅 emit 选中的 `branch_id`。
-- 样式：暗色卡片风。主色 `#1a1a2e` / `#16213e` / `#0f3460`，高亮 `#e94560`。
+- `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换（界面上叫"概览 / 聚焦"）。
+- **分支图的深度沿因果链推**（`utils/branches.ts::layoutBranchMap`）：首场的 `parent_scene_id`
+  指向来源场景（契约 I4），承接的若是来源场景的 `snapshot_id_before` 就是回滚重演、与来源同一行；
+  手建场景没有 parent，接在本分支上一场之后。它读的是全量 `GET /scenes`（带对白），
+  几十场的规模可以接受，场景多了要给后端加投影。
 - **结局是提示不是闸门**：`is_ending_reached` 为真时 `DirectorPanel` 显示结局提示与
   "生成结局输出"入口，但**三个决策按钮保持可用** —— 结局是导演的判断，用户完全可能
   不认同（想继续演、想回滚）。别让 LLM 的一个布尔值锁死用户操作。
