@@ -11,6 +11,10 @@ const props = defineProps<{
   draft: SceneConfig | null
   intent: string
   planning: boolean
+  /** 场景创建请求在途（防连点重复创建） */
+  creating: boolean
+  /** 规划/创建失败的原因，空串表示没有错误 */
+  error: string
   /** 另一场正在推演时不能开演 */
   busy: boolean
   goal: string
@@ -67,6 +71,7 @@ function toggleCast(cid: string) {
 <template>
   <div class="composer">
     <div class="script">
+      <p v-if="error" class="notice danger composer-error"><Icon name="alert" :size="15" />{{ error }}</p>
       <!-- 第一步：本场意图 -->
       <template v-if="!draft">
         <h2 class="slug">规划下一场</h2>
@@ -161,22 +166,24 @@ function toggleCast(cid: string) {
     </div>
 
     <footer class="stage-bar">
-      <button class="ghost" @click="emit('cancel')">取消</button>
+      <!-- 创建请求在途时不能取消：请求已发出，取消只会留下一个用户以为没建的场景 -->
+      <button class="ghost" :disabled="creating" @click="emit('cancel')">取消</button>
       <span class="spacer"></span>
       <button v-if="!draft" class="primary" :disabled="planning" @click="emit('plan')">
         <Icon name="director" :size="15" />{{ planning ? '导演规划中' : '让导演规划' }}
       </button>
       <template v-else>
-        <button class="ghost" :disabled="planning" @click="emit('plan')">
+        <button class="ghost" :disabled="planning || creating" @click="emit('plan')">
           <Icon name="replan" :size="15" />{{ planning ? '规划中' : '让导演重新规划' }}
         </button>
+        <!-- 重新规划期间不许拿旧草稿开演：新草稿马上就要把它换掉 -->
         <button
           class="primary"
-          :disabled="busy || !draft.participating_characters.length"
-          :title="busy ? '另一场正在推演' : ''"
+          :disabled="busy || planning || creating || !draft.participating_characters.length"
+          :title="busy ? '另一场正在推演' : planning ? '导演正在重新规划' : ''"
           @click="emit('start')"
         >
-          <Icon name="play" :size="15" />开演
+          <Icon name="play" :size="15" />{{ creating ? '创建中' : '开演' }}
         </button>
       </template>
     </footer>
@@ -198,6 +205,9 @@ function toggleCast(cid: string) {
   max-width: 720px;
   margin: 0 auto;
   padding: 36px 40px 24px;
+}
+.composer-error {
+  margin-bottom: 16px;
 }
 .slug {
   font-family: var(--font-script);

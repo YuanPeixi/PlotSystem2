@@ -987,6 +987,17 @@ prefix cache**，落地时必须改走 user 块。
 - **舞台的两种状态**：有草稿或正在规划时显示 `SceneComposer`（写本场意图 → 导演规划 →
   就地改草稿 → 开演），否则显示 `StageView`。**只有尚未落库的草稿能改**：后端没有修改场景的
   接口，决策 / 分叉产生的 pending 场景只能看、只能开演。切分支时草稿作废。
+- **规划与建场景的迟到响应一律作废**（`Director.vue` 的 `planSeq`）：重新规划、取消、切分支、
+  开演都会让序号前进，响应回来时序号或分支不符就丢弃——否则取消后草稿会弹回来、A 分支的
+  草稿会填进 B 并建到 B 上。重新规划期间"开演"禁用；建场景请求在途时开演/重新规划/取消都禁用。
+  `sceneStore.createScene` **只落库不改舞台**，上台由 `startNewScene` 做：创建期间用户已离开
+  规划界面时，场景留在原分支未开演，不替用户开演。
+- **`startSimulation` 失败不抛出**：流必须先于 `/start` 打开，`/start` 失败时后端场景仍是
+  pending、SSE 首帧回放 pending，不复位就会永远卡在"准备中"且不出重试按钮。失败时关流、
+  `running=false`、原因进 `lastError`，返回 false；场景回到可开演。决策后的续跑启动失败
+  因此也不会被误报成"决策提交失败"。
+- **舞台底栏有快捷决策**（已完成且未决策时）：继续 / 下一场与决策面板的默认提交等价；
+  回滚要选快照、填条件，只负责打开检查器的决策页。
 - **检查器各标签页用 `v-show` 而不是 `v-if`**：分镜稿的编辑草稿与决策表单切走再回来不能丢。
   角色内部状态（`CharacterInspector embedded`）盖在标签页上，返回即恢复。
 - **测试直接执行 `Director.vue` / `DirectorPanel.vue` / `Output.vue` / `StoryboardPanel.vue`
@@ -1030,6 +1041,8 @@ prefix cache**，落地时必须改走 user 块。
 - **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
   否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
 - `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换（界面上叫"概览 / 聚焦"）。
+  **两者用的布局不同，`nodeStrength` 的符号相反**：概览是 G6 `force`，正数 = 斥力（它的类型注释
+  写反了，曾配成 -60 让整张图塌成一团）；聚焦是 `d3-force`，负数 = 斥力。
 - **分支图的深度沿因果链推**（`utils/branches.ts::layoutBranchMap`）：首场的 `parent_scene_id`
   指向来源场景（契约 I4），承接的若是来源场景的 `snapshot_id_before` 就是回滚重演、与来源同一行；
   手建场景没有 parent，接在本分支上一场之后。它读的是全量 `GET /scenes`（带对白），
