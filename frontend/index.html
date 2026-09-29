@@ -1,9 +1,16 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PlotSystem · 剧情推演</title>
+    <title>PlotSystem 剧情推演</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- 与 src/composables/theme.ts 同一个存储键：挂载前就定好主题，避免首屏闪色 -->
+    <script>
+      try {
+        if (localStorage.getItem('plotsystem.theme') === 'dark') document.documentElement.dataset.theme = 'dark'
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { Graph } from '@antv/g6'
+import { cssVar, theme } from '@/composables/theme'
 import type { GraphData } from '@/types'
 
 const props = defineProps<{ data: GraphData }>()
@@ -8,20 +9,28 @@ const props = defineProps<{ data: GraphData }>()
 const container = ref<HTMLDivElement | null>(null)
 let graph: Graph | null = null
 
-const COLORS: Record<string, string> = {
-  Character: '#4d79ff',
-  Location: '#3ec46d',
-  Event: '#f0a020',
-  Concept: '#9aa0bf',
+/** 按当前主题取色：G6 在 JS 里配色，读不到 CSS 变量，每次渲染前现取 */
+function palette() {
+  return {
+    Character: cssVar('--g-character'),
+    Location: cssVar('--g-location'),
+    Event: cssVar('--g-event'),
+    Concept: cssVar('--g-concept'),
+    label: cssVar('--ink'),
+    edgeLabel: cssVar('--ink-3'),
+    edge: cssVar('--line-strong'),
+  }
 }
 
 function render() {
   if (!container.value) return
+  const c = palette()
+  const fillOf = (t: string) => (c as Record<string, string>)[t] || c.Concept
   const g6data = {
     nodes: props.data.nodes.map((n) => ({
       id: n.id,
       data: { label: n.label, nodeType: n.nodeType },
-      style: { fill: COLORS[n.nodeType] || COLORS.Concept, labelText: n.label },
+      style: { fill: fillOf(n.nodeType), labelText: n.label },
     })),
     edges: props.data.edges.map((e, i) => ({
       id: `e${i}`,
@@ -44,13 +53,13 @@ function render() {
     node: {
       style: {
         size: 36,
-        labelFill: '#e6e6f0',
+        labelFill: c.label,
         labelFontSize: 12,
         labelPlacement: 'bottom',
       },
     },
     edge: {
-      style: { stroke: '#3a3f5e', labelFill: '#9aa0bf', labelFontSize: 10, endArrow: true },
+      style: { stroke: c.edge, labelFill: c.edgeLabel, labelFontSize: 10, endArrow: true },
     },
     layout: { type: 'force', preventOverlap: true, nodeStrength: -60, linkDistance: 120 },
     behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
@@ -60,6 +69,12 @@ function render() {
 
 onMounted(render)
 watch(() => props.data, render, { deep: true })
+// 节点/连线的颜色是创建时写死进 G6 的，换主题只能重建
+watch(theme, () => {
+  graph?.destroy()
+  graph = null
+  render()
+})
 
 onBeforeUnmount(() => {
   graph?.destroy()
@@ -71,12 +86,12 @@ onBeforeUnmount(() => {
   <div class="graph-wrap">
     <div ref="container" class="graph-canvas"></div>
     <div class="legend">
-      <span><i style="background:#4d79ff"></i>人物</span>
-      <span><i style="background:#3ec46d"></i>地点</span>
-      <span><i style="background:#f0a020"></i>事件</span>
-      <span><i style="background:#9aa0bf"></i>概念</span>
+      <span><i style="background: var(--g-character)"></i>人物</span>
+      <span><i style="background: var(--g-location)"></i>地点</span>
+      <span><i style="background: var(--g-event)"></i>事件</span>
+      <span><i style="background: var(--g-concept)"></i>概念</span>
     </div>
-    <div v-if="!data.nodes.length" class="empty dim">暂无图谱数据，请先上传种子文本并构建。</div>
+    <div v-if="!data.nodes.length" class="empty dim">还没有图谱数据。上传种子文本并构建后会出现在这里。</div>
   </div>
 </template>
 
@@ -97,7 +112,7 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 14px;
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--ink-2);
 }
 .legend i {
   display: inline-block;
