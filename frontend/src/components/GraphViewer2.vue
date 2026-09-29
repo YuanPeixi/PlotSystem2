@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Graph } from '@antv/g6'
+import { cssVar, theme } from '@/composables/theme'
 import type { GraphData, GraphEdge, GraphNode } from '@/types'
 
 const props = defineProps<{ data: GraphData }>()
@@ -8,11 +9,28 @@ const props = defineProps<{ data: GraphData }>()
 const container = ref<HTMLDivElement | null>(null)
 let graph: Graph | null = null
 
-const COLORS: Record<string, string> = {
-  Character: '#4d79ff',
-  Location: '#3ec46d',
-  Event: '#f0a020',
-  Concept: '#9aa0bf',
+/** 按当前主题取色：G6 在 JS 里配色，读不到 CSS 变量，每次渲染前现取 */
+function palette() {
+  return {
+    label: cssVar('--ink'),
+    labelDim: cssVar('--ink-3'),
+    edge: cssVar('--line-strong'),
+    edgeLabel: cssVar('--ink-3'),
+    selected: cssVar('--spot'),
+    selectedLabel: cssVar('--spot-ink'),
+    ring: cssVar('--panel'),
+  }
+}
+
+/** 节点类型色；读一次 theme 让模板在切主题时重新求值 */
+function typeColor(type: string): string {
+  void theme.value
+  const key: Record<string, string> = {
+    Character: '--g-character',
+    Location: '--g-location',
+    Event: '--g-event',
+  }
+  return cssVar(key[type] || '--g-concept')
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -108,6 +126,7 @@ function edgeTouchesSelected(edge: GraphEdge) {
 }
 
 function buildG6Data() {
+  const c = palette()
   const hasSelection = Boolean(selectedNodeId.value)
   return {
     nodes: filteredNodes.value.map((node) => {
@@ -118,11 +137,11 @@ function buildG6Data() {
         id: node.id,
         data: { label: node.label, nodeType: node.nodeType },
         style: {
-          fill: COLORS[node.nodeType] || COLORS.Concept,
+          fill: typeColor(node.nodeType),
           fillOpacity: isDimmed ? 0.22 : 1,
           size: isSelected ? 46 : 34,
           labelText: node.label,
-          labelFill: isDimmed ? '#555b78' : '#e6e6f0',
+          labelFill: isDimmed ? c.labelDim : c.label,
           labelFontSize: isSelected ? 13 : 11,
           labelPlacement: 'bottom' as const,
           labelMaxWidth: 120,
@@ -138,11 +157,11 @@ function buildG6Data() {
         target: edge.target,
         data: { relType: edge.relType },
         style: {
-          stroke: isSelected ? '#e94560' : '#3a3f5e',
+          stroke: isSelected ? c.selected : c.edge,
           lineWidth: isSelected ? 2 : 1,
           opacity: hasSelection && !isSelected ? 0.18 : 0.78,
           labelText: showRelationLabels.value || isSelected ? edge.relType : '',
-          labelFill: isSelected ? '#ff9bad' : '#858ba9',
+          labelFill: isSelected ? c.selectedLabel : c.edgeLabel,
           labelFontSize: 10,
           endArrow: true,
         },
@@ -153,6 +172,7 @@ function buildG6Data() {
 
 async function render() {
   if (!container.value) return
+  const c = palette()
   const g6data = buildG6Data()
 
   if (graph) {
@@ -168,17 +188,17 @@ async function render() {
     node: {
       type: 'circle',
       style: {
-        stroke: '#1a1a2e',
+        stroke: c.ring,
         lineWidth: 2,
-        labelFill: '#e6e6f0',
+        labelFill: c.label,
         labelFontSize: 11,
         labelPlacement: 'bottom',
       },
     },
     edge: {
       style: {
-        stroke: '#3a3f5e',
-        labelFill: '#858ba9',
+        stroke: c.edge,
+        labelFill: c.edgeLabel,
         labelFontSize: 10,
         endArrow: true,
       },
@@ -255,6 +275,13 @@ watch(
 
 onMounted(render)
 
+// 节点默认样式（描边、标签色）是创建时写死进 G6 的，换主题只能重建
+watch(theme, async () => {
+  graph?.destroy()
+  graph = null
+  await render()
+})
+
 onBeforeUnmount(() => {
   graph?.destroy()
   graph = null
@@ -291,7 +318,7 @@ onBeforeUnmount(() => {
         <div ref="container" class="graph-canvas"></div>
         <div class="legend">
           <span v-for="type in typeOptions" :key="type">
-            <i :style="{ background: COLORS[type] || COLORS.Concept }"></i>{{ typeLabel(type) }}
+            <i :style="{ background: typeColor(type) }"></i>{{ typeLabel(type) }}
           </span>
         </div>
         <div v-if="data.nodes.length && !filteredNodes.length" class="empty dim">没有符合当前筛选条件的节点</div>
@@ -302,7 +329,7 @@ onBeforeUnmount(() => {
         <template v-if="selectedNode">
           <div class="detail-heading">
             <div>
-              <span class="type-dot" :style="{ background: COLORS[selectedNode.nodeType] || COLORS.Concept }"></span>
+              <span class="type-dot" :style="{ background: typeColor(selectedNode.nodeType) }"></span>
               <span class="dim">{{ typeLabel(selectedNode.nodeType) }}</span>
             </div>
             <button class="close-button" type="button" aria-label="清除选择" @click="clearSelection">×</button>
@@ -364,12 +391,12 @@ onBeforeUnmount(() => {
   margin: 0;
   white-space: nowrap;
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--ink-2);
 }
 
 .check-control input {
   width: auto;
-  accent-color: var(--highlight);
+  accent-color: var(--spot);
 }
 
 .count {
@@ -396,9 +423,9 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 300px;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(15, 52, 96, 0.16);
+  background: var(--panel-2);
 }
 
 .graph-canvas {
@@ -415,7 +442,7 @@ onBeforeUnmount(() => {
   gap: 8px 12px;
   max-width: 80%;
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--ink-2);
   pointer-events: none;
 }
 
@@ -431,9 +458,9 @@ onBeforeUnmount(() => {
   width: 204px;
   flex: 0 0 204px;
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(26, 26, 46, 0.55);
+  background: var(--panel);
   overflow: auto;
 }
 
@@ -469,14 +496,14 @@ onBeforeUnmount(() => {
   border: 0;
   padding: 0 5px;
   background: transparent;
-  color: var(--text-dim);
+  color: var(--ink-2);
   font-size: 20px;
   line-height: 1;
 }
 
 .detail-panel h4 {
   margin: 20px 0 14px;
-  color: var(--text);
+  color: var(--ink);
   font-size: 17px;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -484,8 +511,8 @@ onBeforeUnmount(() => {
 
 .detail-stat {
   padding: 8px 0;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 
@@ -502,13 +529,13 @@ onBeforeUnmount(() => {
 }
 
 .relation-name {
-  color: #ff9bad;
+  color: var(--spot-ink);
   overflow-wrap: anywhere;
 }
 
 .relation-target {
   max-width: 98px;
-  color: var(--text-dim);
+  color: var(--ink-2);
   text-align: right;
   overflow-wrap: anywhere;
 }
@@ -529,7 +556,7 @@ onBeforeUnmount(() => {
 }
 
 .detail-empty strong {
-  color: var(--text);
+  color: var(--ink);
   font-size: 13px;
 }
 
