@@ -12,7 +12,7 @@ const script = source
 const compiled = ts.transpileModule(script + `
 globalThis.subject = {
   plan, intent, draft, planning, composeError, creating, composing, branchId,
-  startCompose, cancelCompose, startScene,
+  startCompose, cancelCompose, startScene, selectScene,
 };
 `, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 
@@ -29,7 +29,8 @@ function deferred() {
 function harness({ goal = '', answers = [], planImpl, createImpl } = {}) {
   const props = { projectId: 'p1' }
   const project = { current: { project_id: 'p1', narrative_goal: goal } }
-  const plans = [], confirms = [], creates = [], started = []
+  const listed = { count: 0 }
+  const plans = [], confirms = [], creates = [], started = [], routes = [], unmountHooks = []
   const context = {
     console,
     // mock 抛出的错误来自外层 realm，不共用 Error 的话 instanceof 恒为假
@@ -40,9 +41,10 @@ function harness({ goal = '', answers = [], planImpl, createImpl } = {}) {
     watch: () => {},
     nextTick: async () => {},
     onMounted: () => {},
-    onBeforeUnmount: () => {},
+    onBeforeUnmount: fn => { unmountHooks.push(fn) },
+    window: { addEventListener: () => {}, removeEventListener: () => {} },
     useRoute: () => ({ query: {} }),
-    useRouter: () => ({ replace: () => {}, push: () => {} }),
+    useRouter: () => ({ replace: (r) => { routes.push(r) }, push: () => {} }),
     useCharacterStore: () => ({ characters: [] }),
     useProjectStore: () => project,
     useDirectorStore: () => ({ snapshots: [], branchTree: { roots: [] }, loadSnapshots: async () => {} }),
@@ -56,13 +58,16 @@ function harness({ goal = '', answers = [], planImpl, createImpl } = {}) {
         return createImpl ? createImpl(creates.length) : { scene_id: `s${creates.length}`, branch_id: payload.branch_id }
       },
       startNewScene: async (scene) => { started.push(scene.scene_id); return true },
+      stopStream: () => {},
+      attachScene: async (id) => ({ scene_id: id }),
     }),
-    api: { listScenes: async () => [] },
+    api: { listScenes: async () => { listed.count++; return [] } },
     confirm: (msg) => { confirms.push(msg); return answers.shift() ?? true },
     alert: () => {},
   }
   runInNewContext(compiled, context)
-  return { ...context.subject, props, project, plans, confirms, creates, started }
+  const unmount = () => unmountHooks.forEach(fn => fn())
+  return { ...context.subject, props, project, plans, confirms, creates, started, routes, listed, unmount }
 }
 
 const DRAFT = () => ({
@@ -223,4 +228,68 @@ test('the scene is created on the branch it was planned for', async () => {
   h.draft.value = DRAFT()
   await h.startScene()
   assert.equal(h.creates[0].branch_id, 'A')
+})
+
+// ---- 主动作废后的忙碌状态 / 卸载后的迟到响应 ----
+
+for (const [name, leave] of [
+  ['cancel', h => h.cancelCompose()],
+  ['picking another scene', h => { void h.selectScene('s-old') }],
+]) {
+  test(`after ${name} during planning, the composer can plan again right away`, async () => {
+    const stale = deferred()
+    const h = harness({ goal: 'g', planImpl: n => (n === 1 ? stale.promise : DRAFT()) })
+    h.startCompose()
+    const p = h.plan()
+    leave(h)
+    assert.equal(h.planning.value, false)
+    h.startCompose()
+    await h.plan()
+    assert.equal(h.draft.value.name, '雨夜')
+    // 旧请求这时才回来，既不能改草稿，也不能动新请求的状态
+    stale.resolve({ ...DRAFT(), name: '旧' })
+    await p
+    assert.equal(h.draft.value.name, '雨夜')
+    assert.equal(h.planning.value, false)
+  })
+}
+
+test('leaving the director page mid-plan drops the late plan response', async () => {
+  const d = deferred()
+  const h = harness({ goal: 'g', planImpl: () => d.promise })
+  h.startCompose()
+  const p = h.plan()
+  h.unmount()
+  assert.equal(h.planning.value, false)
+  d.resolve(DRAFT())
+  await p
+  assert.equal(h.draft.value, null)
+})
+
+test('a scene created after the page unmounted is not started and does not touch the route', async () => {
+  const d = deferred()
+  const h = harness({ createImpl: () => d.promise })
+  h.branchId.value = 'A'
+  h.startCompose()
+  h.draft.value = DRAFT()
+  const p = h.startScene()
+  h.unmount()
+  d.resolve({ scene_id: 's1', branch_id: 'A' })
+  await p
+  assert.deepEqual(h.started, [])
+  assert.deepEqual(h.routes, [])
+  assert.equal(h.listed.count, 0)
+})
+
+test('a create that fails after unmount does not write an error into the dead page', async () => {
+  const d = deferred()
+  const h = harness({ createImpl: () => d.promise })
+  h.branchId.value = 'A'
+  h.startCompose()
+  h.draft.value = DRAFT()
+  const p = h.startScene()
+  h.unmount()
+  d.reject(new Error('网络断开'))
+  await p
+  assert.equal(h.composeError.value, '')
 })

@@ -107,6 +107,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  // 在途的规划/创建响应回来时组件已卸载：不能再替用户开演、改路由或刷新共享状态
+  disposed = true
+  dropPendingPlan()
   sceneStore.stopStream()
   window.removeEventListener('keydown', onKeydown)
 })
@@ -118,7 +121,7 @@ function onKeydown(e: KeyboardEvent) {
 watch(branchId, async () => {
   if (!bootstrapped) return
   // 草稿属于规划它的那条分支，切走就作废（连同在途的规划/创建响应）
-  planSeq++
+  dropPendingPlan()
   composing.value = false
   draft.value = null
   composeError.value = ''
@@ -178,6 +181,17 @@ let goalConfirmedFor = ''
 // 规划请求的序号：重新规划/取消/开演都会作废在途的旧响应，
 // 否则迟到的响应会把草稿填回已取消或已开演的舞台（甚至填进切走之后的另一条分支）
 let planSeq = 0
+// 组件已卸载：迟到的响应一律丢弃（卸载后序号与分支检查仍可能通过）
+let disposed = false
+
+/**
+ * 主动作废在途的规划请求。planning 必须在这里一并复位：旧请求的 finally
+ * 因序号失效不会再收它，不复位的话再次打开规划界面按钮会一直停在"规划中"。
+ */
+function dropPendingPlan() {
+  planSeq++
+  planning.value = false
+}
 
 async function plan() {
   // 只提示不拦：没有目标也可以先看看角色自己会演出什么，但不能让用户以为评分有参照
@@ -228,12 +242,15 @@ async function startScene() {
       speaker_mode: draft.value.speaker_mode || 'round_robin',
     })
   } catch (err) {
+    if (disposed) return
     // 留在规划界面、草稿不丢，改一改或直接重试
     composeError.value = err instanceof Error ? err.message : '创建场景失败，请重试'
     return
   } finally {
     creating.value = false
   }
+  // 已离开导演页：场景已落库为未开演，下次进来能在列表里看到，不替用户开演
+  if (disposed) return
   // 创建期间已取消/点开别的场景/切到别的分支：场景已按原分支落库为未开演，
   // 不再把它拉上舞台，更不能替用户开演
   if (seq !== planSeq || forBranch !== branchId.value) {
@@ -256,7 +273,7 @@ function startCompose() {
 }
 
 function cancelCompose() {
-  planSeq++ // 在途的规划响应回来后直接丢弃
+  dropPendingPlan() // 在途的规划响应回来后直接丢弃
   composing.value = false
   draft.value = null
   composeError.value = ''
