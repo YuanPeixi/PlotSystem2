@@ -86,6 +86,18 @@ class DecisionType(str, Enum):
     ROLLBACK = "rollback"
 
 
+class DecisionSource(str, Enum):
+    """决策由谁做出（工单12）。只作留痕，不参与任何逻辑判断之外的分支。"""
+
+    HUMAN = "human"
+    AUTO = "auto"
+
+
+class AutoPilotStatus(str, Enum):
+    RUNNING = "running"
+    STOPPED = "stopped"
+
+
 class OutputFormat(str, Enum):
     WEB_NOVEL = "web_novel"
     SCREENPLAY = "screenplay"
@@ -568,6 +580,50 @@ class DirectorDecision:
     next_location: str | None = None
     next_initial_conditions: dict | None = None
     rollback_notes: str | None = None
+    # 人工提交 / AutoPilot 自动执行（工单12）。旧记录没有这个键，按人工处理
+    source: str = DecisionSource.HUMAN.value
+
+
+@dataclass
+class AutoPilotStep:
+    """AutoPilot 执行过的一次自动决策。"""
+
+    scene_id: str = ""
+    decision_type: str = ""
+    next_scene_id: str = ""
+    next_branch_id: str = ""
+    at: datetime = field(default_factory=now)
+
+
+@dataclass
+class AutoPilotSession:
+    """一次自动推演会话（工单12）。**只存在于进程内存，不落库。**
+
+    用户对某一场开启，按导演的规则化决策连续推进，触发任一停止条件即交还人工。
+    不落库是刻意的：进程重启后场景会被对账成 paused（6.4），若会话还在，
+    重启就等于无人值守地继续烧 LLM；而写进 Project 又会与用户编辑主线目标
+    的整份覆盖写互相抹掉（PATCH 是读-改-写）。与 `_active_scenes` 同属契约9。
+    """
+
+    session_id: str = field(default_factory=new_id)
+    project_id: str = ""
+    # 幂等键（契约5）：同键重放返回同一个会话，不重复开启
+    request_id: str = ""
+    max_steps: int = 5
+    max_consecutive_rollbacks: int = 2
+    status: str = AutoPilotStatus.RUNNING.value
+    # running 时的细分：running_scene（等这一场跑完）/ deciding（导演决策中）
+    phase: str = ""
+    current_scene_id: str = ""
+    steps_taken: int = 0
+    # 连续自动回滚次数：回滚每次都会新建分支，不设限时评分长期偏低会一路长出分支。
+    # 不能按"回滚到同一快照"判断 —— 重演场景开跑会重打前置快照，目标 ID 每次都不同
+    consecutive_rollbacks: int = 0
+    stop_reason: str = ""
+    stop_message: str = ""
+    steps: list[AutoPilotStep] = field(default_factory=list)
+    started_at: datetime = field(default_factory=now)
+    updated_at: datetime = field(default_factory=now)
 
 
 # ---------------------------------------------------------------------------

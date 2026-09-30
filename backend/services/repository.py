@@ -21,6 +21,7 @@ from backend.models import (
     PROGRESS_UNAVAILABLE,
     BeatStatus,
     CharacterCard,
+    DecisionSource,
     DialogueTurn,
     DirectorDecision,
     ForkOrigin,
@@ -784,6 +785,7 @@ async def get_decision(scene_id: str) -> DirectorDecision | None:
         next_location=data.get("next_location"),
         next_initial_conditions=data.get("next_initial_conditions"),
         rollback_notes=data.get("rollback_notes"),
+        source=data.get("source") or DecisionSource.HUMAN.value,
     )
 
 

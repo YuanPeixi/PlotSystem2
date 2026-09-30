@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from backend.models import DialogueTurn
 
+# 外部中断（pause 接口）的终止原因。AutoPilot 靠它区分"用户踩了刹车"与正常收场：
+# 中断走的是正常终止路径，场景照样是 completed（CLAUDE.md 12.1）。
+INTERRUPTED_REASON = "导演中断"
+
 
 def _signature(turn: DialogueTurn) -> str:
     return (turn.dialogue or "") + (turn.action or "")
@@ -22,7 +26,7 @@ def check_termination(
     - 连续 3 轮无新信息（停滞检测）
     """
     if director_interrupt:
-        return True, "导演中断"
+        return True, INTERRUPTED_REASON
     if len(turns) >= max_turns:
         return True, "达到最大轮次"
     if len(turns) >= 4:
