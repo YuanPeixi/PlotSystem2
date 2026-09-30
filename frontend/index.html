@@ -5,10 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PlotSystem 剧情推演</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <!-- 与 src/composables/theme.ts 同一个存储键：挂载前就定好主题，避免首屏闪色 -->
+    <!-- 提前恢复风格与其明暗偏好，避免首屏闪色。 -->
     <script>
       try {
-        if (localStorage.getItem('plotsystem.spectrum.theme') === 'dark') document.documentElement.dataset.theme = 'dark'
+        const style = localStorage.getItem('plotsystem.uiStyle') || 'spectrum'
+        document.documentElement.dataset.uiStyle = style
+        const preferred = localStorage.getItem(`plotsystem.${style}.theme`)
+        document.documentElement.dataset.theme = preferred || (style === 'glass' ? 'dark' : 'light')
       } catch (e) {}
     </script>
   </head>

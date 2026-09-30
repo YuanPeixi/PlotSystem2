@@ -1,0 +1,85 @@
+/* UI/UX Pro Max preset 03: frosted layers over a colored atmospheric canvas. */
+:root {
+  --bg: #e5e9f6;
+  --panel: #f5f6fd;
+  --panel-2: #e9edfa;
+  --ink: #242543;
+  --ink-2: #515471;
+  --ink-3: #636882;
+  --line: rgba(66, 71, 130, .16);
+  --line-strong: #959cbb;
+  --hover: rgba(83, 82, 169, .08);
+  --spot: #6852d6;
+  --spot-ink: #5740bd;
+  --spot-soft: rgba(113, 83, 221, .12);
+  --spot-glow: rgba(113, 83, 221, .2);
+  --private: #8050a9;
+  --private-soft: rgba(128, 80, 169, .1);
+  --material: rgba(247, 249, 255, .82);
+  --glass: rgba(255, 255, 255, .38);
+  --glass-edge: rgba(255, 255, 255, .65);
+  --glass-shadow: 0 16px 40px rgba(53, 57, 104, .06);
+  --active-glass: linear-gradient(130deg, rgba(155, 134, 249, .25), rgba(255,255,255,.3));
+  --ambient-a: rgba(170, 141, 240, .5);
+  --ambient-b: rgba(99, 187, 211, .32);
+  --ambient-c: rgba(220, 131, 193, .24);
+  --on-accent: #fff;
+  --focus-ring: #6953c8;
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 16px;
+  --r-lg: 22px;
+}
+[data-theme='dark'] {
+  --bg: #101329;
+  --panel: #20233e;
+  --panel-2: #2a2e4b;
+  --ink: #f0f1ff;
+  --ink-2: #b9bdd8;
+  --ink-3: #a1a8c6;
+  --line: rgba(209, 214, 255, .13);
+  --line-strong: #626b96;
+  --hover: rgba(204, 206, 255, .07);
+  --spot: #b6a2ff;
+  --spot-ink: #cfbfff;
+  --spot-soft: rgba(176, 144, 255, .13);
+  --spot-glow: rgba(158, 118, 255, .26);
+  --private: #e6acdc;
+  --private-soft: rgba(230, 172, 220, .1);
+  --material: rgba(30, 34, 60, .86);
+  --glass: rgba(218, 225, 255, .065);
+  --glass-edge: rgba(223, 228, 255, .18);
+  --glass-shadow: 0 18px 45px rgba(2, 5, 25, .16);
+  --active-glass: linear-gradient(120deg, rgba(165, 138, 255, .26), rgba(167, 199, 255, .1));
+  --ambient-a: rgba(101, 54, 171, .52);
+  --ambient-b: rgba(18, 115, 133, .34);
+  --ambient-c: rgba(122, 50, 126, .32);
+  --on-accent: #1c1635;
+  --focus-ring: #ccb8ff;
+}
+body {
+  background: radial-gradient(ellipse at 12% 22%, var(--ambient-a), transparent 48%),
+    radial-gradient(ellipse at 90% 54%, var(--ambient-b), transparent 45%),
+    radial-gradient(ellipse at 52% 100%, var(--ambient-c), transparent 46%), var(--bg);
+  background-attachment: fixed;
+}
+button { min-height: 36px; transition: background-color .18s, border-color .18s, box-shadow .18s; }
+button.primary { color: var(--on-accent); background: var(--spot); border-color: transparent; box-shadow: 0 4px 20px var(--spot-soft); }
+button.primary:hover { opacity: .94; box-shadow: 0 6px 24px var(--spot-glow); }
+button.icon { width: 36px; }
+button.icon.sm { width: 30px; min-height: 30px; }
+input, textarea, select { padding: 9px 12px; background: var(--material); }
+input:focus, textarea:focus, select:focus { border-color: var(--spot); }
+.seg { padding: 4px; border: 1px solid var(--line); }
+.seg button { min-height: 30px; }
+.card { background: var(--material); border-color: var(--glass-edge); }
+.section-title { font-size: 13px; }
+.meter { height: 6px; border-radius: 6px; }
+.director-page .director-grid, .output-page .out, .branch-page .map-scroll { margin-top: 16px; border: 1px solid var(--glass-edge); border-radius: 18px; background: var(--glass); box-shadow: var(--glass-shadow); }
+.director-page .col-stage, .output-page .preview { background: var(--material); }
+.branch-page .legend { padding-block: 18px; }
+.workspace .projects, .workspace .welcome-panel, .workspace .journey article { backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+@supports not (backdrop-filter: blur(1px)) { :root, [data-theme='dark'] { --glass: var(--panel); --material: var(--panel); } }
+@media (prefers-reduced-transparency: reduce) { :root, [data-theme='dark'] { --glass: var(--panel); --material: var(--panel); } }
+@media (pointer: coarse) { button, button.icon, button.icon.sm, .seg button { min-height: 44px; } button.icon, button.icon.sm { min-width: 44px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

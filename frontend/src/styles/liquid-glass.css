@@ -1,0 +1,102 @@
+/* Liquid Glass: refractive chrome, quiet reading surfaces, shared semantic colors. */
+:root {
+  --bg: #edf1fb;
+  --panel: #fafbff;
+  --panel-2: #f0f4fc;
+  --ink: #26334d;
+  --ink-2: #586782;
+  --ink-3: #6b7890;
+  --line: rgba(83, 111, 157, .15);
+  --line-strong: #a9b6cd;
+  --hover: rgba(95, 129, 210, .08);
+  --spot: #5267d7;
+  --spot-ink: #4254bc;
+  --spot-soft: rgba(91, 108, 219, .1);
+  --spot-glow: rgba(107, 128, 227, .23);
+  --private: #7453bd;
+  --private-soft: rgba(116, 83, 189, .08);
+  --material: rgba(248, 250, 255, .8);
+  --glass: rgba(255, 255, 255, .48);
+  --glass-edge: rgba(255, 255, 255, .88);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, .7), 0 12px 38px rgba(78, 92, 137, .07);
+  --active-glass: linear-gradient(125deg, rgba(255,255,255,.95), rgba(215,224,255,.65));
+  --ambient-a: #d6dbfa;
+  --ambient-b: #cee8f3;
+  --ambient-c: #ebe0f4;
+  --on-accent: #fff;
+  --focus-ring: #6176d5;
+  --r-xs: 8px;
+  --r-sm: 12px;
+  --r-md: 18px;
+  --r-lg: 24px;
+}
+[data-theme='dark'] {
+  --bg: #121b2d;
+  --panel: #1d2940;
+  --panel-2: #25324c;
+  --ink: #eaf0ff;
+  --ink-2: #b3bfd6;
+  --ink-3: #9caac4;
+  --line: rgba(175, 194, 234, .16);
+  --line-strong: #61718e;
+  --hover: rgba(160, 186, 255, .1);
+  --spot: #9eacff;
+  --spot-ink: #bec8ff;
+  --spot-soft: rgba(153, 173, 255, .13);
+  --spot-glow: rgba(153, 173, 255, .25);
+  --private: #d1baff;
+  --private-soft: rgba(209, 186, 255, .1);
+  --material: rgba(27, 40, 63, .88);
+  --glass: rgba(30, 45, 70, .66);
+  --glass-edge: rgba(188, 208, 255, .18);
+  --glass-shadow: inset 0 1px 0 rgba(205, 220, 255, .08), 0 12px 38px rgba(0, 0, 0, .16);
+  --active-glass: linear-gradient(125deg, rgba(134,155,223,.25), rgba(78,102,167,.23));
+  --ambient-a: #283556;
+  --ambient-b: #153d4a;
+  --ambient-c: #362b4f;
+  --on-accent: #172039;
+  --focus-ring: #b7c6ff;
+}
+body {
+  background: radial-gradient(ellipse at 80% 5%, var(--ambient-a), transparent 50%),
+    radial-gradient(ellipse at 5% 90%, var(--ambient-b), transparent 55%),
+    radial-gradient(ellipse at 95% 90%, var(--ambient-c), transparent 50%), var(--bg);
+  background-attachment: fixed;
+}
+button { min-height: 36px; padding-inline: 14px; transition: background-color .18s, border-color .18s, box-shadow .18s; }
+button.primary { background: var(--spot); border-color: transparent; color: var(--on-accent); box-shadow: 0 4px 12px var(--spot-soft), inset 0 1px 0 rgba(255,255,255,.18); }
+button.primary:hover { box-shadow: 0 5px 18px var(--spot-glow); opacity: .94; }
+button.icon { width: 36px; }
+button.icon.sm { min-height: 30px; width: 30px; }
+input, textarea, select { background: var(--material); padding: 9px 12px; }
+input:focus, textarea:focus, select:focus { border-color: var(--spot); }
+label { font-size: 12px; }
+.card { box-shadow: var(--glass-shadow); border-color: var(--glass-edge); }
+.tag { border-radius: 7px; }
+.seg { padding: 4px; border: 1px solid var(--line); }
+.seg button { min-height: 30px; }
+.section-title { font-size: 13px; }
+.meter { height: 6px; border-radius: 8px; }
+/* Shared page shells preserve the existing director and export layouts. */
+.director-page .director-grid, .output-page .out, .branch-page .map-scroll {
+  margin-top: 16px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 22px;
+  background: var(--glass);
+  box-shadow: var(--glass-shadow);
+}
+.director-page .col-stage, .output-page .preview { background: var(--material); }
+.branch-page .legend { padding-block: 18px; }
+@supports not (backdrop-filter: blur(1px)) {
+  :root, [data-theme='dark'] { --glass: var(--panel); --material: var(--panel); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root, [data-theme='dark'] { --glass: var(--panel); --material: var(--panel); }
+}
+@media (pointer: coarse) {
+  button, button.icon, button.icon.sm, .seg button { min-height: 44px; }
+  button.icon, button.icon.sm { min-width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
