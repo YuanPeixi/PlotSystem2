@@ -109,6 +109,16 @@ class DecisionRequest(BaseModel):
     next_initial_conditions: dict | None = None
 
 
+class StartAutoPilotRequest(BaseModel):
+    """开启自动推演（工单12）。上下限按配置在业务层校验（422）。"""
+
+    scene_id: str
+    # None = 取 .env 里的默认值
+    max_steps: int | None = None
+    max_consecutive_rollbacks: int | None = None
+    # 幂等键（契约5）：网络重放不能开出第二个会话、也不能重复开演
+    request_id: str = Field(..., min_length=1, max_length=64)
+
 class ForkBranchRequest(BaseModel):
     new_conditions: dict = Field(default_factory=dict)
     branch_name: str

@@ -1,15 +1,17 @@
-"""导演决策路由。"""
+"""导演决策路由（含 AutoPilot）。"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
-from backend.api.schemas import ApiResponse, DecisionRequest
+from backend.api.schemas import ApiResponse, DecisionRequest, StartAutoPilotRequest
 from backend.models import DirectorDecision
 from backend.services import orchestrator, repository
 from backend.utils.serializer import to_dict
 
 router = APIRouter(prefix="/scenes", tags=["director"])
+# AutoPilot 按项目登记（自动回滚会换分支），挂在项目下
+project_router = APIRouter(prefix="/projects/{project_id}/autopilot", tags=["director"])
 
 
 @router.get("/{scene_id}/evaluation")
@@ -48,3 +50,28 @@ async def submit_decision(scene_id: str, req: DecisionRequest) -> ApiResponse:
     # ConflictError，由 main.py 的全局异常处理器转为 409 响应，无需在此处额外捕获。
     decision = await orchestrator.apply_decision(scene_id, override)
     return ApiResponse.ok(to_dict(decision))
+
+
+@project_router.get("")
+async def get_autopilot(project_id: str) -> ApiResponse:
+    """该项目最近一次自动推演会话（含已停止的，带停止原因）。没有则为 null。"""
+    session = orchestrator.get_autopilot(project_id)
+    return ApiResponse.ok(to_dict(session) if session else None)
+
+
+@project_router.post("")
+async def start_autopilot(project_id: str, req: StartAutoPilotRequest) -> ApiResponse:
+    session = await orchestrator.start_autopilot(
+        project_id,
+        req.scene_id,
+        request_id=req.request_id,
+        max_steps=req.max_steps,
+        max_consecutive_rollbacks=req.max_consecutive_rollbacks,
+    )
+    return ApiResponse.ok(to_dict(session))
+
+
+@project_router.delete("")
+async def stop_autopilot(project_id: str) -> ApiResponse:
+    session = await orchestrator.stop_autopilot(project_id)
+    return ApiResponse.ok(to_dict(session) if session else None)

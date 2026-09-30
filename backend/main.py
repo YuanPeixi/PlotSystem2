@@ -93,6 +93,7 @@ for r in (
     scenes.project_router,
     scenes.scene_router,
     director.router,
+    director.project_router,
     branches.project_router,
     branches.snapshot_router,
     output.router,

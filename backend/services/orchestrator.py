@@ -16,7 +16,9 @@ from backend.config import settings
 from backend.exceptions import (
     BranchNotFoundError,
     ConflictError,
+    InvalidRequestError,
     PlotSystemError,
+    SceneNotFoundError,
     SnapshotNotFoundError,
 )
 from backend.graphrag_pipeline import GraphRAGPipeline
@@ -24,9 +26,11 @@ from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
 from backend.models import (
     PROGRESS_UNAVAILABLE,
+    AutoPilotSession,
     Branch,
     CharacterCard,
     CharacterState,
+    DecisionSource,
     DecisionType,
     DialogueTurn,
     DirectorDecision,
@@ -48,7 +52,7 @@ from backend.models import (
     new_id,
 )
 from backend.scene_engine import SceneEngine
-from backend.services import events, inspection, repository
+from backend.services import autopilot, events, inspection, repository
 from backend.services.storyboard import (
     apply_user_edit,
     fork_storyboard,
@@ -563,6 +567,10 @@ async def run_scene(scene_id: str) -> None:
     # 初始化（读场景/加载快照/建智能体）必须一并纳入 try：这些步骤抛异常时若不释放
     # 运行锁，该场景在进程重启前都无法再启动。
     scene: Scene | None = None
+    # 终态帧推迟到释放运行锁之后再发（见函数末尾）。None = 被取消，不发终态
+    final_status: dict | None = None
+    # 评估连同世界变量/分镜稿补写全部成功才非空，AutoPilot 据此判断能否往下走
+    evaluated: SceneEvaluation | None = None
     try:
         scene = await repository.get_scene(scene_id)
         sm = SnapshotManager(scene.project_id)
@@ -686,6 +694,7 @@ async def run_scene(scene_id: str) -> None:
                     scene, evaluation, board_seen, seen_revision, result.snapshot_id_after, sm
                 )
                 await events.publish(scene_id, "evaluation", to_dict(evaluation))
+                evaluated = evaluation
             except Exception as exc:  # noqa: BLE001
                 logger.exception("场景 %s 自动评估失败，场景保持已完成状态", scene_id)
                 await events.publish(
@@ -700,9 +709,7 @@ async def run_scene(scene_id: str) -> None:
             # 不挡"补写已确定不会再发生"的终态。
             if pending_snapshot:
                 _pending_world_patch.discard(pending_snapshot)
-        await events.publish(
-            scene_id, "status", {"status": "completed", "reason": result.terminated_reason}
-        )
+        final_status = {"status": "completed", "reason": result.terminated_reason}
     except Exception as exc:  # noqa: BLE001
         logger.exception("场景运行失败")
         # 失败也要落库：否则场景永远停在 running，前端既显示"模拟中"又收不到任何进展
@@ -715,10 +722,25 @@ async def run_scene(scene_id: str) -> None:
         # 事件名不能叫 "error"：EventSource 的原生连接错误就叫这个名字，同名会让
         # 前端把业务失败原因当成断线处理并丢掉 message。
         await events.publish(scene_id, "scene_error", {"message": str(exc), "fatal": True})
-        await events.publish(scene_id, "status", {"status": "paused", "reason": str(exc)})
+        final_status = {"status": "paused", "reason": str(exc)}
     finally:
         _running_engines.pop(scene_id, None)
         _active_scenes.discard(scene_id)
+
+    if final_status is None:
+        return
+    # AutoPilot 必须在释放运行锁**之后**决策：continue 是对同一个 scene_id 再起一次
+    # run_scene，锁还挂着的话新任务会被开头的重复启动守卫静默丢掉。
+    # 又必须在终态帧**之前**：前端的流收到 completed/paused 就关了，下一场是哪个
+    # 只能在这之前随 autopilot 事件告诉它（next_scene 还要等一次规划 LLM）。
+    requeued = await _autopilot_after_scene(
+        scene_id, final_status["status"], final_status["reason"], evaluated
+    )
+    # 自动 continue 已经在同一个 scene_id 上起了新一轮：此时再发 completed，
+    # 迟到的这一帧会让刚重连上来的客户端把新一轮误判成已结束。不发的话，
+    # 还连着的流会直接收到新一轮的 running / turn。
+    if not requeued:
+        await events.publish(scene_id, "status", final_status)
 
 
 async def _apply_world_delta(
@@ -1125,6 +1147,8 @@ async def apply_decision(
             scene.project_id, GraphManager(scene.project_id), sm
         )
         decision = await director.make_decision(evaluation, human_override)
+        if human_override is None:
+            decision.source = DecisionSource.AUTO.value
 
         if decision.decision_type == DecisionType.ROLLBACK.value:
             # 回滚：恢复到模拟前快照，并创建一个新场景重演
@@ -1215,6 +1239,202 @@ async def apply_decision(
         # 释放 CAS 守卫：仅当状态列仍为 'deciding' 时恢复 completed
         # （continue 分支已改为 pending 不会被覆盖；处理失败时恢复后允许重试）。
         await repository.clear_scene_deciding(scene_id)
+
+
+# ---------------------------------------------------------------------------
+# AutoPilot（工单12）
+# ---------------------------------------------------------------------------
+
+# 每个项目最近一次会话（已停止的也留着：GET 要能回显停止原因，幂等重放也要认得它）。
+# 按项目而不是按分支登记：自动回滚会把下一场建到新分支上。
+# 进程内状态，同属契约9；重启即清空是刻意的，见 AutoPilotSession。
+_autopilot_sessions: dict[str, AutoPilotSession] = {}
+# create_task 的返回值必须有人持有，否则任务可能在跑完之前被垃圾回收
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def get_autopilot(project_id: str) -> AutoPilotSession | None:
+    return _autopilot_sessions.get(project_id)
+
+
+async def _publish_autopilot(session: AutoPilotSession, scene_id: str = "") -> None:
+    # 推到场景的流上：前端此刻订阅着的就是这一场，不另开项目级的流
+    await events.publish(scene_id or session.current_scene_id, "autopilot", to_dict(session))
+
+
+async def _stop_autopilot(session: AutoPilotSession, reason: str, detail: str = "") -> None:
+    autopilot.mark_stopped(session, reason, detail)
+    logger.info(
+        "项目 %s 的自动推演已停止（%s）：%s",
+        session.project_id, reason, session.stop_message,
+    )
+    await _publish_autopilot(session)
+
+
+async def start_autopilot(
+    project_id: str,
+    scene_id: str,
+    *,
+    request_id: str,
+    max_steps: int | None = None,
+    max_consecutive_rollbacks: int | None = None,
+) -> AutoPilotSession:
+    """从某一场开启自动推演。
+
+    场景在跑 → 等它跑完再决策；尚未开演或中断过 → 替用户开演；已完成 → 立即决策。
+    同一 `request_id` 重放返回同一个会话（契约5），不会重复开演。
+    """
+    await repository.get_project(project_id)  # 项目不存在 → 404
+    existing = _autopilot_sessions.get(project_id)
+    if existing is not None and request_id and existing.request_id == request_id:
+        return existing
+    if autopilot.is_running(existing):
+        raise ConflictError("该项目已有进行中的自动推演，请先停止它")
+
+    steps = settings.AUTOPILOT_DEFAULT_STEPS if max_steps is None else max_steps
+    rollbacks = (
+        settings.AUTOPILOT_DEFAULT_MAX_ROLLBACKS
+        if max_consecutive_rollbacks is None
+        else max_consecutive_rollbacks
+    )
+    if not 1 <= steps <= settings.AUTOPILOT_MAX_STEPS:
+        raise InvalidRequestError(f"自动推演步数须在 1 到 {settings.AUTOPILOT_MAX_STEPS} 之间")
+    if not 0 <= rollbacks <= settings.AUTOPILOT_MAX_STEPS:
+        raise InvalidRequestError(
+            f"连续回滚上限须在 0 到 {settings.AUTOPILOT_MAX_STEPS} 之间"
+        )
+
+    scene = await repository.get_scene(scene_id)
+    if scene.project_id != project_id:
+        raise SceneNotFoundError(f"场景 {scene_id} 不属于项目 {project_id}")
+    session = AutoPilotSession(
+        project_id=project_id,
+        request_id=request_id,
+        max_steps=steps,
+        max_consecutive_rollbacks=rollbacks,
+        current_scene_id=scene_id,
+        phase=autopilot.PHASE_RUNNING_SCENE,
+    )
+
+    decide_now = False
+    evaluation: SceneEvaluation | None = None
+    if not is_scene_active(scene_id) and scene.status == SceneStatus.COMPLETED.value:
+        if await repository.get_decision(scene_id) is not None:
+            raise InvalidRequestError("这一场已有生效决策，请在它产生的最新场景上开启自动推演")
+        evaluation = await repository.get_evaluation(scene_id)
+        # 一开启就会停的情况当场拒绝，不返回一个转眼就停下的会话
+        reason = autopilot.stop_reason_after_scene(
+            session, SceneStatus.COMPLETED.value, "", evaluation
+        )
+        if reason:
+            raise InvalidRequestError(autopilot.STOP_MESSAGES[reason])
+        decide_now = True
+
+    _autopilot_sessions[project_id] = session
+    logger.info(
+        "项目 %s 开启自动推演：起点 %s，最多 %d 步，连续回滚上限 %d",
+        project_id, scene_id, steps, rollbacks,
+    )
+    if decide_now:
+        _spawn(_autopilot_after_scene(scene_id, SceneStatus.COMPLETED.value, "", evaluation))
+    elif not is_scene_active(scene_id):
+        _spawn(run_scene(scene_id))
+    await _publish_autopilot(session)
+    return session
+
+
+async def stop_autopilot(project_id: str) -> AutoPilotSession | None:
+    """停止自动推演。正在跑的这一场照常跑完（要立刻中断请另调 pause），只是不再往下接。
+
+    决策正在执行时停止：决策照常生效（新场景已建好），但不会再开演。
+    """
+    session = _autopilot_sessions.get(project_id)
+    if autopilot.is_running(session):
+        await _stop_autopilot(session, autopilot.USER_STOPPED)
+    return session
+
+
+async def _autopilot_after_scene(
+    scene_id: str,
+    final_status: str,
+    terminated_reason: str,
+    evaluation: SceneEvaluation | None,
+) -> bool:
+    """一场收场后，若它是某个自动推演会话的当前场景，就替用户做决策。
+
+    返回 True 表示已在同一 scene_id 上自动续跑（continue）。
+    跑在 run_scene 的尾部，**绝不抛异常**：任何失败都转成会话停止。
+    """
+    session = next(
+        (
+            s for s in _autopilot_sessions.values()
+            if autopilot.is_running(s) and s.current_scene_id == scene_id
+        ),
+        None,
+    )
+    if session is None:
+        return False
+    try:
+        reason = autopilot.stop_reason_after_scene(
+            session, final_status, terminated_reason, evaluation
+        )
+        if reason:
+            await _stop_autopilot(session, reason)
+            return False
+
+        scene = await repository.get_scene(scene_id)
+        director = DirectorAgent(
+            scene.project_id, GraphManager(scene.project_id), SnapshotManager(scene.project_id)
+        )
+        # 规则化推荐，不调 LLM。先算出来再交给 apply_decision，是为了在执行**之前**
+        # 拦下超限的回滚 —— 回滚一执行就是一条新分支
+        decision = await director.make_decision(evaluation, None)
+        decision.source = DecisionSource.AUTO.value
+        reason = autopilot.stop_reason_for_decision(session, decision)
+        if reason:
+            await _stop_autopilot(session, reason)
+            return False
+
+        session.phase = autopilot.PHASE_DECIDING
+        await _publish_autopilot(session)
+        try:
+            # 与人工提交走同一条路：CAS、幂等、回滚即分叉都照旧
+            decision = await apply_decision(scene_id, decision)
+        except ConflictError as exc:
+            await _stop_autopilot(session, autopilot.HUMAN_TOOK_OVER, str(exc))
+            return False
+        if decision.source != DecisionSource.AUTO.value:
+            # 幂等重放命中了一份人工决策：有人已经接手了这一场
+            await _stop_autopilot(session, autopilot.HUMAN_TOOK_OVER)
+            return False
+        if not decision.next_scene_id:
+            await _stop_autopilot(session, autopilot.DECISION_FAILED, "回滚缺少可用快照")
+            return False
+
+        next_scene = await repository.get_scene(decision.next_scene_id)
+        autopilot.record_step(session, scene_id, decision, next_scene.branch_id)
+        continued = decision.decision_type == DecisionType.CONTINUE.value
+        if autopilot.is_running(session):
+            session.phase = autopilot.PHASE_RUNNING_SCENE
+            # continue 已由 apply_decision 自己起了续跑
+            if not continued:
+                _spawn(run_scene(decision.next_scene_id))
+        # 推到刚收场的这一场的流上：前端正订阅着它，据此切到下一场
+        await _publish_autopilot(session, scene_id)
+        return continued
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("场景 %s 的自动决策失败", scene_id)
+        try:
+            await _stop_autopilot(session, autopilot.DECISION_FAILED, str(exc))
+        except Exception:  # noqa: BLE001
+            logger.warning("自动推演停止事件发布失败", exc_info=True)
+        return False
 
 
 # ---------------------------------------------------------------------------

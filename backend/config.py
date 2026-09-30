@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     DIRECTOR_EVAL_TEMPERATURE: float = 0.3
     DIRECTOR_DECISION_TEMPERATURE: float = 0.1
 
+    # --- AutoPilot（工单12）---
+    # 一次会话默认自动执行几步决策（continue / next_scene / rollback 各算一步），
+    # 以及单次请求允许的上限：每一步都是一整场 LLM，上限挡的是手滑填出来的 999
+    AUTOPILOT_DEFAULT_STEPS: int = 5
+    AUTOPILOT_MAX_STEPS: int = 20
+    # 允许连续自动回滚几次。每次回滚都新建一条分支，评分长期偏低时不设限会一路长分支
+    AUTOPILOT_DEFAULT_MAX_ROLLBACKS: int = 2
+
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
 
