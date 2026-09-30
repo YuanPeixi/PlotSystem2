@@ -104,6 +104,8 @@ onMounted(async () => {
   }
   bootstrapped = true
   window.addEventListener('keydown', onKeydown)
+  // 刷新恢复：进行中的自动推演会把舞台带到它的当前场景
+  void sceneStore.refreshAutopilot(props.projectId)
 })
 
 onBeforeUnmount(() => {
@@ -111,6 +113,8 @@ onBeforeUnmount(() => {
   disposed = true
   dropPendingPlan()
   sceneStore.stopStream()
+  // 只停前端的跟随与轮询；后端的自动推演照常进行，回来时会重新接上
+  sceneStore.resetAutopilot()
   window.removeEventListener('keydown', onKeydown)
 })
 
@@ -137,6 +141,14 @@ watch(branchId, async () => {
     void router.replace({ query: q })
   }
 })
+
+// 自动推演把舞台带到了下一场（可能在回滚出来的新分支上）：分支选择与 URL 跟上
+watch(
+  () => sceneStore.autopilotFollows,
+  () => {
+    if (!disposed) void syncToCurrentScene()
+  },
+)
 
 async function refreshBranchData() {
   if (!branchId.value) {
@@ -350,26 +362,64 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
   if (!sceneStore.currentScene) return
   try {
     await sceneStore.submitDecision(sceneStore.currentScene.scene_id, payload)
-    await directorStore.loadBranches(props.projectId)
-    // rollback 会把新场景建到一条新分支上，分支选择不跟着切，后续"让导演规划"
-    // 和场景列表还会落回旧分支（watcher 会改写当前场景，故先抑制再手工刷新）
-    const nextBranch = sceneStore.currentScene?.branch_id
-    if (nextBranch && nextBranch !== branchId.value) {
-      bootstrapped = false
-      branchId.value = nextBranch
-      await nextTick()
-      bootstrapped = true
-    }
-    await refreshBranchData()
-    const nowId = sceneStore.currentScene?.scene_id
-    if (nowId && route.query.scene !== nowId) {
-      void router.replace({ query: { ...route.query, scene: nowId } })
-    }
+    await syncToCurrentScene()
     done?.(true)
   } catch (err) {
     // 失败时通知面板保留表单，再提示用户（例如 409：决策已生效/正在处理）
     done?.(false)
     alert(err instanceof Error ? err.message : '决策提交失败')
+  }
+}
+
+/**
+ * 当前场景由决策或自动推演换掉之后，让分支选择、场景列表与 URL 跟上。
+ * rollback 会把新场景建到一条新分支上，分支选择不跟着切，后续"让导演规划"
+ * 和场景列表还会落回旧分支（watcher 会改写当前场景，故先抑制再手工刷新）。
+ */
+async function syncToCurrentScene() {
+  await directorStore.loadBranches(props.projectId)
+  const nextBranch = sceneStore.currentScene?.branch_id
+  if (nextBranch && nextBranch !== branchId.value) {
+    // 草稿属于规划它的那条分支，与 watcher 里切分支同一条规矩
+    cancelCompose()
+    bootstrapped = false
+    branchId.value = nextBranch
+    await nextTick()
+    bootstrapped = true
+  }
+  await refreshBranchData()
+  const nowId = sceneStore.currentScene?.scene_id
+  if (nowId && route.query.scene !== nowId) {
+    void router.replace({ query: { ...route.query, scene: nowId } })
+  }
+}
+
+// ---- 自动推演（工单12）----
+const autopilotBusy = ref(false)
+const piloting = computed(() => sceneStore.autopilot?.status === 'running')
+
+async function startAutopilot(steps: number, rollbacks: number) {
+  const scene = sceneStore.currentScene
+  if (!scene || autopilotBusy.value) return
+  autopilotBusy.value = true
+  try {
+    await sceneStore.startAutopilot(props.projectId, scene.scene_id, steps, rollbacks)
+  } catch (err) {
+    alert(err instanceof Error ? err.message : '开启自动推演失败')
+  } finally {
+    autopilotBusy.value = false
+  }
+}
+
+async function stopAutopilot() {
+  if (autopilotBusy.value) return
+  autopilotBusy.value = true
+  try {
+    await sceneStore.stopAutopilot(props.projectId)
+  } catch (err) {
+    alert(err instanceof Error ? err.message : '停止自动推演失败')
+  } finally {
+    autopilotBusy.value = false
   }
 }
 </script>
@@ -443,10 +493,15 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
           :decidable="sceneStore.currentScene.status === 'completed' && !sceneStore.running && !sceneStore.appliedDecision"
           :deciding="sceneStore.decisionPending"
           :name-of="charStore.nameOf"
+          :autopilot="sceneStore.autopilot"
+          :autopilot-startable="!sceneStore.appliedDecision && !sceneStore.decisionPending"
+          :autopilot-busy="autopilotBusy"
           @inspect="openCharacter"
           @resume="resume"
           @decide="quickDecision"
           @open-decide="openDecide"
+          @autopilot-start="startAutopilot"
+          @autopilot-stop="stopAutopilot"
         />
         <div v-else class="stage-empty">
           <Icon name="director" :size="28" />
@@ -495,6 +550,7 @@ async function onDecision(payload: Record<string, unknown>, done?: (ok: boolean)
                 :snapshots="branchSnapshots"
                 :applied-decision="sceneStore.appliedDecision"
                 :pending="sceneStore.decisionPending"
+                :piloting="piloting"
                 @decision="onDecision"
                 @generate-output="router.push(`/output/${props.projectId}?branch=${sceneStore.currentScene?.branch_id || branchId}`)"
               />

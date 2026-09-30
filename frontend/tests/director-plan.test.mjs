@@ -59,6 +59,7 @@ function harness({ goal = '', answers = [], planImpl, createImpl } = {}) {
       },
       startNewScene: async (scene) => { started.push(scene.scene_id); return true },
       stopStream: () => {},
+      resetAutopilot: () => {},
       attachScene: async (id) => ({ scene_id: id }),
     }),
     api: { listScenes: async () => { listed.count++; return [] } },

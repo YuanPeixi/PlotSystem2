@@ -12,6 +12,8 @@ const props = defineProps<{
   pending?: boolean
   /** 检查器里分成两个标签页：eval 只看评估，decide 只做决策；不传则两者都显示 */
   mode?: 'eval' | 'decide'
+  /** 自动推演进行中：决策由后端按导演规则自动执行，这里不再接受人工提交 */
+  piloting?: boolean
 }>()
 const emit = defineEmits<{
   // done 回调由父组件在请求结束后调用：ok=true 时面板才关闭/清空表单，
@@ -38,7 +40,9 @@ const DECISION_LABEL: Record<string, string> = {
 
 // 已生效的决策不可再提交（后端会 409）；刷新后从 GET /decision 恢复出来。
 const decided = computed(() => (props.appliedDecision?.decision_type as string) || '')
-const locked = computed(() => !!props.pending || !!decided.value)
+// 已决策的来源：自动推演执行的决策要标出来，否则看不出是谁拍的板
+const decidedByAuto = computed(() => props.appliedDecision?.source === 'auto')
+const locked = computed(() => !!props.pending || !!decided.value || !!props.piloting)
 
 // 后端在评估 JSON 解析失败时把四项分数置为 -1（工单04），不能当成正常低分展示
 const evalFailed = computed(() => (props.evaluation?.narrative_goal_score ?? 0) < 0)
@@ -226,7 +230,10 @@ function confirmRollback() {
         </button>
       </div>
       <p v-if="decided" class="notice">
-        <Icon name="check" :size="15" />本场已决策：{{ DECISION_LABEL[decided] || decided }}。后续场次在左侧场景列表里。
+        <Icon name="check" :size="15" />本场已{{ decidedByAuto ? '由自动推演' : '' }}决策：{{ DECISION_LABEL[decided] || decided }}。后续场次在左侧场景列表里。
+      </p>
+      <p v-else-if="piloting" class="notice">
+        <Icon name="autopilot" :size="15" />自动推演中：本场结束后由导演按规则自动决策。要接手，先在舞台底栏停止自动推演。
       </p>
       <p v-if="pending" class="notice"><Icon name="spinner" :size="15" />决策处理中，请勿重复提交。</p>
 

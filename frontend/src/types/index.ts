@@ -275,6 +275,47 @@ export interface ForkResult {
   scene: Scene
 }
 
+/** AutoPilot 执行过的一次自动决策（工单12）。 */
+export interface AutoPilotStep {
+  scene_id: string
+  decision_type: 'continue' | 'next_scene' | 'rollback'
+  next_scene_id: string
+  next_branch_id: string
+  at: string
+}
+
+/** 停止原因，与 backend/services/autopilot.py 的常量一一对应。 */
+export type AutoPilotStopReason =
+  | 'max_steps'
+  | 'rollback_limit'
+  | 'evaluation_unavailable'
+  | 'ending_reached'
+  | 'interrupted'
+  | 'scene_failed'
+  | 'decision_failed'
+  | 'human_took_over'
+  | 'user_stopped'
+
+/** 一次自动推演会话。只在后端进程内存里，重启即消失（GET 返回 null）。 */
+export interface AutoPilotSession {
+  session_id: string
+  project_id: string
+  request_id: string
+  max_steps: number
+  max_consecutive_rollbacks: number
+  status: 'running' | 'stopped'
+  /** running 时：running_scene（等这一场跑完）/ deciding（导演决策中） */
+  phase: '' | 'running_scene' | 'deciding'
+  current_scene_id: string
+  steps_taken: number
+  consecutive_rollbacks: number
+  stop_reason: AutoPilotStopReason | ''
+  stop_message: string
+  steps: AutoPilotStep[]
+  started_at: string
+  updated_at: string
+}
+
 export interface GraphNode {
   id: string
   label: string
