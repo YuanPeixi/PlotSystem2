@@ -562,10 +562,13 @@ frontend/src/
       带着整段备忘改写就是把每场改稿复制 N 遍。分镜稿也**不进** `make_decision` 的阈值规则，
       `unresolved_threads` 仍由评估逐场给出、不并入分镜稿（工单18 红线 R3 / R5）。
 
-22. **AutoPilot（工单12）的五条语义**，动任何一条都会让它静默失效或失控：
+22. **AutoPilot（工单12）的六条语义**，动任何一条都会让它静默失效或失控：
     - **会话只在进程内存**（`orchestrator._autopilot_sessions`，按项目登记——自动回滚会换分支）。
       不要挪进 `Project`：`PATCH /projects` 是整份读-改-写，逐步写计数会与用户编辑主线目标互相
       抹掉；落库后重启对账（6.4）会让它无人值守地继续烧 LLM。重启即结束会话是刻意的；
+    - **开启的"查重 → 校验 → 登记"必须在项目锁内**（`_autopilot_lock`）：查已有会话与登记新会话
+      之间隔着读项目、读场景等 await，不锁的话同一 `request_id` 的并发重放会各开一个会话、
+      各开演一次；不同起点会两场都开演，而项目只记得后登记的那个，另一场跑完无人接手；
     - **决策点在 `run_scene` 释放运行锁之后、发终态帧之前**（`_autopilot_after_scene`）。
       早于释放锁：continue 是对同一 `scene_id` 再起 `run_scene`，会被 `_active_scenes`
       守卫静默丢掉。晚于终态帧：前端的流收到 completed 就关了，无从得知下一场。
@@ -630,8 +633,8 @@ build_status.json                 构建进度（供重启后对账）
 `_active_scenes`（并发守卫）、`_running_engines`（暂停/中断）、`_build_status`（有磁盘兜底）、
 `_branch_locks`（分支级文件——世界变量与分镜稿——的读-改-写临界区，见 4.2 陷阱 19 / 21）、
 `_pending_world_patch`（后置快照的世界状态与分镜稿补写窗口守卫，同见 4.2 陷阱 19）、
-`_autopilot_sessions`（自动推演会话，见 4.2 陷阱 22）与 `_background_tasks`（持有自动推演
-`create_task` 的引用，防止被回收）、
+`_autopilot_sessions`（自动推演会话，见 4.2 陷阱 22）、`_autopilot_locks`（开启会话的临界区）
+与 `_background_tasks`（持有自动推演 `create_task` 的引用，防止被回收）、
 `events._subscribers`（SSE 订阅者）、每个 `MemoryManager` 的短期与事件记忆。
 
 ### 5.4 【契约】修改数据模型的三步 checklist
@@ -1038,6 +1041,11 @@ prefix cache**，落地时必须改走 user 块。
   迟到的轮询按 `updated_at` 丢弃。跟随后 `autopilotFollows` +1，`Director.vue` 据此走
   `syncToCurrentScene`（与决策后同一个函数：自动回滚会换分支）。进行中时底栏的开演/快捷决策
   收起、决策面板锁定；停在哪一场就在那一场显示停止原因。离开导演页只停前端的轮询，后端会话照跑。
+  **异步结果的三道提交边界**（评审修复）：跟随请求带序号，**在改舞台、换流之前**校验
+  （`attachScene` 拆出提交半段 `showAttachedScene` 就是为此——在它返回后再查已经晚了，旧响应
+  会把舞台和 SSE 切回旧场景）；"前进"只负责设 `followTarget`，**到达才清空**，跟随失败时下一次
+  轮询带回同一步也会重试；导演页挂载走 `bindAutopilot(projectId)`、卸载走 `resetAutopilot()`，
+  生命周期版本前进，离页前发出的轮询/开启/停止/跟随结果一律作废，别的项目的会话一律不收。
 - **检查器各标签页用 `v-show` 而不是 `v-if`**：分镜稿的编辑草稿与决策表单切走再回来不能丢。
   角色内部状态（`CharacterInspector embedded`）盖在标签页上，返回即恢复。
 - **测试直接执行 `Director.vue` / `DirectorPanel.vue` / `Output.vue` / `StoryboardPanel.vue`
