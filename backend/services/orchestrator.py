@@ -1249,8 +1249,21 @@ async def apply_decision(
 # 按项目而不是按分支登记：自动回滚会把下一场建到新分支上。
 # 进程内状态，同属契约9；重启即清空是刻意的，见 AutoPilotSession。
 _autopilot_sessions: dict[str, AutoPilotSession] = {}
+# 开启会话的"查重 → 校验 → 登记"临界区，按项目分桶。检查已有会话与登记新会话之间
+# 隔着读项目、读场景等 await：不锁的话，两个并发请求都能通过检查 —— 同一 request_id
+# 的重放各开一个会话、各起一次开演；不同起点则两场都开演，项目只记得后登记的那个，
+# 另一场跑完没人接手。用完不删，理由同 `_branch_lock`。
+_autopilot_locks: dict[str, asyncio.Lock] = {}
 # create_task 的返回值必须有人持有，否则任务可能在跑完之前被垃圾回收
 _background_tasks: set[asyncio.Task] = set()
+
+
+def _autopilot_lock(project_id: str) -> asyncio.Lock:
+    lock = _autopilot_locks.get(project_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _autopilot_locks[project_id] = lock
+    return lock
 
 
 def _spawn(coro) -> None:
@@ -1290,6 +1303,19 @@ async def start_autopilot(
     场景在跑 → 等它跑完再决策；尚未开演或中断过 → 替用户开演；已完成 → 立即决策。
     同一 `request_id` 重放返回同一个会话（契约5），不会重复开演。
     """
+    async with _autopilot_lock(project_id):
+        return await _start_autopilot_locked(
+            project_id, scene_id, request_id, max_steps, max_consecutive_rollbacks
+        )
+
+
+async def _start_autopilot_locked(
+    project_id: str,
+    scene_id: str,
+    request_id: str,
+    max_steps: int | None,
+    max_consecutive_rollbacks: int | None,
+) -> AutoPilotSession:
     await repository.get_project(project_id)  # 项目不存在 → 404
     existing = _autopilot_sessions.get(project_id)
     if existing is not None and request_id and existing.request_id == request_id:

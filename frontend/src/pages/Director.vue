@@ -104,8 +104,8 @@ onMounted(async () => {
   }
   bootstrapped = true
   window.addEventListener('keydown', onKeydown)
-  // 刷新恢复：进行中的自动推演会把舞台带到它的当前场景
-  void sceneStore.refreshAutopilot(props.projectId)
+  // 刷新恢复：进行中的自动推演会把舞台带到它的当前场景；此后只收本项目的会话
+  void sceneStore.bindAutopilot(props.projectId)
 })
 
 onBeforeUnmount(() => {
