@@ -85,6 +85,7 @@ PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项�
         ├─ continue   同场加轮次重跑
         ├─ next_scene 规划并创建新场景（可人工覆盖角色/地点/条件）
         └─ rollback   恢复快照 + 新建"回滚重演"场景
+   （或开启 AutoPilot：POST /projects/{id}/autopilot，由导演按规则自动决策、连跑多场，见 4.2 陷阱 22）
 ⑧ 生成输出      POST /projects/{id}/output  → 网文 / 剧本 / 舞台剧 / 报告 / 原始日志
 ```
 
@@ -153,6 +154,7 @@ backend/
 │   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON + 分支世界变量 / 分镜稿 JSON）
 │   ├── world_state.py    世界变量的规范化/预算/渲染（纯函数，无 IO；读写两侧共用）
 │   ├── storyboard.py     导演分镜稿的预算/渲染/patch 合并/用户编辑/分叉（纯函数，工单18）
+│   ├── autopilot.py      AutoPilot 会话的停止判定与记账（纯函数，工单12；调度在 orchestrator）
 │   ├── inspection.py     ★ 角色内部状态的唯一只读查询层（面板/导演/总结共用）
 │   └── events.py         SSE 内存事件总线（asyncio.Queue）
 │
@@ -206,7 +208,8 @@ frontend/src/
 ├── pages/       Workspace.vue（项目+图谱） / Director.vue（导演台） / BranchMap.vue（分支图） / Output.vue
 ├── components/  DialogLog.vue（剧本格式台词）、DirectorPanel.vue、StoryboardPanel.vue、
 │                CharacterInspector.vue、CharacterCard.vue、GraphViewer.vue、GraphViewer2.vue
-│   ├── director/  BranchRail.vue（左栏：当前谱系+场景）、StageView.vue（舞台）、SceneComposer.vue（开演前规划）
+│   ├── director/  BranchRail.vue（左栏：当前谱系+场景）、StageView.vue（舞台）、SceneComposer.vue（开演前规划）、
+│   │              AutoPilotControl.vue（舞台底栏的自动推演开关）
 │   └── ui/        Icon.vue + icons.ts（内联 SVG 图标）、PageHeader.vue
 ├── composables/ theme.ts（亮/暗主题 + 给 G6 取 CSS 变量）
 ├── utils/       branches.ts（分支配色、谱系、分支图布局，纯函数）
@@ -245,7 +248,8 @@ frontend/src/
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
 | `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 无锚点标记 `goal_missing` + 推荐决策 | SQLite `evaluations` |
 | `StoryRecord` | 导演历史的一条（场景 id + 名 + 评估 + `threads_known`），`inherited_story_history` / `story_history` 的元素 | 内嵌于场景 / 快照 |
-| `DirectorDecision` | 导演决策 + 人工覆盖字段 | SQLite `decisions` |
+| `DirectorDecision` | 导演决策 + 人工覆盖字段 + 来源 `source`（human / auto） | SQLite `decisions` |
+| `AutoPilotSession` / `AutoPilotStep` | 一次自动推演会话：步数/连续回滚上限、计数、已执行的自动决策、停止原因（**不落库**） | 进程内存 |
 | `Snapshot` / `Branch` / `BranchTree` | 快照与分支 | SQLite `snapshots`/`branches` + 快照目录 |
 | `MemoryChunk` / `MemorySnapshot` | 记忆检索与序列化载体 | 运行时 |
 
@@ -558,6 +562,24 @@ frontend/src/
       带着整段备忘改写就是把每场改稿复制 N 遍。分镜稿也**不进** `make_decision` 的阈值规则，
       `unresolved_threads` 仍由评估逐场给出、不并入分镜稿（工单18 红线 R3 / R5）。
 
+22. **AutoPilot（工单12）的五条语义**，动任何一条都会让它静默失效或失控：
+    - **会话只在进程内存**（`orchestrator._autopilot_sessions`，按项目登记——自动回滚会换分支）。
+      不要挪进 `Project`：`PATCH /projects` 是整份读-改-写，逐步写计数会与用户编辑主线目标互相
+      抹掉；落库后重启对账（6.4）会让它无人值守地继续烧 LLM。重启即结束会话是刻意的；
+    - **决策点在 `run_scene` 释放运行锁之后、发终态帧之前**（`_autopilot_after_scene`）。
+      早于释放锁：continue 是对同一 `scene_id` 再起 `run_scene`，会被 `_active_scenes`
+      守卫静默丢掉。晚于终态帧：前端的流收到 completed 就关了，无从得知下一场。
+      **自动 continue 时不发终态帧**，迟到的 completed 会让重连的客户端把新一轮判成已结束；
+    - **回滚上限按连续次数计、在执行前判**。不能按"回滚到同一快照"判：重演场景开跑时重打
+      前置快照，目标 ID 每次都不同。执行前判靠的是 `make_decision` 不调 LLM——先算出决策、
+      过 `stop_reason_for_decision`，再作为 override 交给 `apply_decision`。
+      **给 `make_decision` 加 LLM 调用之前先想清楚这条**；
+    - **自动决策与人工决策走同一个 `apply_decision`**（CAS、幂等重放、回滚即分叉），只多一个
+      `DirectorDecision.source = "auto"`。幂等重放命中人工决策、或 CAS 冲突，都按"有人接手了"停下；
+    - **停止条件在无人值守下比界面更严**：评估不可用或评估之后的补写失败（`evaluated` 为 None）、
+      抵达结局、`导演中断`（`termination.INTERRUPTED_REASON`；pause 走正常终止路径，场景照样是
+      completed，见 12.1）都停。界面上结局只是提示、不锁按钮，这两者不矛盾。
+
 ---
 
 ## 5. 持久化契约 ★
@@ -608,6 +630,8 @@ build_status.json                 构建进度（供重启后对账）
 `_active_scenes`（并发守卫）、`_running_engines`（暂停/中断）、`_build_status`（有磁盘兜底）、
 `_branch_locks`（分支级文件——世界变量与分镜稿——的读-改-写临界区，见 4.2 陷阱 19 / 21）、
 `_pending_world_patch`（后置快照的世界状态与分镜稿补写窗口守卫，同见 4.2 陷阱 19）、
+`_autopilot_sessions`（自动推演会话，见 4.2 陷阱 22）与 `_background_tasks`（持有自动推演
+`create_task` 的引用，防止被回收）、
 `events._subscribers`（SSE 订阅者）、每个 `MemoryManager` 的短期与事件记忆。
 
 ### 5.4 【契约】修改数据模型的三步 checklist
@@ -689,7 +713,8 @@ graph TD
    → 世界变量合并落盘并补写后置快照（`_apply_world_delta`，**在分支锁内重读**世界状态，
    否则同分支并发的另一场会被整份覆盖抹掉）
    → 分镜稿 patch 逐条校验合并并补写后置快照（`_apply_storyboard_patch`，同一把分支锁）
-   → 推 evaluation 与 completed。
+   → 推 evaluation → 释放运行锁 → AutoPilot 决策（若本场是某个会话的当前场景，见 4.2 陷阱 22）
+   → 推终态帧 completed / paused（自动 continue 时不推）。
    **自动评估、世界变量更新、分镜稿合并各包一个 `try`**：这一场已经跑完并打了后置快照，它们的失败
    不得把状态打回 `paused`——决策 CAS 只接 `completed`，退回了用户就再也无法对这场决策。
    从引擎创建后置快照**之前**（`on_after_snapshot` 回调）到评估+补写全部结束（成败均可）
@@ -706,7 +731,7 @@ graph TD
 
 ### 6.3 决策（`apply_decision`）
 
-见【契约5】。三分支行为：
+见【契约5】。人工提交与 AutoPilot 的自动决策都走这里（后者 `source="auto"`，见 4.2 陷阱 22）。三分支行为：
 
 - **continue**：`max_turns = turns_completed + extra`（默认 6），状态改回 `pending`，
   `asyncio.create_task(run_scene)` 重跑。**不写 decisions 表**（开启新一轮生命周期）。
@@ -933,6 +958,9 @@ prefix cache**，落地时必须改走 user 块。
 | GET | `/scenes/{scene_id}/stream` | **SSE** 实时流 |
 | GET | `/scenes/{scene_id}/evaluation` | 导演评估 |
 | GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
+| GET | `/projects/{project_id}/autopilot` | 该项目最近一次自动推演会话（含已停止的与停止原因）；没有则 null（进程重启后也是 null） |
+| POST | `/projects/{project_id}/autopilot` | 开启自动推演：`scene_id`、可选 `max_steps` / `max_consecutive_rollbacks`（缺省取 `.env`），`request_id` 必填（幂等键，同键重放返回同一会话）。已有进行中的会话 409；越界、起点已有生效决策、起点已完成但评估不可用或已抵达结局 422。起点在跑→等它跑完；pending/paused→替用户开演；completed→立即决策 |
+| DELETE | `/projects/{project_id}/autopilot` | 停止自动推演：不再往下接，正在演的这一场照常演完（要立刻中断另调 pause） |
 | GET | `/projects/{project_id}/branches` | 分支树 |
 | GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404 |
 | GET | `/projects/{project_id}/branches/{branch_id}/storyboard` | 分支导演分镜稿（工单18）。无记录返回空分镜稿而非 404；附 `goal_stale`（路线图基于旧版主线目标）与这一刻的 `narrative_goal` / `current_goal_revision` |
@@ -943,7 +971,9 @@ prefix cache**，落地时必须改走 user 块。
 | POST | `/projects/{project_id}/output` | 生成输出 |
 | GET | `/output/{output_id}` | 取回生成结果 |
 
-**SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`scene_error`。
+**SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`scene_error`、
+`autopilot`（自动推演会话的最新状态，带 `current_scene_id`；推在刚收场那一场的流上，**先于**终态帧）。
+自动 continue 时这一场的终态帧**不推**，同一条流直接接着收到新一轮的 `status: running` 与 `turn`。
 业务失败事件**必须叫 `scene_error` 而不是 `error`**：`error` 是 EventSource 的原生连接
 错误事件名，同名会让前端把两者混在一个处理器里、丢掉 `message`（`fatal` 字段区分
 “整场挂了”与“仅自动评估失败”）。
@@ -1001,6 +1031,13 @@ prefix cache**，落地时必须改走 user 块。
   因此也不会被误报成"决策提交失败"。
 - **舞台底栏有快捷决策**（已完成且未决策时）：继续 / 下一场与决策面板的默认提交等价；
   回滚要选快照、填条件，只负责打开检查器的决策页。
+- **自动推演（工单12）只跟随、不开演**：会话状态经场景流上的 `autopilot` 事件与 3 秒轮询两条路
+  进 `sceneStore.applyAutopilot`，跟到下一场只 `attachScene`（下一场还是 pending 时再补开流），
+  **绝不调 `/start`**——后端已经替用户开演。**只在会话前进时跟随**（换场景/多一步/新会话），
+  不是"当前场景与会话不一致就跟"，否则用户在自动推演期间翻看别的场景会被轮询拽回去；
+  迟到的轮询按 `updated_at` 丢弃。跟随后 `autopilotFollows` +1，`Director.vue` 据此走
+  `syncToCurrentScene`（与决策后同一个函数：自动回滚会换分支）。进行中时底栏的开演/快捷决策
+  收起、决策面板锁定；停在哪一场就在那一场显示停止原因。离开导演页只停前端的轮询，后端会话照跑。
 - **检查器各标签页用 `v-show` 而不是 `v-if`**：分镜稿的编辑草稿与决策表单切走再回来不能丢。
   角色内部状态（`CharacterInspector embedded`）盖在标签页上，返回即恢复。
 - **测试直接执行 `Director.vue` / `DirectorPanel.vue` / `Output.vue` / `StoryboardPanel.vue`
@@ -1177,7 +1214,6 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 |------|-----------|------------|
 | **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen**。⚠️ 两条已定的线：裁决结果若要沉淀成世界变量，必须先过契约1 的"公开可见"判据（裁决天然带私密性）；场景**进行中**变化的环境状态必须走 user 消息块，不得塞回 system（契约3 补充条款） | `11-...`；会改动 SceneEngine 对话循环本身，建议作为独立大提案最后做 |
 | **私有内心 OS** | 角色输出前的自适应思考，**不入档**——与现在会落档的 `inner_thought` 是两回事 | 未立项 |
-| **AutoPilot 模式** | 自动采纳导演建议的决策，无人值守连跑多场 | `12-auto-pilot-director.md`（依赖工单 13，已完成） |
 | **MCTS / 多结局** | 当前"每次只生成一场 + 采纳导演建议" ≈ 已默认剪枝的单条路径；多结局靠人工从快照分叉。场景评价与分镜稿（工单18）都已持久化，可在其上做真正的搜索 | 未立项 |
 
 **关于项目书里的"多结局与 MCTS"**：不要把它理解成已实现的搜索算法。
