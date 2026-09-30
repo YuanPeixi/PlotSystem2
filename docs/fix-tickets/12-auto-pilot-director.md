@@ -1,75 +1,58 @@
-# 工单12：新增 Auto Pilot（自动执行导演决策）
+# 工单12：Auto Pilot（自动执行导演决策，无人值守连跑）
 
-**优先级**：P2（新功能，非缺陷修复）
-**预估改动范围**：中（后端编排 + 简单前端开关）
-**依赖**：建议在工单10（决策接口幂等，见工单13）完成后做，避免自动循环触发并发问题
+**优先级**：P2（新功能）
+**依赖**：13 ✅（决策幂等）；18 ✅（可选，分镜稿随评估自动合并，无需额外处理）
+**重写说明**：原单写于 13 之后、08/18/28 之前，只保留功能意图；判据按当前代码重写，
+与原单的偏离及理由见 [NOTES#t12](./NOTES.md#t12)。
 
 ---
 
-## 1. 背景
+## 现象
 
-当前导演决策流程完全依赖人工：场景结束 → 自动评估（`DirectorAgent.evaluate_scene`）→
-人工在前端点击"继续/下一场/回滚"三个按钮之一 → 提交 `POST /scenes/{id}/decision`。
+场景结束 → 自动评估 → **必须有人**点"继续 / 下一场 / 回滚"之一。`DirectorAgent.make_decision`
+在 `human_override=None` 时已能按评分规则自己给出决策，但没有任何路径会在无人点击时
+调用 `apply_decision`。想让导演连跑几场看看走向，只能守在屏幕前一场一场点。
 
-`DirectorAgent.make_decision(evaluation, human_override)` 已经支持
-`human_override=None` 的情况（此时完全采用 AI 自己的评估建议），说明**决策本身的
-"自动模式"逻辑已经存在**，缺的是"谁来触发它、什么时候触发、触发几次后停下来"这一层
-编排逻辑——目前没有任何代码路径会在没有人工点击的情况下调用 `apply_decision`。
+## 为什么要做
 
-## 2. 目标（Definition of Done）
+- 每场推演几分钟，人工值守的成本远高于 LLM 成本；
+- 导演的规则化决策已经存在且经过 13/28 的加固，缺的只是"谁来触发、何时停"这一层编排。
 
-### 2.1 触发机制
+## 判据（DoD）
 
-1. 在 `Project`（或 `Branch`，两者选一，建议先做 `Project` 级别的全局开关，更简单）
-   新增字段 `auto_pilot: bool = False`。
-2. 在 `backend/services/orchestrator.py` 的 `run_scene` 成功完成、评估
-   （`director.evaluate_scene`）产出结果之后，新增判断：若该项目 `auto_pilot=True`，
-   则**不等待人工**，直接调用 `apply_decision(scene_id, human_override=None)`，
-   把返回的 `decision.next_scene_id` 对应场景继续投入运行（`rollback`/`next_scene`
-   产生的新场景需要显式调用 `run_scene(new_scene_id)`；`continue` 分支本身已经在
-   `apply_decision` 内部触发了 `run_scene`）。
+1. 用户对某一场开启一次**自动推演会话**（步数上限、连续回滚上限可配），此后每场收场即按
+   导演规则自动决策并开演结果场景，直到触发停止条件交还人工；
+2. 停止条件（任一）：达到步数上限；导演建议的回滚超过连续上限（**执行前**拦下）；评估不可用
+   或评估/补写失败；导演判定抵达结局；场景被手动中断（`导演中断`）或运行失败；决策执行失败
+   或无可用回滚快照；这一场已有人工决策；用户停止；
+3. 自动决策与人工决策走**同一个** `apply_decision`（CAS、幂等、回滚即分叉照旧），
+   决策记录带来源（人工 / 自动）；
+4. 前端不需人工操作即可跟到下一场（含回滚换分支），停止时明确显示原因；刷新页面能重新接上；
+5. 开启接口有幂等键（契约5）。
 
-### 2.2 安全阀（必须项，防止失控）
+## 红线与已排除
 
-1. **最大自动连锁次数**：新增 `Project.auto_pilot_max_chain`（默认如 10），每次自动
-   触发时计数，达到上限后自动关闭 `auto_pilot` 并推送一条 SSE `status` 事件告知前端
-   "自动推演已达上限，请人工介入"，而不是无限跑下去（避免无限消耗 token/陷入剧情
-   死循环）。
-2. **rollback 特殊处理**：`rollback` 类型的自动决策存在"反复回滚同一个点"的风险
-   （例如评估分数长期低于阈值，AI 每次都建议回滚到同一快照）。建议：连续 2 次
-   自动回滚到*同一个* `snapshot_id` 时，强制关闭 auto_pilot 并转人工（记录日志说明
-   原因），防止死循环回滚消耗资源却没有进展。
-3. **随时可中断**：`auto_pilot=False` 的切换需要能在场景正在自动运行时立刻生效
-   （下一次决策判断前检查最新的 `Project.auto_pilot` 值，而不是在启动时读一次就
-   缓存），配合已有的 `pause_scene`/`SceneEngine.interrupt()` 可以让用户随时"踩刹车"。
+- **不落库**：会话只放进程内存（契约9）。写进 `Project` 会和用户编辑主线目标的整份覆盖写
+  互相抹掉；落库后重启还会无人值守地继续烧 LLM。
+- **回滚上限不能按"回滚到同一快照"判断**：重演场景 `snapshot_id_before` 留空、开跑时重打
+  前置快照，下一次回滚的目标 ID 每次都不同，原单的判据永远不触发。改为连续回滚计数。
+- **自动决策不能发生在 `run_scene` 持有运行锁期间**：continue 是对同一 `scene_id` 再起
+  `run_scene`，锁没释放就会被重复启动守卫静默丢掉。
+- **不新开项目级 SSE 流**：自动决策结果推在刚收场那一场的流上，且必须先于终态帧（流收到
+  completed 就关）；另有轮询兜底。
+- 不给 continue 单独设次数上限（只受总步数约束）——产品决定。
+- 结局在界面上仍是提示不是闸门；只有无人值守时才据此停。
 
-### 2.3 前端
+## 验收
 
-1. `Director.vue` 或 `Workspace.vue` 增加一个"Auto Pilot"开关（toggle），调用新增的
-   `PATCH /projects/{id}` 或专门的 `POST /projects/{id}/auto-pilot` 接口。
-2. 开启后，导演决策面板（`DirectorPanel.vue`）应显示"自动驾驶中"的状态提示，
-   替代原本要求人工点击的三个按钮（但仍保留"立即暂停/接管"按钮，调用
-   `pause_scene` + 关闭 `auto_pilot`）。
-3. 达到最大连锁次数或触发反复回滚保护而被系统自动关闭时，前端需要通过 SSE
-   收到明确提示，而不是静默切回人工模式。
+- `tests/test_autopilot.py`：连锁到步数上限、continue 不被守卫吞掉、回滚超限在建分支前拦下、
+  中断/结局/评估不可用/评估失败即停、开启幂等与互斥、用户停止不再决策、从已完成场景开启、
+  拒绝已决策/无评估的起点、autopilot 事件先于终态帧；
+- `frontend/tests/autopilot-follow.test.mjs`：只在会话前进时跟随、迟到的轮询不倒退、
+  continue 保留流、开启重试沿用幂等键。
 
-## 3. 涉及文件
+## 线索
 
-- `backend/models.py`（`Project` 新增 `auto_pilot`/`auto_pilot_max_chain`/
-  内部连锁计数字段）
-- `backend/services/orchestrator.py`（`run_scene` 结束评估后的自动触发逻辑、
-  连锁计数与安全阀）
-- `backend/api/projects.py`（新增/扩展开关接口）
-- `frontend/src/components/DirectorPanel.vue`、`frontend/src/stores/director.ts`（开关与状态展示）
-- 测试：新增 `tests/test_orchestrator.py` 用例，mock 评估结果验证连锁上限与反复回滚保护生效
-
-## 4. 验收方式
-
-1. 开启 auto_pilot，跑一个项目的场景，确认无需人工点击就能连续推进多场，
-   且日志中每次自动决策都有明确记录（区分"人工"和"AI自动"两种来源）。
-2. 人为构造一个评估结果始终建议 `rollback` 到同一快照的场景（可 mock
-   `evaluate_scene` 返回值），确认触发 2 次后 `auto_pilot` 被自动关闭。
-3. 构造一个连续 `continue`/`next_scene` 场景链，确认达到 `auto_pilot_max_chain`
-   后自动停止并有前端可见提示。
-4. 场景自动运行过程中手动关闭 `auto_pilot`，确认下一次决策判断前就能感知到关闭，
-   不会再"多跑一场"才停下来。
+`services/autopilot.py`（纯函数）、`orchestrator.start_autopilot / _autopilot_after_scene`、
+`api/director.py` 的 `project_router`、`stores/scenes.ts`、`components/director/AutoPilotControl.vue`。
+易漏：`DirectorDecision.source` 的反序列化、`.env.example` 的三个 `AUTOPILOT_*`。

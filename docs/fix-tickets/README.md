@@ -72,7 +72,7 @@
 | 编号 | 标题 | 优先级 | 依赖 | 状态 | 备注 |
 |---|---|---|---|---|---|
 | [18](./18-storyboard.md) | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 ✅ | ✅ PR #21（合入 main：`b7dabe6`到`07688f2`） | [选择与落地结论](./NOTES.md#t18) |
-| [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 ✅（可选） | 待处理 | — |
+| [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 ✅（可选） | ⏳ 等待 PR（`feat/auto-pilot`） | [与原单的偏离](./NOTES.md#t12) |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 ✅ | 待处理（前置已齐） | [前置说明](./NOTES.md#t09) |
 
 ---
