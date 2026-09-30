@@ -6,6 +6,7 @@ import router from './router'
 import '@fontsource/noto-serif-sc/400.css'
 import '@fontsource/noto-serif-sc/600.css'
 import './styles/global.css'
+import './styles/spectrum.css'
 
 const app = createApp(App)
 app.use(createPinia())

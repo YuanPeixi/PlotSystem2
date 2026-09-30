@@ -48,6 +48,7 @@ function render() {
 
   graph = new Graph({
     container: container.value,
+    autoResize: true,
     autoFit: 'view',
     data: g6data,
     node: {
@@ -110,6 +111,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .graph-wrap {
   position: relative;
+  overflow: hidden;
   height: 100%;
   min-height: 420px;
 }

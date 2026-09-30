@@ -26,12 +26,10 @@ defineProps<{ title: string; context?: string }>()
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 52px;
-  padding: 8px 16px;
+  min-height: 58px;
+  padding: 10px 24px;
   border-bottom: 1px solid var(--line);
   background: var(--material);
-  backdrop-filter: saturate(180%) blur(16px);
-  -webkit-backdrop-filter: saturate(180%) blur(16px);
 }
 .crumbs {
   display: flex;
@@ -51,7 +49,7 @@ defineProps<{ title: string; context?: string }>()
   color: var(--ink-3);
 }
 h1 {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -63,6 +61,8 @@ h1 {
   gap: 8px;
 }
 @media (max-width: 720px) {
+  .page-header { flex-wrap: wrap; padding: 12px 16px; }
+  .actions { flex-wrap: wrap; }
   .context,
   .sep {
     display: none;

@@ -8,7 +8,7 @@
     <!-- 与 src/composables/theme.ts 同一个存储键：挂载前就定好主题，避免首屏闪色 -->
     <script>
       try {
-        if (localStorage.getItem('plotsystem.theme') === 'dark') document.documentElement.dataset.theme = 'dark'
+        if (localStorage.getItem('plotsystem.spectrum.theme') === 'dark') document.documentElement.dataset.theme = 'dark'
       } catch (e) {}
     </script>
   </head>

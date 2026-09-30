@@ -1,0 +1,95 @@
+/* Spectrum-inspired Vue adaptation. Semantic grays and blue follow Spectrum 1
+   color-system guidance; existing app components retain their public interfaces. */
+:root {
+  --spectrum-gray-50: #fff;
+  --spectrum-gray-100: #f8f8f8;
+  --spectrum-gray-200: #e6e6e6;
+  --spectrum-gray-700: #6e6e6e;
+  --spectrum-gray-800: #4b4b4b;
+  --spectrum-gray-900: #2c2c2c;
+  --spectrum-blue-900: #0265dc;
+  --bg: #ededed;
+  --panel: var(--spectrum-gray-50);
+  --panel-2: var(--spectrum-gray-100);
+  --ink: var(--spectrum-gray-900);
+  --ink-2: var(--spectrum-gray-800);
+  --ink-3: var(--spectrum-gray-700);
+  --line: #dedede;
+  --line-strong: #a6a6a6;
+  --hover: rgba(0,0,0,.045);
+  --spot: var(--spectrum-blue-900);
+  --spot-ink: #0054b6;
+  --spot-soft: #e6f0ff;
+  --spot-glow: rgba(2,101,220,.18);
+  --private: #7646ba;
+  --private-soft: #f3eefb;
+  --ok: #12805c;
+  --danger: #bb121a;
+  --warn: #945400;
+  --material: var(--panel);
+  --brand: #d44727;
+  --brand-soft: #fbede6;
+  --brand-ink: #963d23;
+  --on-accent: #fff;
+  --focus-ring: #0265dc;
+  --shadow-float: 0 4px 20px rgba(0,0,0,.16);
+  --r-xs: 3px;
+  --r-sm: 5px;
+  --r-md: 8px;
+  --r-lg: 12px;
+}
+[data-theme='dark'] {
+  --spectrum-gray-50: #252525;
+  --spectrum-gray-100: #323232;
+  --spectrum-gray-200: #3e3e3e;
+  --spectrum-gray-700: #b1b1b1;
+  --spectrum-gray-800: #d0d0d0;
+  --spectrum-gray-900: #f2f2f2;
+  --spectrum-blue-900: #72b7f9;
+  --bg: #1d1d1d;
+  --panel: #2c2c2c;
+  --panel-2: #252525;
+  --ink: var(--spectrum-gray-900);
+  --ink-2: var(--spectrum-gray-800);
+  --ink-3: var(--spectrum-gray-700);
+  --line: #444;
+  --line-strong: #858585;
+  --hover: rgba(255,255,255,.065);
+  --spot: #0265dc;
+  --spot-ink: var(--spectrum-blue-900);
+  --spot-soft: #203b59;
+  --spot-glow: rgba(114,183,249,.2);
+  --private: #ceaaff;
+  --private-soft: #3b2e4c;
+  --ok: #72d6b1;
+  --danger: #ff969d;
+  --warn: #f6bc72;
+  --material: var(--panel);
+  --brand-soft: #49342b;
+  --brand-ink: #f4b492;
+  --focus-ring: #72b7f9;
+}
+body { background: var(--bg); }
+button { min-height: 34px; padding-inline: 12px; font-size: 13px; transition: background-color .15s, border-color .15s, color .15s; }
+button.primary { background: var(--spot); color: var(--on-accent); border-color: var(--spot); font-weight: 600; }
+button.primary:hover { background: #0054b6; border-color: #0054b6; opacity: 1; }
+button.icon { width: 34px; }
+button.icon.sm { min-height: 28px; width: 28px; }
+input, select, textarea { padding: 8px 10px; background: var(--panel); }
+input:focus, select:focus, textarea:focus { border-color: var(--spot); }
+label { font-size: 12px; }
+.section-title { font-size: 13px; color: var(--ink); }
+.seg { border: 1px solid var(--line); padding: 3px; }
+.seg button { min-height: 28px; }
+.seg button[aria-pressed='true'] { color: var(--spot-ink); box-shadow: 0 0 0 1px var(--line); }
+.tag { border-radius: 3px; }
+.card { border-color: var(--line); }
+.meter { height: 5px; }
+.director-page .col-rail, .director-page .col-insp, .output-page .settings { background: var(--panel-2); }
+.director-page .col-stage { background: var(--panel); }
+.branch-page .legend { background: var(--panel); }
+.output-page .reserved-col { display: none; }
+.output-page .out { grid-template-columns: 260px minmax(0, 1fr); }
+@media (max-width: 760px) { .output-page .out { grid-template-columns: minmax(0, 1fr); } }
+@media (pointer: coarse) { button, button.icon, button.icon.sm, .seg button { min-height: 44px; } button.icon, button.icon.sm { min-width: 44px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }

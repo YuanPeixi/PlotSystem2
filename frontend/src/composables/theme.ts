@@ -2,7 +2,7 @@ import { ref } from 'vue'
 
 export type Theme = 'light' | 'dark'
 
-const KEY = 'plotsystem.theme'
+const KEY = 'plotsystem.spectrum.theme'
 
 function initial(): Theme {
   try {
