@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type {
   ApiResponse,
+  AutoPilotSession,
   BranchTree,
   BuildStatus,
   CharacterCard,
@@ -118,6 +119,21 @@ export const api = {
     unwrap<Record<string, unknown> | null>(http.get(`/scenes/${sid}/decision`)),
   submitDecision: (sid: string, payload: Record<string, unknown>) =>
     unwrap(http.post(`/scenes/${sid}/decision`, payload)),
+
+  // AutoPilot（工单12）：会话只在后端进程内存里，没有时返回 null
+  getAutopilot: (id: string) =>
+    unwrap<AutoPilotSession | null>(http.get(`/projects/${id}/autopilot`)),
+  startAutopilot: (
+    id: string,
+    payload: {
+      scene_id: string
+      request_id: string
+      max_steps?: number
+      max_consecutive_rollbacks?: number
+    },
+  ) => unwrap<AutoPilotSession>(http.post(`/projects/${id}/autopilot`, payload)),
+  stopAutopilot: (id: string) =>
+    unwrap<AutoPilotSession | null>(http.delete(`/projects/${id}/autopilot`)),
 
   // 分支/快照
   getBranches: (id: string) => unwrap<BranchTree>(http.get(`/projects/${id}/branches`)),

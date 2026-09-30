@@ -2,7 +2,8 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import Icon from '@/components/ui/Icon.vue'
 import DialogLog from '@/components/DialogLog.vue'
-import type { DialogueTurn, Scene } from '@/types'
+import AutoPilotControl from '@/components/director/AutoPilotControl.vue'
+import type { AutoPilotSession, DialogueTurn, Scene } from '@/types'
 
 const props = defineProps<{
   scene: Scene
@@ -17,12 +18,19 @@ const props = defineProps<{
   /** 决策请求在途 */
   deciding: boolean
   nameOf: (cid: string) => string
+  /** 该项目最近一次自动推演会话（可能已停止） */
+  autopilot: AutoPilotSession | null
+  /** 这一场尚未决策，可以作为自动推演的起点 */
+  autopilotStartable: boolean
+  autopilotBusy: boolean
 }>()
 const emit = defineEmits<{
   (e: 'inspect', cid: string): void
   (e: 'resume'): void
   (e: 'decide', type: 'continue' | 'next_scene'): void
   (e: 'open-decide'): void
+  (e: 'autopilot-start', steps: number, rollbacks: number): void
+  (e: 'autopilot-stop'): void
 }>()
 
 const only = ref('')
@@ -31,6 +39,15 @@ const scroller = ref<HTMLElement | null>(null)
 const stick = ref(true)
 
 const SPEAKER_MODE: Record<string, string> = { round_robin: '轮流发言', selector: '评分选人' }
+
+// 自动推演进行中：手动开演/决策的入口收起，由后端替用户推进
+const piloting = computed(() => props.autopilot?.status === 'running')
+// 停在哪一场就在哪一场说明原因；翻看别的场景时不显示
+const pilotStopped = computed(() =>
+  props.autopilot?.status === 'stopped' && props.autopilot.current_scene_id === props.scene.scene_id
+    ? props.autopilot.stop_message
+    : '',
+)
 
 const narration = computed(() => {
   const n = props.scene.initial_conditions?.opening_narration
@@ -99,12 +116,15 @@ watch(
         <p v-if="lastError" class="notice danger error">
           <Icon name="alert" :size="15" />{{ lastError }}
         </p>
+        <p v-if="pilotStopped" class="notice error">
+          <Icon name="info" :size="15" />自动推演已停止：{{ pilotStopped }}
+        </p>
         <DialogLog :turns="turns" :running="running" :only="only" />
       </article>
     </div>
 
     <footer class="stage-bar">
-      <button v-if="resumable" class="primary" @click="emit('resume')">
+      <button v-if="resumable && !piloting" class="primary" @click="emit('resume')">
         <Icon name="play" :size="15" />{{ scene.status === 'paused' ? '继续这一场' : '开演' }}
       </button>
       <span class="status"><span class="status-dot" :class="running ? 'running' : scene.status"></span>{{ statusText }}</span>
@@ -117,7 +137,7 @@ watch(
         <option v-for="[id, name] in speakers" :key="id" :value="id">只看{{ name }}</option>
       </select>
       <!-- 快捷决策：与决策面板的默认提交等价；回滚要选快照、填条件，引导到决策页 -->
-      <span v-if="decidable" class="decide">
+      <span v-if="decidable && !piloting" class="decide">
         <button :disabled="deciding" title="同一场再演 6 轮" @click="emit('decide', 'continue')">
           <Icon name="continue" :size="15" />继续
         </button>
@@ -128,6 +148,13 @@ watch(
           <Icon name="rollback" :size="15" />回滚…
         </button>
       </span>
+      <AutoPilotControl
+        :session="autopilot"
+        :can-start="autopilotStartable"
+        :busy="autopilotBusy"
+        @start="(s, r) => emit('autopilot-start', s, r)"
+        @stop="emit('autopilot-stop')"
+      />
     </footer>
   </div>
 </template>

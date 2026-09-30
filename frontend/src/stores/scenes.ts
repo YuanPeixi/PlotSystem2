@@ -1,10 +1,19 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api, openSceneStream } from '@/api/client'
-import type { DialogueTurn, Scene, SceneConfig, SceneEvaluation } from '@/types'
+import type { AutoPilotSession, DialogueTurn, Scene, SceneConfig, SceneEvaluation } from '@/types'
 
 /** 场景已经跑完（或被中断），不应再等待流事件。 */
 const TERMINAL = ['completed', 'paused']
+/** AutoPilot 的兜底轮询间隔：从已完成的场景开启时，下一步只能靠它得知 */
+const AUTOPILOT_POLL_MS = 3000
+
+function newRequestId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+  )
+}
 
 export const useSceneStore = defineStore('scenes', () => {
   const currentScene = ref<Scene | null>(null)
@@ -17,6 +26,13 @@ export const useSceneStore = defineStore('scenes', () => {
   // 后端推送的最近一条业务失败原因（scene_error），供界面展示
   const lastError = ref('')
   const decisionPending = ref(false)
+  // 该项目最近一次自动推演会话（工单12）。只在后端进程内存里，重启后为 null
+  const autopilot = ref<AutoPilotSession | null>(null)
+  // 每跟随到一场就 +1：页面据此同步分支选择与 URL（自动回滚会换分支）
+  const autopilotFollows = ref(0)
+  let autopilotTimer: ReturnType<typeof setInterval> | null = null
+  // 开启请求的幂等键：参数不变的重试（上次失败/超时）沿用同一个，后端认出重放
+  let pendingStart: { key: string; requestId: string } | null = null
   let es: EventSource | null = null
 
   async function plan(
@@ -87,6 +103,11 @@ export const useSceneStore = defineStore('scenes', () => {
     source.addEventListener('evaluation', (e) => {
       if (stale()) return
       evaluation.value = JSON.parse((e as MessageEvent).data)
+    })
+    // 自动决策的结果先于终态帧到达：下一场是哪个只能从这里得知
+    source.addEventListener('autopilot', (e) => {
+      if (stale()) return
+      applyAutopilot(JSON.parse((e as MessageEvent).data))
     })
     // 后端的业务失败走 scene_error；同名的 'error' 是 EventSource 原生的连接错误，
     // 两者合并处理会把失败原因吞掉（紧跟着的 status 还会把提示覆盖）。
@@ -257,6 +278,100 @@ export const useSceneStore = defineStore('scenes', () => {
     await startSimulation(sceneId, { keepLog: true })
   }
 
+  // ---- AutoPilot（工单12）----
+
+  /**
+   * 收下一份会话状态（SSE 与轮询两条路都走这里）。
+   *
+   * 只在会话**前进**时跟随（换了场景、多了一步、或刚开启的新会话），而不是"当前场景
+   * 与会话不一致就跟"：否则用户在自动推演期间点开别的场景翻看，轮询每 3 秒就把他拽回去。
+   */
+  function applyAutopilot(next: AutoPilotSession | null) {
+    const prev = autopilot.value
+    // 迟到的旧状态（轮询响应慢于 SSE）不能把会话倒回去
+    if (next && prev && next.session_id === prev.session_id && next.updated_at < prev.updated_at) return
+    autopilot.value = next
+    syncAutopilotPolling()
+    if (!next) return
+    const advanced =
+      prev && prev.session_id === next.session_id
+        ? prev.current_scene_id !== next.current_scene_id || next.steps.length > prev.steps.length
+        : next.status === 'running'
+    if (advanced) void followAutopilot(next)
+  }
+
+  /** 把舞台切到会话的当前场景。后端已经替用户开演，这里绝不调 /start。 */
+  async function followAutopilot(session: AutoPilotSession) {
+    const id = session.current_scene_id
+    if (!id) return
+    // 自动 continue：后端刻意没发终态帧，还开着的流会直接收到新一轮
+    if (currentScene.value?.scene_id === id && es && es.readyState !== EventSource.CLOSED) {
+      evaluation.value = null
+      appliedDecision.value = null
+      return
+    }
+    try {
+      const scene = await attachScene(id)
+      // 等响应期间会话又前进了：让后一次跟随去收尾
+      if (autopilot.value?.current_scene_id !== id) return
+      // 刚建好的下一场可能还没来得及开跑，但后端马上就会开演
+      if (session.status === 'running' && scene.status === 'pending') {
+        openStream(id, { keepLog: true })
+      }
+      autopilotFollows.value++
+    } catch {
+      // 取场景失败：下一次轮询还会再试
+    }
+  }
+
+  function syncAutopilotPolling() {
+    const projectId = autopilot.value?.status === 'running' ? autopilot.value.project_id : ''
+    if (projectId && !autopilotTimer) {
+      autopilotTimer = setInterval(() => void refreshAutopilot(projectId), AUTOPILOT_POLL_MS)
+    } else if (!projectId && autopilotTimer) {
+      clearInterval(autopilotTimer)
+      autopilotTimer = null
+    }
+  }
+
+  async function refreshAutopilot(projectId: string) {
+    try {
+      // 后端重启后会话就没了（null）：同样收下，停掉轮询
+      applyAutopilot(await api.getAutopilot(projectId))
+    } catch {
+      // 轮询失败不打扰用户，下一轮再说
+    }
+  }
+
+  async function startAutopilot(
+    projectId: string,
+    sceneId: string,
+    maxSteps: number,
+    maxRollbacks: number,
+  ) {
+    const key = `${projectId}|${sceneId}|${maxSteps}|${maxRollbacks}`
+    if (pendingStart?.key !== key) pendingStart = { key, requestId: newRequestId() }
+    const session = await api.startAutopilot(projectId, {
+      scene_id: sceneId,
+      request_id: pendingStart.requestId,
+      max_steps: maxSteps,
+      max_consecutive_rollbacks: maxRollbacks,
+    })
+    pendingStart = null
+    applyAutopilot(session)
+  }
+
+  async function stopAutopilot(projectId: string) {
+    const session = await api.stopAutopilot(projectId)
+    if (session) applyAutopilot(session)
+  }
+
+  /** 离开导演页/换项目：停掉轮询、丢掉会话（后端的会话不受影响）。 */
+  function resetAutopilot() {
+    autopilot.value = null
+    syncAutopilotPolling()
+  }
+
   return {
     currentScene,
     turns,
@@ -266,6 +381,8 @@ export const useSceneStore = defineStore('scenes', () => {
     statusMsg,
     lastError,
     decisionPending,
+    autopilot,
+    autopilotFollows,
     plan,
     createScene,
     startNewScene,
@@ -277,5 +394,10 @@ export const useSceneStore = defineStore('scenes', () => {
     stopStream,
     clearScene,
     submitDecision,
+    applyAutopilot,
+    refreshAutopilot,
+    startAutopilot,
+    stopAutopilot,
+    resetAutopilot,
   }
 })
