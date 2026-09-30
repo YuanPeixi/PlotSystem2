@@ -273,6 +273,60 @@ async def test_start_is_idempotent_and_exclusive(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_starts_with_same_request_id_share_one_session(monkeypatch):
+    """检查已有会话与登记新会话之间隔着 await（读项目、读场景）：不加锁的话两个并发
+    重放都会通过检查，各开一个会话、各起一次开演。"""
+    h = _Harness(monkeypatch)
+    h.gate = asyncio.Event()
+    scene = await _setup("proj-ap-race-same")
+
+    first, second = await asyncio.gather(
+        orchestrator.start_autopilot(scene.project_id, scene.scene_id, request_id="r1", max_steps=1),
+        orchestrator.start_autopilot(scene.project_id, scene.scene_id, request_id="r1", max_steps=1),
+    )
+    assert first is second
+
+    h.gate.set()
+    await _wait_stopped(scene.project_id)
+    assert h.runs.count(scene.scene_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_starts_on_different_scenes_admit_only_one(monkeypatch):
+    """不同起点并发开启：只能有一个成功。否则两场都开演，项目只记得后登记的那个会话，
+    另一场跑完没人接手，脱离 AutoPilot 管理。"""
+    h = _Harness(monkeypatch)
+    h.gate = asyncio.Event()
+    scene = await _setup("proj-ap-race-diff")
+    other = Scene(
+        scene_id=f"{scene.project_id}-s2", project_id=scene.project_id,
+        branch_id="branch-main", name="另一场", max_turns=2,
+    )
+    await repository.save_scene(other)
+
+    results = await asyncio.gather(
+        orchestrator.start_autopilot(scene.project_id, scene.scene_id, request_id="r1"),
+        orchestrator.start_autopilot(scene.project_id, other.scene_id, request_id="r2"),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(r, ConflictError) for r in results) == 1
+    winner = next(r for r in results if isinstance(r, AutoPilotSession))
+    assert orchestrator.get_autopilot(scene.project_id) is winner
+
+    await asyncio.sleep(0.05)
+    # 只有会话所在的那一场被开演
+    assert h.runs == [winner.current_scene_id]
+    await orchestrator.stop_autopilot(scene.project_id)
+    h.gate.set()
+    # 等开演的那一场连同尾部任务跑完，别让它越过本测试的事件循环
+    async def _drain():
+        while orchestrator._background_tasks or orchestrator.is_scene_active(winner.current_scene_id):
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_drain(), 5)
+
+
+@pytest.mark.asyncio
 async def test_user_stop_takes_effect_before_next_decision(monkeypatch):
     h = _Harness(monkeypatch)
     h.gate = asyncio.Event()
