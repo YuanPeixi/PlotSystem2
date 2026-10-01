@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from chromadb.api.types import Documents, Embeddings, EmbeddingFunction
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from openai import OpenAI
 
 from backend.config import settings
@@ -51,5 +51,5 @@ class RemoteEmbeddingFunction(EmbeddingFunction[Documents]):
         return {"model": self._model}
 
     @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "RemoteEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> RemoteEmbeddingFunction:
         return RemoteEmbeddingFunction(model=config.get("model"))
