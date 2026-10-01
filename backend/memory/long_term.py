@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import shutil
+import time
 from pathlib import Path
 
 from backend.config import settings
@@ -31,9 +32,21 @@ except Exception:  # noqa: BLE001
     _CHROMA_AVAILABLE = False
 
 
+# Chroma 集合名上限 63 字符、只许字母数字/下划线/连字符。"char_" + 32 位角色 hex
+# 已占 37，直接拼 32 位分支 hex 会到 71 —— 生产 ID 全是 uuid4，每个带分支的集合都会
+# 被拒，长期记忆整体静默降级、分叉必然失败。分支只取摘要前 24 位，恰好凑满 63。
+_BRANCH_DIGEST_LEN = 24
+
+
 def branch_suffix(branch_id: str) -> str:
-    """集合名的分支后缀。空 branch_id 表示项目级共享集合（改造前的老数据）。"""
-    return f"__{branch_id.replace('-', '')}" if branch_id else ""
+    """集合名的分支后缀。空 branch_id 表示项目级共享集合（改造前的老数据）。
+
+    用摘要而不是截断原 ID：分支 ID 可以是任意字符串，截断/去连字符都可能撞名或含非法字符。
+    """
+    if not branch_id:
+        return ""
+    digest = hashlib.sha256(branch_id.encode("utf-8")).hexdigest()[:_BRANCH_DIGEST_LEN]
+    return f"__{digest}"
 
 
 def collection_name_for(character_id: str, branch_id: str = "") -> str:
@@ -45,6 +58,11 @@ def collection_name_for(character_id: str, branch_id: str = "") -> str:
 # 空集合可能是“尚未承接”，也可能是“分叉点本来就没记忆”，两者误判会把
 # 分叉点之后的共享记忆灌进历史分支；非空也可能是“承接到一半被杀”。
 LEGACY_ADOPTED_KEY = "legacy_adopted"
+
+# 写入/检索失败后暂停访问 Chroma 的时长。失败多半是远程 embedding 抖动，旧实现
+# 失败一次就永久断开：本场余下的写入全进内存、场景结束即丢，而水位线照推
+# （工单26），续跑也不会重放 —— 一次网络抖动换来半场永久失忆，日志里只有一条 warning。
+RETRY_COOLDOWN_SECONDS = 30.0
 
 
 def is_adopted(col) -> bool:
@@ -135,6 +153,10 @@ class LongTermMemory:
         # 降级时的内存存储（与 Chroma 路径同语义：按 memory_id 去重，契约6）
         self._fallback: list[dict] = []
         self._fallback_ids: set[str] = set()
+        # 暂时断开：冷却期内不碰 Chroma，没写进去的条目按序暂存，恢复后先补写。
+        # 与 `_collection is None`（Chroma 缺失/初始化失败，整个实例生命周期降级）区分。
+        self._retry_at = 0.0
+        self._pending: dict[str, tuple[str, dict]] = {}
 
     async def connect(self) -> None:
         if not _CHROMA_AVAILABLE:
@@ -216,28 +238,87 @@ class LongTermMemory:
         self._fallback.append({"id": mid, "text": text, "metadata": meta})
 
     def _add_sync(self, text: str, meta: dict) -> None:
-        mid = memory_id(text)
+        if self._cooling_down():
+            self._defer(text, meta)
+            return
         try:
-            # 先查存在性再写：upsert 会无条件重算 embedding，而 embedding 走远程
-            # 计费接口（memory/embeddings.py）。include=[] 只回 ids，不触发 embedding。
-            if (self._collection.get(ids=[mid], include=[]).get("ids") or []):
-                return
-            # chromadb 校验 metadata 不允许空 dict，兜底填充一个占位字段
-            safe_meta = meta or {"source": "unknown"}
-            # upsert 而非 add：并发/重试下撞同一 ID 时不抛错，结果仍是一条
-            self._collection.upsert(documents=[text], metadatas=[safe_meta], ids=[mid])
+            # 先补写暂存的，保持写入顺序；补写失败本条也一并暂存
+            self._flush_pending()
+            self._write_chroma(text, meta)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("写入 ChromaDB 失败，转入降级：%s", exc)
-            self._collection = None
-            self._add_fallback(text, meta)
+            self._defer(text, meta)
+            self._suspend("写入", exc)
+
+    def _write_chroma(self, text: str, meta: dict) -> None:
+        mid = memory_id(text)
+        # 先查存在性再写：upsert 会无条件重算 embedding，而 embedding 走远程
+        # 计费接口（memory/embeddings.py）。include=[] 只回 ids，不触发 embedding。
+        if (self._collection.get(ids=[mid], include=[]).get("ids") or []):
+            return
+        # chromadb 校验 metadata 不允许空 dict，兜底填充一个占位字段
+        safe_meta = meta or {"source": "unknown"}
+        # upsert 而非 add：并发/重试下撞同一 ID 时不抛错，结果仍是一条
+        self._collection.upsert(documents=[text], metadatas=[safe_meta], ids=[mid])
+
+    def _cooling_down(self) -> bool:
+        return time.monotonic() < self._retry_at
+
+    def _defer(self, text: str, meta: dict) -> None:
+        """暂存待补写；同时进降级存储，断开期间本场检索仍能看到它。"""
+        self._pending[memory_id(text)] = (text, meta)
+        self._add_fallback(text, meta)
+
+    def _suspend(self, op: str, exc: Exception) -> None:
+        self._retry_at = time.monotonic() + RETRY_COOLDOWN_SECONDS
+        logger.warning(
+            "ChromaDB %s失败，%.0f 秒内暂用降级模式（角色 %s 待补写 %d 条）：%s",
+            op,
+            RETRY_COOLDOWN_SECONDS,
+            self.character_id,
+            len(self._pending),
+            exc,
+        )
+
+    def _flush_pending(self) -> None:
+        """按暂存顺序补写；中途失败则异常上抛，已写入的出队、其余留待下次。"""
+        if not self._pending:
+            return
+        flushed = 0
+        for mid, (text, meta) in list(self._pending.items()):
+            self._write_chroma(text, meta)
+            del self._pending[mid]
+            flushed += 1
+        self._retry_at = 0.0
+        logger.info("ChromaDB 已恢复，角色 %s 补写 %d 条长期记忆", self.character_id, flushed)
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    async def flush(self) -> int:
+        """无视冷却补写一次暂存条目，返回仍未写入的条数。
+
+        固化收尾时调用：实例随场景结束被丢弃，这是暂存条目最后的补写机会。
+        """
+        if self._collection is not None and self._pending:
+            await asyncio.to_thread(self._flush_sync)
+        return len(self._pending)
+
+    def _flush_sync(self) -> None:
+        try:
+            self._flush_pending()
+        except Exception as exc:  # noqa: BLE001
+            self._suspend("补写", exc)
 
     async def retrieve(self, query: str, top_k: int = 5) -> list[MemoryChunk]:
-        if self._collection is not None:
+        if self._collection is not None and not self._cooling_down():
             return await asyncio.to_thread(self._retrieve_sync, query, top_k)
         return self._retrieve_fallback(query, top_k)
 
     def _retrieve_sync(self, query: str, top_k: int) -> list[MemoryChunk]:
         try:
+            # 暂存条目不在向量库里，先补写，否则恢复后的检索看不到断开期间的记忆
+            self._flush_pending()
             res = self._collection.query(query_texts=[query], n_results=top_k)
             docs = (res.get("documents") or [[]])[0]
             dists = (res.get("distances") or [[]])[0] or [0.0] * len(docs)
@@ -247,7 +328,7 @@ class LongTermMemory:
                 for d, dist, m in zip(docs, dists, metas)
             ]
         except Exception as exc:  # noqa: BLE001
-            logger.warning("ChromaDB 检索失败，使用降级：%s", exc)
+            self._suspend("检索", exc)
             return self._retrieve_fallback(query, top_k)
 
     def _retrieve_fallback(self, query: str, top_k: int) -> list[MemoryChunk]:

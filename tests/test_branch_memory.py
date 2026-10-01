@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from pathlib import Path
 
 import pytest
@@ -416,3 +417,28 @@ async def test_resolve_branch_uses_snapshot_source(fake_embedding):
 
     assert explicit == "branch-resolve"
     assert latest == "branch-resolve"
+
+
+@pytest.mark.asyncio
+async def test_production_shaped_ids_persist_and_fork(fake_embedding):
+    """生产 ID 全是 uuid4：集合名必须落在 Chroma 的 63 字符上限内。
+
+    其余用例用的短 ID 永远撞不到上限；旧后缀拼出 71 字符，带分支的集合一律被拒，
+    长期记忆静默降级、分叉必然 500。
+    """
+    project_id = str(uuid.uuid4())
+    character_id, src_branch, new_branch = (str(uuid.uuid4()) for _ in range(3))
+    assert len(long_term.collection_name_for(character_id, src_branch)) <= 63
+
+    await _seed(project_id, character_id, src_branch, "主线：公主离开了王城")
+    sm = SnapshotManager(project_id)
+    snap = await sm.create_snapshot(
+        "scene-uuid", src_branch, {character_id: CharacterState(character_id=character_id)}
+    )
+
+    assert await sm.clone_collections_for_branch(snap.snapshot_id, new_branch) == 1
+    mem = MemoryManager(character_id, project_id, new_branch)
+    await mem.connect()
+    assert mem.long_term._collection is not None
+    hits = [c.text for c in await mem.long_term.retrieve("公主", top_k=5)]
+    assert "主线：公主离开了王城" in hits

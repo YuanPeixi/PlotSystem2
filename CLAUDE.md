@@ -321,7 +321,7 @@ frontend/src/
     | 快照里的 `CharacterState` | 分支/时点级 | ✅ |
     | 角色卡 `current_*` | 项目级单值（只当**展示缓存**） | ❌ |
     | `WorldState`（`world_state/{branch_id}.json`） | 分支级（工单07） | ✅ |
-    | Chroma 长期记忆（collection = `char_{cid}__{branch_id}`） | 角色+分支级（工单08） | ✅ |
+    | Chroma 长期记忆（collection = `char_{cid}__{sha256(branch_id)[:24]}`，见 `long_term.branch_suffix`） | 角色+分支级（工单08） | ✅ |
     | Kuzu 图谱 | 项目级单文件 | ❌（只读，暂无影响；工单06 落地前必须先解决） |
 
     因此 **`SnapshotManager.restore_snapshot()` 是破坏性操作**：它 `rmtree` 后拷回旧副本，
@@ -336,6 +336,9 @@ frontend/src/
     默认时点解析出的快照所属分支**。场景查询**不得**用继承来的快照反推分支 ——
     新分支首场的 `restore_snapshot_id` 指向的是**来源分支**的快照（契约4 懒承接），
     按它取集合会把主线分叉后的记忆查回来；该时点之前的记忆已由 I3 复制进本分支集合。
+    **集合名受 Chroma 的 63 字符上限约束**：分支后缀取 `sha256(branch_id)` 前 24 位，
+    与 `char_` + 32 位角色 hex 恰好凑满。不要改回拼接原分支 ID（71 字符）——带分支的集合
+    会被全部拒绝，长期记忆静默降级为内存检索、分叉必然 500，而用短 ID 的单测发现不了。
 
 12. **改造前的项目级集合靠首次连接一次性承接**：`LongTermMemory._connect_sync` 发现无后缀
     的老集合存在、而本分支集合还没打上 `LEGACY_ADOPTED_KEY` 标记时，把老记录 upsert
@@ -736,7 +739,7 @@ graph TD
 |------|------|------|
 | I1 | 起点一致 | `Scene₀.restore_snapshot_id = S`，靠契约4 懒承接，**绝不 restore_snapshot()** |
 | I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景；Chroma `PersistentClient` 会在打开时维护文件，因此只能打开 checkpoint 的临时副本，不能直接打开权威快照目录（代价：分叉期间向量库占用的磁盘峰值翻倍，用空间换快照不可变，向量库变大后可再优化） |
-| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进 `char_{cid}__{新分支}`，分页读 + 按客户端 `max_batch_size` 分批写；另以分支级初始化文件封住快照中不存在 collection 的角色和空起点。**世界变量同理**：`S.world_state_variables` 写进新分支的 `world_state/{新分支}.json`（工单07）——它是分支级文件、不随快照目录走，不搬就是"一分叉世界重置"。**分镜稿同理**：`S.storyboard` 写进 `storyboard/{新分支}.json` 并附确定性模板生成的 `fork_origin`（来源分支名、快照标签、IF 条件、`director_notes`；工单18）；旧快照无副本时以空稿起步，不回读来源分支 |
+| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进新分支的集合（`collection_name_for(cid, 新分支)`），分页读 + 按客户端 `max_batch_size` 分批写；另以分支级初始化文件封住快照中不存在 collection 的角色和空起点。**世界变量同理**：`S.world_state_variables` 写进新分支的 `world_state/{新分支}.json`（工单07）——它是分支级文件、不随快照目录走，不搬就是"一分叉世界重置"。**分镜稿同理**：`S.storyboard` 写进 `storyboard/{新分支}.json` 并附确定性模板生成的 `fork_origin`（来源分支名、快照标签、IF 条件、`director_notes`；工单18）；旧快照无副本时以空稿起步，不回读来源分支 |
 | I4 | 可追溯 | `Branch.parent_branch_id = S.branch_id`；`Scene₀.parent_scene_id = S.scene_id` |
 | I5 | 条件生效 | `Scene₀.initial_conditions = {**来源场景条件, **C}` |
 
@@ -874,6 +877,13 @@ prefix cache**，落地时必须改走 user 块。
 `kuzu` / `chromadb` / `autogen` 全部走 try-import + `_XXX_AVAILABLE` 分支，
 缺失时降级（空图 / 字符重叠伪检索 / 不可用）。**离线与 CI 环境必须能跑通。**
 新增可选重依赖时沿用同一模式。
+
+**Chroma 运行期失败只暂时断开**（`LongTermMemory._suspend`）：写入/检索抛错（多半是远程
+embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区并镜像到降级存储，
+恢复后先按序补写；每次 `consolidate` 收尾无视冷却再补写一次，仍有剩余则打 error。
+**不要改回"失败一次就 `_collection = None`"**：那会让本场余下写入全部只进内存、场景结束即丢，
+而水位线照推，续跑也补不回来。暂存区本身仍是内存态，服务在场景结束前都没恢复时照样丢——
+这是已知边界，日志可见。
 
 ### 契约 7 — LLM 唯一出口
 
