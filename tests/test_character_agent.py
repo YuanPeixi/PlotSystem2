@@ -260,7 +260,64 @@ async def test_long_term_add_falls_back_without_duplicating():
 
     mem._collection = _Boom()
     await mem.add("甲: 我发誓要复仇", {"type": "episodic"})
-    assert mem._collection is None  # 已转入降级
     await mem.add("甲: 我发誓要复仇", {"type": "episodic"})
 
     assert len(mem._fallback) == 1
+    assert mem.pending_count == 1
+
+
+class _FlakyCollection:
+    """前 fail_times 次 get 抛错（模拟远程 embedding 抖动），之后恢复正常。"""
+
+    def __init__(self, fail_times: int):
+        self.fail_times = fail_times
+        self.docs: dict[str, str] = {}
+
+    def get(self, ids=None, include=None, **_kwargs):
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("embedding 服务超时")
+        return {"ids": [i for i in (ids or []) if i in self.docs]}
+
+    def upsert(self, ids, documents, metadatas=None, **_kwargs):
+        for i, doc in zip(ids, documents):
+            self.docs[i] = doc
+
+
+@pytest.mark.asyncio
+async def test_long_term_write_failure_only_disconnects_temporarily():
+    """一次写入失败只暂时断开：冷却期内暂存，恢复后按序补写，不得永久失忆。"""
+    mem = LongTermMemory("char-flaky", "proj-flaky", "b-flaky")
+    flaky = _FlakyCollection(fail_times=1)
+    mem._collection = flaky
+
+    await mem.add("甲: 第一句", {})
+    await mem.add("甲: 第二句", {})  # 冷却期内，不碰 Chroma
+
+    assert mem._collection is flaky
+    assert flaky.docs == {}
+    assert mem.pending_count == 2
+    # 断开期间本场检索仍能看到暂存条目
+    assert {c.text for c in await mem.retrieve("第一句")} == {"甲: 第一句", "甲: 第二句"}
+
+    mem._retry_at = 0.0  # 冷却结束
+    await mem.add("甲: 第三句", {})
+
+    assert list(flaky.docs.values()) == ["甲: 第一句", "甲: 第二句", "甲: 第三句"]
+    assert mem.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_consolidate_flushes_pending_ignoring_cooldown():
+    """固化收尾无视冷却补写一次：场景结束后实例即被丢弃，这是暂存条目最后的机会。"""
+    manager = MemoryManager("char-flush", "proj-flush", "b-flush")
+    manager._connected = True
+    flaky = _FlakyCollection(fail_times=1)
+    manager.long_term._collection = flaky
+    manager.short_term.add("甲: 收尾前的话")
+    manager.short_term.add("乙: 收尾时的话")
+
+    await manager.consolidate(force=True)
+
+    assert sorted(flaky.docs.values()) == ["乙: 收尾时的话", "甲: 收尾前的话"]
+    assert manager.long_term.pending_count == 0

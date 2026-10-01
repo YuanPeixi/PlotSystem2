@@ -119,6 +119,16 @@ class MemoryManager:
         self.short_term.clear()
         self.episodic.build_summary()
         logger.debug("角色 %s 记忆固化 %d 条", self.character_id, len(items))
+        # 冷却期内的写入只进了暂存区；每次固化无视冷却补写一次，场景收尾那次即最后机会。
+        # 水位线不因此停推（与工单26 的取舍一致），所以剩余条数必须在日志里可见。
+        remaining = await self.long_term.flush()
+        if remaining:
+            logger.error(
+                "角色 %s 有 %d 条长期记忆仍未写入 ChromaDB，暂存于内存；"
+                "若本场在服务恢复前结束，这些记忆将丢失",
+                self.character_id,
+                remaining,
+            )
 
     # ---- 快照 ----
     def prime(self, short_term_buffer: list[str] | None, episodic_summary: str = "") -> None:
