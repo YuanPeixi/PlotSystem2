@@ -1086,7 +1086,10 @@ def pause_scene(scene_id: str) -> bool:
 
 
 async def apply_decision(
-    scene_id: str, human_override: DirectorDecision | None
+    scene_id: str,
+    human_override: DirectorDecision | None,
+    *,
+    start_continue: bool = True,
 ) -> DirectorDecision:
     """处理导演决策，具备数据库级幂等保护（工单13）：
 
@@ -1100,6 +1103,9 @@ async def apply_decision(
        重跑完成后允许再次决策。已知边界：continue 请求在场景重跑完成后才
        到达的极晚重试无法与一次新的 continue 区分，会再次续跑（确定性行为、
        不产生分叉，可接受）。
+
+    `start_continue=False` 时 continue 只把场景重置为 pending、不开演：AutoPilot
+    要在决策执行完、确认会话没被停止之后才自己开演（与 next_scene / rollback 同一条路）。
     """
     # --- 幂等重放 ---
     existing = await repository.get_decision(scene_id)
@@ -1204,7 +1210,8 @@ async def apply_decision(
             # 是 INSERT OR REPLACE，续跑后拿到的自然是新值。
             await repository.save_scene(scene)
             # 异步触发，调用方通过事件总线追踪进度
-            asyncio.create_task(run_scene(scene_id))
+            if start_continue:
+                _spawn(run_scene(scene_id))
             decision.next_scene_id = scene_id
 
         elif decision.decision_type == DecisionType.NEXT_SCENE.value:
@@ -1378,12 +1385,17 @@ async def _start_autopilot_locked(
 async def stop_autopilot(project_id: str) -> AutoPilotSession | None:
     """停止自动推演。正在跑的这一场照常跑完（要立刻中断请另调 pause），只是不再往下接。
 
-    决策正在执行时停止：决策照常生效（新场景已建好），但不会再开演。
+    决策正在执行时停止：决策照常生效（新场景已建好；continue 则是本场已加长轮次、
+    回到 pending），但不会再开演。
+
+    与开启共用项目锁：开启在登记会话之前要过好几次 await，不锁的话这期间到达的停止
+    读到的是旧值、什么也不做就返回，随后会话照样登记、照样开演，用户的停止被吞掉。
     """
-    session = _autopilot_sessions.get(project_id)
-    if autopilot.is_running(session):
-        await _stop_autopilot(session, autopilot.USER_STOPPED)
-    return session
+    async with _autopilot_lock(project_id):
+        session = _autopilot_sessions.get(project_id)
+        if autopilot.is_running(session):
+            await _stop_autopilot(session, autopilot.USER_STOPPED)
+        return session
 
 
 async def _autopilot_after_scene(
@@ -1430,8 +1442,10 @@ async def _autopilot_after_scene(
         session.phase = autopilot.PHASE_DECIDING
         await _publish_autopilot(session)
         try:
-            # 与人工提交走同一条路：CAS、幂等、回滚即分叉都照旧
-            decision = await apply_decision(scene_id, decision)
+            # 与人工提交走同一条路：CAS、幂等、回滚即分叉都照旧。
+            # continue 不让 apply_decision 自己开演：决策执行期间用户可能已经停止，
+            # 它内部起的续跑任务事后拦不住，会白烧一整轮
+            decision = await apply_decision(scene_id, decision, start_continue=False)
         except ConflictError as exc:
             await _stop_autopilot(session, autopilot.HUMAN_TOOK_OVER, str(exc))
             return False
@@ -1446,14 +1460,17 @@ async def _autopilot_after_scene(
         next_scene = await repository.get_scene(decision.next_scene_id)
         autopilot.record_step(session, scene_id, decision, next_scene.branch_id)
         continued = decision.decision_type == DecisionType.CONTINUE.value
+        started = False
+        # is_running 与 _spawn 之间不能有 await：停止只要落在检查之前就不再开演
         if autopilot.is_running(session):
             session.phase = autopilot.PHASE_RUNNING_SCENE
-            # continue 已由 apply_decision 自己起了续跑
-            if not continued:
-                _spawn(run_scene(decision.next_scene_id))
+            # continue 的 next_scene_id 就是本场
+            _spawn(run_scene(decision.next_scene_id))
+            started = True
         # 推到刚收场的这一场的流上：前端正订阅着它，据此切到下一场
         await _publish_autopilot(session, scene_id)
-        return continued
+        # 决策期间被停止的 continue 没有续跑：要照常推终态帧，否则前端的流一直挂在"模拟中"
+        return continued and started
     except Exception as exc:  # noqa: BLE001
         logger.exception("场景 %s 的自动决策失败", scene_id)
         try:
