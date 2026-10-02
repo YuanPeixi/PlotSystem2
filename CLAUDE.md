@@ -592,6 +592,15 @@ frontend/src/
       抵达结局、`导演中断`（`termination.INTERRUPTED_REASON`；pause 走正常终止路径，场景照样是
       completed，见 12.1）都停。界面上结局只是提示、不锁按钮，这两者不矛盾。
 
+23. **`LoreEntry.scope` 只认两种取值，失败一律收紧**（工单29）：`global`（全员可见）与
+    `character:{角色 id}`（仅本人）。读取侧 `CharacterAgent._select_lore` 只注入 `global` 与
+    **完全等于**本角色的那一种，其余（按角色名写的、拼错的）一律丢弃；旧实现用 `endswith`
+    匹配，`character:x-{id}` 也能混进来。写入侧分类器拿不准的（调用失败、漏判、取值非法、
+    知情者名字对不上任何角色）都不发给任何角色，**绝不退回 global**：漏一条公开设定只是少点
+    背景，泄露一条秘密则信息差无痕消失。多人知情的私有设定按知情者各发一份副本，
+    `LoreEntry` 不加"知情者列表"字段。已有项目用 `python -m scripts.reclassify_lore` 修复
+    （默认预览；`--apply` 先备份再写；任一批判定调用失败就整个不写，让人重试）。
+
 ---
 
 ## 5. 持久化契约 ★
@@ -667,7 +676,7 @@ graph TD
   C --> D[GraphRAGPipeline: 编码嗅探 → 分块 → EntityExtractor]
   D --> E[GraphManager 写 Kuzu]
   D --> F[PersonaBuilder 逐个生成 CharacterCard<br/>on_character 回调即时落盘]
-  D --> G[WorldRulesExtractor → LoreEntry]
+  D --> G[WorldRulesExtractor → LoreEntry<br/>LoreVisibilityClassifier 判定知情范围]
   C --> H[SnapshotManager.ensure_main_branch]
 
   I[POST /scenes/plan] --> J[DirectorAgent.plan_scene → SceneConfig]
@@ -689,6 +698,9 @@ graph TD
 
 后台任务。进度经 `_set_build_status` 同时写内存与 `build_status.json`。
 角色卡在生成过程中通过 `on_character` 回调**逐个落盘**，前端轮询即可增量预览。
+世界设定在角色卡之后判定可见性（证据是各角色的已知/未知事实），再由 `run_graphrag`
+按 `lore_for_character` 分发；判定失败的条目不发给任何角色，条数记在构建状态的
+`lore_withheld` 里（工单29，见 4.2 陷阱 23）。
 失败时把 stage 写成 `失败: xxx` 并把项目状态退回 `initializing`。
 
 ### 6.2 运行场景（`run_scene`）
@@ -832,9 +844,13 @@ graph TD
 ### 契约 1 — 信息不对称（注意隔离边界）
 
 **该隔离的**：
-- `unknown_facts` 只允许出现在 `PersonaBuilder` 生成过程与面向导演/用户的 API 响应中，
+- `unknown_facts` 只允许出现在 `PersonaBuilder` 生成过程、构建期的设定可见性判定
+  （`LoreVisibilityClassifier`，工单29）与面向导演/用户的 API 响应中，
   **绝不允许**进入 `CharacterAgent.build_system_prompt()`、`speaker_selector` 的打分 prompt
   或任何角色可见的上下文；
+- **世界设定（`LoreEntry`）按知情范围分发**（工单29）：公开的进全部角色卡，私有的只进知情者
+  （`character:{id}`），隐藏的与判定失败的不进任何角色卡。种子里分属不同角色的秘密若以
+  `global` 发下去，等于构建那一刻就向全员泄密，且角色卡是拷贝、不会自愈；
 - 一个角色的 `inner_thought` 不得进入其他角色的 prompt；
 - **导演分镜稿（`Storyboard`）只进导演的规划/评估 prompt**（工单18）：它含导演对全部角色
   `unknown_facts` 的安排，进了任何角色或 selector 的上下文，角色就"知道剧本"了。
@@ -1163,6 +1179,8 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
 - 长期记忆重复排查：`python -m scripts.check_memory_dupes`（**只读**，按集合统计完全相同
   的正文条目）。改造前沉淀的重复只评估不清理——无法区分"重复写入"与"角色确实说了两遍"；
   确认严重时最干净的处理是删掉该项目的 `chroma_db/` 重跑（长期记忆可从 `dialogue_log` 重建）。
+- 世界设定可见性修复：`python -m scripts.reclassify_lore --project ID [--apply]`（工单29，
+  工单29 之前构建的项目都需要跑一次；会调 LLM，预览与写入是两次独立判定）。
 
 ### 10.4 注释
 

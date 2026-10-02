@@ -8,7 +8,11 @@ from pathlib import Path
 
 from backend.graphrag_pipeline.entity_extractor import EntityExtractor
 from backend.graphrag_pipeline.persona_builder import PersonaBuilder
-from backend.graphrag_pipeline.world_rules import WorldRulesExtractor
+from backend.graphrag_pipeline.world_rules import (
+    LoreVerdict,
+    LoreVisibilityClassifier,
+    WorldRulesExtractor,
+)
 from backend.knowledge_graph import GraphManager
 from backend.models import CharacterCard, Entity, LoreEntry, Relation
 from backend.utils.logger import get_logger
@@ -34,6 +38,8 @@ class PipelineResult:
     entity_ids: list[str] = field(default_factory=list)
     character_cards: list[CharacterCard] = field(default_factory=list)
     lore_entries: list[LoreEntry] = field(default_factory=list)
+    #: 每条设定的可见性判定。分发到角色卡只能依据它，不能直接用 lore_entries（工单29）
+    lore_verdicts: list[LoreVerdict] = field(default_factory=list)
     entity_count: int = 0
     relation_count: int = 0
 
@@ -51,6 +57,18 @@ def _decode_text(raw: bytes, source: str = "") -> str:
             continue
     logger.warning("无法可靠识别种子文本编码，使用 utf-8 replace 兜底: %s", source)
     return raw.decode("utf-8", errors="replace")
+
+
+def read_seed_texts(paths: list[str]) -> list[str]:
+    """按编码嗅探读出种子文本，缺失的文件跳过并 warning。"""
+    texts: list[str] = []
+    for p in paths:
+        path = Path(p)
+        if path.exists():
+            texts.append(_decode_text(path.read_bytes(), source=str(path)))
+        else:
+            logger.warning("种子文本不存在: %s", p)
+    return texts
 
 
 def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
@@ -74,6 +92,7 @@ class GraphRAGPipeline:
         self.extractor = EntityExtractor()
         self.persona_builder = PersonaBuilder()
         self.world_rules = WorldRulesExtractor()
+        self.lore_visibility = LoreVisibilityClassifier()
         self._entity_index: dict[str, Entity] = {}
 
     async def run(
@@ -131,25 +150,22 @@ class GraphRAGPipeline:
 
         await _report("提取世界规则", 0.9)
         lore = await self.world_rules.extract(texts)
+        # 判定要用角色卡的已知/未知事实作证据，所以排在角色卡之后
+        await _report("判定世界规则可见性", 0.95)
+        verdicts = await self.lore_visibility.classify(lore, cards, full_context)
 
         await _report("完成", 1.0)
         return PipelineResult(
             entity_ids=[e.entity_id for e in entities],
             character_cards=cards,
             lore_entries=lore,
+            lore_verdicts=verdicts,
             entity_count=len(entities),
             relation_count=len(relations),
         )
 
     def _read_texts(self, paths: list[str]) -> list[str]:
-        texts: list[str] = []
-        for p in paths:
-            path = Path(p)
-            if path.exists():
-                texts.append(_decode_text(path.read_bytes(), source=str(path)))
-            else:
-                logger.warning("种子文本不存在: %s", p)
-        return texts
+        return read_seed_texts(paths)
 
     async def extract_entities(self, texts: list[str]) -> list[Entity]:
         entities, _ = await self.extractor.extract_many(texts)
