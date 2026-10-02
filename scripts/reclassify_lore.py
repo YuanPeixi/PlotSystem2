@@ -11,7 +11,7 @@
 已经是 `character:` 的条目原样保留。
 
 - 默认只预览，不写任何文件；加 `--apply` 才写入；
-- 写入前把全部角色卡的旧设定备份到项目目录下的 `lore_backup_{时间}.json`，
+- 写入前把全部角色卡的旧设定备份到项目目录下的 `lore_backup_{时间}_{随机后缀}.json`，
   被移除的条目只在那里留存（目前没有导演侧的设定存储，见工单29 §4）；
 - 每次运行都会调一次 LLM（每 20 条设定一次），判定有随机性，预览与写入是两次独立判定。
 """
@@ -25,6 +25,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from backend.config import settings
 from backend.exceptions import PlotSystemError
@@ -77,7 +78,11 @@ def _redistribute(card: CharacterCard, verdicts: list[LoreVerdict]) -> list[Lore
 
 
 def _write_backup(project_id: str, cards: list[CharacterCard]) -> Path:
-    path = settings.project_dir(project_id) / f"lore_backup_{datetime.now():%Y%m%d-%H%M%S}.json"
+    # 秒级时间戳 + 短 uuid 后缀：同一秒内两次 --apply（人工重试、脚本化批量跑）
+    # 不能让后一次的备份覆盖前一次——判定有随机性，两次移除的条目可能不同，
+    # 覆盖掉就等于丢了第一次运行真正移除的那些设定（工单29 §3.4 的备份要求因此落空）。
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = settings.project_dir(project_id) / f"lore_backup_{stamp}_{uuid4().hex[:8]}.json"
     payload = {
         card.character_id: {
             "name": card.name,
