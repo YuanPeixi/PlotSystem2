@@ -22,6 +22,7 @@ from backend.exceptions import (
     SnapshotNotFoundError,
 )
 from backend.graphrag_pipeline import GraphRAGPipeline
+from backend.graphrag_pipeline.world_rules import lore_for_character
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
 from backend.models import (
@@ -265,12 +266,11 @@ async def run_graphrag(project_id: str) -> None:
         await repository.save_project(project)
         return
 
-    # 将 global lore 注入所有角色，character 范围注入对应角色
-    global_lore = [e for e in result.lore_entries if e.scope == "global"]
+    # 设定按可见性分发（工单29）：公开的进全部角色卡，私有的只进知情者，
+    # 隐藏的与判定失败的不进任何角色卡。旧实现把 global 条目复制给所有人，
+    # 而抽取侧实际上只产出 global —— 种子里分属不同角色的秘密因此全员可见。
     for card in result.character_cards:
-        card.world_lore_entries = list(global_lore) + [
-            e for e in result.lore_entries if e.scope.endswith(card.character_id)
-        ]
+        card.world_lore_entries = lore_for_character(result.lore_verdicts, card.character_id)
         await repository.save_character(card)
 
     # 创建主分支
@@ -288,6 +288,7 @@ async def run_graphrag(project_id: str) -> None:
             "relation_count": result.relation_count,
             "character_count": len(result.character_cards),
             "lore_count": len(result.lore_entries),
+            "lore_withheld": sum(1 for v in result.lore_verdicts if not v.distributed),
         },
     )
 

@@ -88,12 +88,17 @@ class CharacterAgent:
 
     # ---- Prompt 构建 ----
     def _select_lore(self, scene_context: dict) -> list[LoreEntry]:
-        """根据场景上下文关键词筛选相关 LoreEntry。"""
+        """根据场景上下文关键词筛选相关 LoreEntry。
+
+        只认两种 scope：`global` 与**完全等于** `character:{本角色 id}`。其余取值
+        （按角色名写的、拼错的、旧实现 `endswith` 能误配上的）一律不注入 ——
+        这是契约1 在设定上的最后一道，宁可漏掉一条设定，也不把秘密塞给不该知道的人（工单29）。
+        """
         ctx_text = " ".join(str(v) for v in scene_context.values())
+        own_scope = f"character:{self.character_id}"
         relevant: list[tuple[int, LoreEntry]] = []
         for entry in self.card.world_lore_entries:
-            # global 始终注入；character 范围仅匹配本角色
-            if entry.scope.startswith("character:") and not entry.scope.endswith(self.character_id):
+            if entry.scope != "global" and entry.scope != own_scope:
                 continue
             hit = any(kw and kw in ctx_text for kw in entry.keywords)
             score = entry.priority + (5 if hit else 0)
