@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -118,7 +119,11 @@ async def test_classify_prompt_carries_each_characters_unknown_facts():
     [
         pytest.param([], id="漏判"),
         pytest.param([{"index": 0, "visibility": "secret"}], id="取值非法"),
-        pytest.param([{"index": 0, "visibility": "private", "known_by": ["王子"]}], id="知情者对不上"),
+        pytest.param([{"index": 0, "visibility": "private", "known_by": ["王子"]}], id="知情者全对不上"),
+        pytest.param(
+            [{"index": 0, "visibility": "private", "known_by": ["塞芙拉", "王子"]}],
+            id="知情者部分对不上",
+        ),
         pytest.param([{"index": 0, "visibility": "private", "known_by": "塞芙拉"}], id="known_by不是列表"),
         pytest.param([{"index": True, "visibility": "public"}], id="index是bool"),
         pytest.param([{"index": "0", "visibility": "public"}], id="index是字符串"),
@@ -160,12 +165,19 @@ async def test_classify_call_failure_withholds_whole_batch():
 
 
 @pytest.mark.asyncio
-async def test_classify_drops_unmatched_names_but_keeps_matched():
+async def test_classify_withholds_entire_entry_on_partial_name_match():
+    """一个解析不出的知情者，不能靠"其余名字凑巧匹配上"就被采信。
+
+    这不是宽松处理可以接受的噪声：known_by 里任何一个名字对不上，都说明这份判定
+    本身信不过，必须整条不发——跟全对不上时的处理一样严格（工单29 §3.2，与调用失败、
+    取值非法同属一类失败，不是"部分成功"）。
+    """
     reply = [{"index": 0, "visibility": "private", "known_by": ["塞芙拉", "国王"]}]
     with patch(_CLASSIFY_LLM, new=_llm_reply(reply)):
         [verdict] = await LoreVisibilityClassifier().classify(_entries()[2:], _cards())
 
-    assert verdict.holders == ["c-sev"]
+    assert verdict.visibility == WITHHELD
+    assert lore_for_character([verdict], "c-sev") == []
 
 
 @pytest.mark.asyncio
@@ -317,6 +329,33 @@ async def test_reclassify_apply_redistributes_and_backs_up():
     backup = json.loads(report.backup_path.read_text(encoding="utf-8"))
     assert len(backup["c-adr"]["world_lore_entries"]) == 3
     assert any(e["content"] == _ADOPTED for e in backup["c-isa"]["world_lore_entries"])
+
+
+@pytest.mark.asyncio
+async def test_reclassify_apply_twice_in_same_second_keeps_both_backups(monkeypatch):
+    """秒级时间戳本身会撞车：两次 --apply 落在同一秒，后一次不能覆盖前一次的备份。
+
+    判定有随机性，两次运行移除的条目可能不同——覆盖掉就是真的丢了第一次的备份
+    （工单29 §3.4 的备份要求因此落空），不是"反正内容一样，覆盖也无妨"。
+    用冻结的时钟逼出撞车，不依赖两次调用恰好落在同一秒这种偶然性。
+    """
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 1, 1, 0, 0, 0)
+
+    monkeypatch.setattr(reclassify_lore, "datetime", _FrozenDatetime)
+
+    project_id = "p-lore-apply-twice"
+    await _legacy_project(project_id)
+    with patch(_CLASSIFY_LLM, new=_llm_reply(_GOOD_REPLY)):
+        first = await reclassify_lore.reclassify_project(project_id, apply=True)
+        second = await reclassify_lore.reclassify_project(project_id, apply=True)
+
+    assert first.backup_path != second.backup_path
+    assert first.backup_path.exists()
+    assert second.backup_path.exists()
 
 
 @pytest.mark.asyncio

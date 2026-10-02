@@ -241,10 +241,18 @@ class LoreVisibilityClassifier:
 
         names = item.get("known_by")
         names = [str(n).strip() for n in names] if isinstance(names, list) else []
-        holders = list(dict.fromkeys(name_to_id[n] for n in names if n in name_to_id))
         unmatched = [n for n in names if n not in name_to_id]
         if unmatched:
-            logger.warning("设定「%s」的知情者对不上任何角色，已忽略：%s", _clip(entry.content, 30), unmatched)
-        if not holders:
+            # 任一名字对不上都不发给任何人，哪怕其余名字都匹配上了：一个解析不出的
+            # 知情者，本身就是"这份判定信不过"的信号，不能只采信凑巧匹配上的那部分
+            # （工单29 §3.2 把它与调用失败、取值非法列为同一类失败，不是"部分成功"）。
+            logger.warning(
+                "设定「%s」的知情者对不上任何角色，整条不发给任何角色：%s",
+                _clip(entry.content, 30),
+                unmatched,
+            )
             return LoreVerdict(entry, note="知情者对不上任何角色")
+        holders = list(dict.fromkeys(name_to_id[n] for n in names))
+        if not holders:
+            return LoreVerdict(entry, note="private 未给出知情者")
         return LoreVerdict(entry, PRIVATE, holders)
