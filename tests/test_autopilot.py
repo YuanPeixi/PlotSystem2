@@ -347,6 +347,92 @@ async def test_user_stop_takes_effect_before_next_decision(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stop_during_startup_is_not_lost(monkeypatch):
+    """开启在登记会话前要过好几次 await：停止若不拿同一把锁，会读到"还没有会话"
+    就返回，随后会话照样登记、往下接。"""
+    h = _Harness(monkeypatch)
+    h.gate = asyncio.Event()
+    scene = await _setup("proj-ap-stop-startup")
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_get_scene = repository.get_scene
+
+    async def slow_get_scene(scene_id):
+        if not release.is_set():
+            entered.set()
+            await release.wait()
+        return await real_get_scene(scene_id)
+
+    monkeypatch.setattr(repository, "get_scene", slow_get_scene)
+    start = asyncio.create_task(
+        orchestrator.start_autopilot(scene.project_id, scene.scene_id, request_id="r1")
+    )
+    await asyncio.wait_for(entered.wait(), 5)  # 开启已持锁、卡在登记之前
+    stop = asyncio.create_task(orchestrator.stop_autopilot(scene.project_id))
+    await asyncio.sleep(0.02)
+    assert not stop.done()  # 停止在等开启的锁，而不是读到旧值直接返回
+
+    release.set()
+    await start
+    stopped = await stop
+    assert stopped is not None
+    assert stopped.stop_reason == autopilot.USER_STOPPED
+
+    # 已开演的起点照常演完，但不再往下接
+    h.gate.set()
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+    assert await repository.get_decision(scene.scene_id) is None
+    assert h.runs == [scene.scene_id]
+
+
+@pytest.mark.asyncio
+async def test_stop_while_deciding_continue_does_not_rerun(monkeypatch):
+    """continue 的续跑若由 apply_decision 自己起，决策期间的停止事后拦不住，
+    会白烧一整轮。停止后决策照常生效（场景加长轮次、回到 pending），但不开演。"""
+    h = _Harness(monkeypatch, evaluate=lambda s: _eval(s.scene_id, dramatic_tension_score=1))
+    scene = await _setup("proj-ap-stop-continue")
+
+    real_save_scene = repository.save_scene
+
+    async def save_and_stop(obj):
+        await real_save_scene(obj)
+        # continue 分支把场景改回 pending 落库的那一刻：决策正在执行
+        if obj.scene_id == scene.scene_id and obj.status == "pending" and h.runs:
+            await orchestrator.stop_autopilot(scene.project_id)
+
+    monkeypatch.setattr(repository, "save_scene", save_and_stop)
+    q = events.subscribe(scene.scene_id)
+    try:
+        await orchestrator.start_autopilot(
+            scene.project_id, scene.scene_id, request_id="r1", max_steps=3
+        )
+        session = await _wait_stopped(scene.project_id)
+
+        # 停止发生在决策中途：等决策的后半段（记账、终态帧）跑完再断言
+        async def _drain():
+            while orchestrator._background_tasks:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_drain(), 5)
+        seen = []
+        while not q.empty():
+            seen.append(q.get_nowait())
+    finally:
+        events.unsubscribe(scene.scene_id, q)
+
+    assert session.stop_reason == autopilot.USER_STOPPED
+    assert [s.decision_type for s in session.steps] == ["continue"]
+    assert h.runs == [scene.scene_id]
+    stored = await repository.get_scene(scene.scene_id)
+    assert stored.status == "pending"
+    assert stored.max_turns > stored.turns_completed
+    # 没有续跑就要照常推终态帧，否则前端的流一直挂在"模拟中"
+    assert any(e["event"] == "status" and e["data"]["status"] == "completed" for e in seen)
+
+
+@pytest.mark.asyncio
 async def test_start_on_completed_scene_decides_immediately(monkeypatch):
     h = _Harness(monkeypatch)
     scene = await _setup("proj-ap-completed", status="completed")

@@ -571,7 +571,9 @@ frontend/src/
       抹掉；落库后重启对账（6.4）会让它无人值守地继续烧 LLM。重启即结束会话是刻意的；
     - **开启的"查重 → 校验 → 登记"必须在项目锁内**（`_autopilot_lock`）：查已有会话与登记新会话
       之间隔着读项目、读场景等 await，不锁的话同一 `request_id` 的并发重放会各开一个会话、
-      各开演一次；不同起点会两场都开演，而项目只记得后登记的那个，另一场跑完无人接手；
+      各开演一次；不同起点会两场都开演，而项目只记得后登记的那个，另一场跑完无人接手。
+      **停止也在同一把锁内**：否则夹在开启的几次 await 之间到达的停止读到"还没有会话"就返回，
+      随后会话照样登记、往下接，用户的停止被静默吞掉；
     - **决策点在 `run_scene` 释放运行锁之后、发终态帧之前**（`_autopilot_after_scene`）。
       早于释放锁：continue 是对同一 `scene_id` 再起 `run_scene`，会被 `_active_scenes`
       守卫静默丢掉。晚于终态帧：前端的流收到 completed 就关了，无从得知下一场。
@@ -581,7 +583,11 @@ frontend/src/
       过 `stop_reason_for_decision`，再作为 override 交给 `apply_decision`。
       **给 `make_decision` 加 LLM 调用之前先想清楚这条**；
     - **自动决策与人工决策走同一个 `apply_decision`**（CAS、幂等重放、回滚即分叉），只多一个
-      `DirectorDecision.source = "auto"`。幂等重放命中人工决策、或 CAS 冲突，都按"有人接手了"停下；
+      `DirectorDecision.source = "auto"`。幂等重放命中人工决策、或 CAS 冲突，都按"有人接手了"停下。
+      **开演权留在 AutoPilot 手里**：它以 `start_continue=False` 调用，continue 只把场景改回 pending，
+      由 `_autopilot_after_scene` 在 `is_running` 检查之后（两者之间不得有 await）自己开演，
+      与 next_scene / rollback 同一条路。让 `apply_decision` 内部起续跑的话，决策期间的停止事后拦不住，
+      会白烧一整轮。被停下的 continue 没有续跑，终态帧照常推；
     - **停止条件在无人值守下比界面更严**：评估不可用或评估之后的补写失败（`evaluated` 为 None）、
       抵达结局、`导演中断`（`termination.INTERRUPTED_REASON`；pause 走正常终止路径，场景照样是
       completed，见 12.1）都停。界面上结局只是提示、不锁按钮，这两者不矛盾。
