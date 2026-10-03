@@ -15,6 +15,8 @@ import pytest
 
 from backend.agents.character_agent import CharacterAgent
 from backend.graphrag_pipeline.pipeline import PipelineResult
+from backend.graphrag_pipeline.world_rules import _FACT_CHARS as _CLASSIFIER_FACT_CHARS
+from backend.graphrag_pipeline.world_rules import _MAX_FACTS as _CLASSIFIER_MAX_FACTS
 from backend.graphrag_pipeline.world_rules import (
     HIDDEN,
     PRIVATE,
@@ -100,6 +102,64 @@ async def test_classify_maps_names_to_holders():
     assert verdicts["l-crown"].visibility == PRIVATE
     assert verdicts["l-crown"].holders == ["c-adr"]
     assert verdicts["l-adopted"].holders == ["c-sev"]
+
+
+@pytest.mark.asyncio
+async def test_classify_withholds_public_when_unknown_facts_truncated_by_count():
+    """某角色 unknown_facts 条数超过裁剪阈值时，分类器看不全"谁不知道"的证据。
+
+    证明本该不知道这件事的角色的那条 unknown_fact，可能恰好在被裁掉的那一截——
+    分类器因此可能误判 public，把设定发给它。此时哪怕分类器真的返回了 public，
+    也必须整条收紧为不发，而不是信任一份建立在不完整证据上的"公开"结论。
+    """
+    cards = _cards()
+    cards[0].unknown_facts = [f"无关事实{i}" for i in range(_CLASSIFIER_MAX_FACTS + 1)]
+    with patch(_CLASSIFY_LLM, new=_llm_reply([{"index": 0, "visibility": "public"}])):
+        [verdict] = await LoreVisibilityClassifier().classify(_entries()[:1], cards)
+
+    assert verdict.visibility == WITHHELD
+    assert lore_for_character([verdict], "c-isa") == []
+
+
+@pytest.mark.asyncio
+async def test_classify_withholds_public_when_unknown_fact_truncated_by_length():
+    """超长度阈值与超条数阈值是两条独立的裁剪，必须分别测——只测一条会漏掉另一条回归。"""
+    cards = _cards()
+    cards[0].unknown_facts = ["超长的秘密" * _CLASSIFIER_FACT_CHARS]
+    with patch(_CLASSIFY_LLM, new=_llm_reply([{"index": 0, "visibility": "public"}])):
+        [verdict] = await LoreVisibilityClassifier().classify(_entries()[:1], cards)
+
+    assert verdict.visibility == WITHHELD
+
+
+@pytest.mark.asyncio
+async def test_classify_truncation_safety_net_does_not_touch_private_or_hidden():
+    """证据不全只会让"公开"结论变得可疑，不该连带收紧 private/hidden。
+
+    known_facts 被裁只会让 private 的知情者名单偏少（方向本身安全，漏发不是泄密），
+    不该因为某个角色的 unknown_facts 超长就把本来正常判定的 private/hidden 条目也废掉——
+    否则证据一旦不全，整批判定形同虚设，而不是只收紧真正有风险的那一类。
+    """
+    cards = _cards()
+    cards[0].unknown_facts = [f"无关事实{i}" for i in range(_CLASSIFIER_MAX_FACTS + 1)]
+    reply = [
+        {"index": 0, "visibility": "private", "known_by": ["阿德里安"]},
+        {"index": 1, "visibility": "hidden"},
+    ]
+    with patch(_CLASSIFY_LLM, new=_llm_reply(reply)):
+        verdicts = await LoreVisibilityClassifier().classify(_entries()[1:3], cards)
+
+    assert [v.visibility for v in verdicts] == [PRIVATE, HIDDEN]
+    assert verdicts[0].holders == ["c-adr"]
+
+
+@pytest.mark.asyncio
+async def test_classify_does_not_withhold_public_when_evidence_is_complete():
+    """安全网不能误伤：证据没被裁剪时，public 判定要照常放行。"""
+    with patch(_CLASSIFY_LLM, new=_llm_reply([{"index": 0, "visibility": "public"}])):
+        [verdict] = await LoreVisibilityClassifier().classify(_entries()[:1], _cards())
+
+    assert verdict.visibility == PUBLIC
 
 
 @pytest.mark.asyncio
