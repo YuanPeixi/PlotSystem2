@@ -15,6 +15,7 @@ import pytest
 
 from backend.agents.character_agent import CharacterAgent
 from backend.graphrag_pipeline.pipeline import PipelineResult
+from backend.graphrag_pipeline.world_rules import _ENTRY_CONTENT_CHARS as _CLASSIFIER_ENTRY_CHARS
 from backend.graphrag_pipeline.world_rules import _FACT_CHARS as _CLASSIFIER_FACT_CHARS
 from backend.graphrag_pipeline.world_rules import _MAX_FACTS as _CLASSIFIER_MAX_FACTS
 from backend.graphrag_pipeline.world_rules import (
@@ -133,12 +134,12 @@ async def test_classify_withholds_public_when_unknown_fact_truncated_by_length()
 
 
 @pytest.mark.asyncio
-async def test_classify_truncation_safety_net_does_not_touch_private_or_hidden():
-    """证据不全只会让"公开"结论变得可疑，不该连带收紧 private/hidden。
+async def test_classify_truncation_safety_net_withholds_private_too_but_not_hidden():
+    """unknown_facts 被裁，private 和 public 一样不可信，只有 hidden 安全。
 
-    known_facts 被裁只会让 private 的知情者名单偏少（方向本身安全，漏发不是泄密），
-    不该因为某个角色的 unknown_facts 超长就把本来正常判定的 private/hidden 条目也废掉——
-    否则证据一旦不全，整批判定形同虚设，而不是只收紧真正有风险的那一类。
+    private 的知情者名单靠的也是"谁不知道"这条反证——它被裁掉，分类器可能把一个
+    本不该知情的角色错判进 known_by，private 照样会把秘密发给他，风险不比 public 低。
+    hidden 不发给任何人，结构上已经是最安全的结论，不受影响。
     """
     cards = _cards()
     cards[0].unknown_facts = [f"无关事实{i}" for i in range(_CLASSIFIER_MAX_FACTS + 1)]
@@ -149,8 +150,9 @@ async def test_classify_truncation_safety_net_does_not_touch_private_or_hidden()
     with patch(_CLASSIFY_LLM, new=_llm_reply(reply)):
         verdicts = await LoreVisibilityClassifier().classify(_entries()[1:3], cards)
 
-    assert [v.visibility for v in verdicts] == [PRIVATE, HIDDEN]
-    assert verdicts[0].holders == ["c-adr"]
+    assert verdicts[0].visibility == WITHHELD
+    assert lore_for_character([verdicts[0]], "c-adr") == []
+    assert verdicts[1].visibility == HIDDEN
 
 
 @pytest.mark.asyncio
@@ -160,6 +162,60 @@ async def test_classify_does_not_withhold_public_when_evidence_is_complete():
         [verdict] = await LoreVisibilityClassifier().classify(_entries()[:1], _cards())
 
     assert verdict.visibility == PUBLIC
+
+
+@pytest.mark.asyncio
+async def test_classify_withholds_public_entry_when_content_truncated():
+    """秘密藏在正文裁剪阈值之后，分类器只看得到前半段（评审复现：空种子文本 + 超长条目）。
+
+    分类器可能依据看得到的（公开的）前半段判为 public；而分发时用的是完整正文——
+    真分发出去的话，后半段的秘密就跟着公开的前半段一起发给了全体角色。
+    """
+    long_entry = LoreEntry(
+        lore_id="l-long-public", content="公开的前半段。" * 400 + "只有塞芙拉知道的秘密藏在这里"
+    )
+    with patch(_CLASSIFY_LLM, new=_llm_reply([{"index": 0, "visibility": "public"}])):
+        [verdict] = await LoreVisibilityClassifier().classify([long_entry], _cards())
+
+    assert verdict.visibility == WITHHELD
+    assert lore_for_character([verdict], "c-isa") == []
+
+
+@pytest.mark.asyncio
+async def test_classify_withholds_private_entry_when_content_truncated():
+    """同一个正文裁剪风险对 private 同样成立——不止 public 会把秘密带出去。"""
+    long_entry = LoreEntry(lore_id="l-long-private", content="公开的前半段。" * 400 + "藏着的秘密")
+    reply = [{"index": 0, "visibility": "private", "known_by": ["阿德里安"]}]
+    with patch(_CLASSIFY_LLM, new=_llm_reply(reply)):
+        [verdict] = await LoreVisibilityClassifier().classify([long_entry], _cards())
+
+    assert verdict.visibility == WITHHELD
+
+
+@pytest.mark.asyncio
+async def test_classify_content_truncation_only_affects_that_entry():
+    """正文被裁是单条条目自己的问题，不该连带收紧同批里长度正常的条目。"""
+    long_entry = LoreEntry(lore_id="l-long", content="公开的前半段。" * 400 + "秘密")
+    normal_entry = _entries()[0]
+    reply = [{"index": 0, "visibility": "public"}, {"index": 1, "visibility": "public"}]
+    with patch(_CLASSIFY_LLM, new=_llm_reply(reply)):
+        verdicts = await LoreVisibilityClassifier().classify([long_entry, normal_entry], _cards())
+
+    assert verdicts[0].visibility == WITHHELD
+    assert verdicts[1].visibility == PUBLIC
+
+
+@pytest.mark.asyncio
+async def test_classify_does_not_truncate_short_content():
+    """安全网不能误伤：正文没超限时判定照常放行，分发出去的是完整、未被裁剪的正文。"""
+    entry = LoreEntry(lore_id="l-short", content="一条正常长度的设定")
+    assert len(entry.content) <= _CLASSIFIER_ENTRY_CHARS
+    with patch(_CLASSIFY_LLM, new=_llm_reply([{"index": 0, "visibility": "public"}])):
+        [verdict] = await LoreVisibilityClassifier().classify([entry], _cards())
+
+    assert verdict.visibility == PUBLIC
+    [dispatched] = lore_for_character([verdict], "c-isa")
+    assert dispatched.content == entry.content
 
 
 @pytest.mark.asyncio

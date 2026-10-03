@@ -69,6 +69,10 @@ CALL_FAILED = "判定调用失败"
 _BATCH_SIZE = 20
 _MAX_FACTS = 15
 _FACT_CHARS = 120
+#: 送进分类 prompt 的设定正文上限。它只是把单次调用的最坏情况兜住——不是裁剪安全，
+#: 真正安全的是下面"裁了就不敢信 public/private"这道闸门。调大这个数不会让裁剪消失，
+#: 只会让触发閾值更难碰到。
+_ENTRY_CONTENT_CHARS = 2000
 
 
 def _extract_json_array(raw: str) -> list:
@@ -168,9 +172,13 @@ def _unknown_facts_truncated(cards: list[CharacterCard]) -> list[str]:
     """哪些角色的 unknown_facts 被 `_describe_characters` 裁掉了内容（条数或单条长度）。
 
     分类器只能依据它看到的证据判断。某个角色"不知道"某件事，靠的正是这条 unknown_fact
-    出现在它的证据里——裁掉了，分类器就没有反证，可能据此真的判为 public，把设定发给
-    这个本不该知道的角色（工单29 评审）。只查 unknown_facts：known_facts 被裁只影响
-    private 的知情者名单是否齐全，漏发比泄密代价小得多，不必连带收紧（§4 的不对称前提）。
+    出现在它的证据里——裁掉了，分类器就可能在两个方向上都判错（评审第二轮）：
+    把本该私有的设定判成 public（没找到任何人"不知道"的反证），或者把这个本不该
+    知情的角色错判进某条 private 的 known_by（恰好是它自己那条"不知道"的反证被
+    裁掉，分类器没有依据排除它）。因此只要检测到裁剪，public 与 private 都要收紧，
+    不只是 public——hidden 不发给任何人，结构上已经最安全，不受影响。只查
+    unknown_facts：known_facts 被裁只会让 private 的知情者名单**偏少**（遗漏一个
+    真正的知情者），方向本身安全，不必连带收紧。
     数值上限本身不是修复——任何固定上限都可能被超过，这里是结构性的兜底，不是靠调大
     `_MAX_FACTS`/`_FACT_CHARS` 就能顶替的（同 WorldState 预算"两道闸门缺一不可"的教训）。
     """
@@ -213,7 +221,7 @@ class LoreVisibilityClassifier:
         if incomplete:
             logger.warning(
                 "角色 %s 的 unknown_facts 被裁剪（超过 %d 条或单条超过 %d 字），"
-                "本次判定缺少「谁不知道」的完整证据，public 结论一律收紧为不发",
+                "本次判定缺少「谁不知道」的完整证据，public/private 结论一律收紧为不发",
                 "、".join(incomplete),
                 _MAX_FACTS,
                 _FACT_CHARS,
@@ -242,13 +250,24 @@ class LoreVisibilityClassifier:
         seed_text: str,
         incomplete_evidence: bool,
     ) -> list[LoreVerdict]:
+        # 分类器只能对它看到的正文下判断。裁给它的那一截若恰好是"看起来公开"的
+        # 前半段，而秘密藏在后半段，分类器会在毫不知情的情况下给出 public——
+        # 记下哪些条目被裁了，连同 incomplete_evidence 一起收紧，绝不能"分类器
+        # 看前 N 字、分发时却把完整正文发出去"（评审复现：空种子文本 + 超长条目）。
+        content_truncated: set[int] = set()
+        lines = []
+        for i, e in enumerate(batch):
+            normalized = " ".join(str(e.content).split())
+            if len(normalized) > _ENTRY_CONTENT_CHARS:
+                content_truncated.add(i)
+            lines.append(
+                f"[{i}] {_clip(e.content, _ENTRY_CONTENT_CHARS)}"
+                f"（关键词：{'、'.join(map(str, e.keywords)) or '无'}）"
+            )
         prompt = _VISIBILITY_PROMPT.format(
             characters=_describe_characters(cards),
             text=seed_text[:6000] or "（无）",
-            entries="\n".join(
-                f"[{i}] {_clip(e.content, 400)}（关键词：{'、'.join(map(str, e.keywords)) or '无'}）"
-                for i, e in enumerate(batch)
-            ),
+            entries="\n".join(lines),
         )
         try:
             raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.2)
@@ -282,10 +301,16 @@ class LoreVisibilityClassifier:
                 verdicts.append(LoreVerdict(e, note="重复索引，判定冲突"))
                 continue
             verdict = self._verdict(e, first_item.get(i), name_to_id)
-            if incomplete_evidence and verdict.visibility == PUBLIC:
-                # 证据本身不全，"没找到不知道的理由"不能当成"所以是公开的"——
-                # 那条反证可能就在被裁掉的那一截 unknown_facts 里（见 classify() 的判定）。
-                verdict = LoreVerdict(e, note="unknown_facts 证据不完整，public 判定不可信")
+            if verdict.visibility in (PUBLIC, PRIVATE):
+                # private 同样要收紧：知情者名单是"谁知道"，而"谁不知道"的反证恰恰
+                # 来自各角色的 unknown_facts——若那条反证被裁掉，分类器可能把一个
+                # 本不该知情的角色错判进 known_by，private 照样会把秘密发给他，
+                # 不是只有 public 才有这个风险。hidden 不受影响：它不发给任何人，
+                # 结构上已经是最安全的结论。
+                if i in content_truncated:
+                    verdict = LoreVerdict(e, note="设定正文被裁剪，判定不可信")
+                elif incomplete_evidence:
+                    verdict = LoreVerdict(e, note="unknown_facts 证据不完整，判定不可信")
             verdicts.append(verdict)
         return verdicts
 
