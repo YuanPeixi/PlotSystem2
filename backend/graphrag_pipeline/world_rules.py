@@ -164,6 +164,27 @@ def _describe_characters(cards: list[CharacterCard]) -> str:
     return "\n".join(blocks) or "（无角色）"
 
 
+def _unknown_facts_truncated(cards: list[CharacterCard]) -> list[str]:
+    """哪些角色的 unknown_facts 被 `_describe_characters` 裁掉了内容（条数或单条长度）。
+
+    分类器只能依据它看到的证据判断。某个角色"不知道"某件事，靠的正是这条 unknown_fact
+    出现在它的证据里——裁掉了，分类器就没有反证，可能据此真的判为 public，把设定发给
+    这个本不该知道的角色（工单29 评审）。只查 unknown_facts：known_facts 被裁只影响
+    private 的知情者名单是否齐全，漏发比泄密代价小得多，不必连带收紧（§4 的不对称前提）。
+    数值上限本身不是修复——任何固定上限都可能被超过，这里是结构性的兜底，不是靠调大
+    `_MAX_FACTS`/`_FACT_CHARS` 就能顶替的（同 WorldState 预算"两道闸门缺一不可"的教训）。
+    """
+    truncated = []
+    for card in cards:
+        over_count = len(card.unknown_facts) > _MAX_FACTS
+        over_length = any(
+            len(" ".join(str(f).split())) > _FACT_CHARS for f in card.unknown_facts[:_MAX_FACTS]
+        )
+        if over_count or over_length:
+            truncated.append(card.name)
+    return truncated
+
+
 def _is_index(value: object) -> bool:
     # json 里的 true 会被当成 1，必须先排除 bool
     return isinstance(value, int) and not isinstance(value, bool)
@@ -188,10 +209,22 @@ class LoreVisibilityClassifier:
             # 没有角色就没有"谁知道"可言，也就无从分发
             return [LoreVerdict(e, note="项目没有角色") for e in entries]
 
+        incomplete = _unknown_facts_truncated(cards)
+        if incomplete:
+            logger.warning(
+                "角色 %s 的 unknown_facts 被裁剪（超过 %d 条或单条超过 %d 字），"
+                "本次判定缺少「谁不知道」的完整证据，public 结论一律收紧为不发",
+                "、".join(incomplete),
+                _MAX_FACTS,
+                _FACT_CHARS,
+            )
+
         verdicts: list[LoreVerdict] = []
         for start in range(0, len(entries), _BATCH_SIZE):
             batch = entries[start : start + _BATCH_SIZE]
-            verdicts.extend(await self._classify_batch(batch, cards, seed_text))
+            verdicts.extend(
+                await self._classify_batch(batch, cards, seed_text, bool(incomplete))
+            )
 
         withheld = [v for v in verdicts if v.visibility == WITHHELD]
         if withheld:
@@ -203,7 +236,11 @@ class LoreVisibilityClassifier:
         return verdicts
 
     async def _classify_batch(
-        self, batch: list[LoreEntry], cards: list[CharacterCard], seed_text: str
+        self,
+        batch: list[LoreEntry],
+        cards: list[CharacterCard],
+        seed_text: str,
+        incomplete_evidence: bool,
     ) -> list[LoreVerdict]:
         prompt = _VISIBILITY_PROMPT.format(
             characters=_describe_characters(cards),
@@ -244,7 +281,12 @@ class LoreVisibilityClassifier:
                 )
                 verdicts.append(LoreVerdict(e, note="重复索引，判定冲突"))
                 continue
-            verdicts.append(self._verdict(e, first_item.get(i), name_to_id))
+            verdict = self._verdict(e, first_item.get(i), name_to_id)
+            if incomplete_evidence and verdict.visibility == PUBLIC:
+                # 证据本身不全，"没找到不知道的理由"不能当成"所以是公开的"——
+                # 那条反证可能就在被裁掉的那一截 unknown_facts 里（见 classify() 的判定）。
+                verdict = LoreVerdict(e, note="unknown_facts 证据不完整，public 判定不可信")
+            verdicts.append(verdict)
         return verdicts
 
     @staticmethod
