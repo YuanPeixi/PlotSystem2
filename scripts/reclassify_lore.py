@@ -77,21 +77,44 @@ def _redistribute(card: CharacterCard, verdicts: list[LoreVerdict]) -> list[Lore
     return result
 
 
+#: 排他创建撞上已存在文件名时的重试上限。随机 8 位 hex 碰撞概率极低，
+#: 撞上更可能是上一次运行的产物还没清理——重试换名，而不是放弃或覆盖。
+_BACKUP_MAX_ATTEMPTS = 5
+
+
 def _write_backup(project_id: str, cards: list[CharacterCard]) -> Path:
     # 秒级时间戳 + 短 uuid 后缀：同一秒内两次 --apply（人工重试、脚本化批量跑）
     # 不能让后一次的备份覆盖前一次——判定有随机性，两次移除的条目可能不同，
     # 覆盖掉就等于丢了第一次运行真正移除的那些设定（工单29 §3.4 的备份要求因此落空）。
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = settings.project_dir(project_id) / f"lore_backup_{stamp}_{uuid4().hex[:8]}.json"
-    payload = {
-        card.character_id: {
-            "name": card.name,
-            "world_lore_entries": [to_dict(e) for e in card.world_lore_entries],
-        }
-        for card in cards
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    payload = json.dumps(
+        {
+            card.character_id: {
+                "name": card.name,
+                "world_lore_entries": [to_dict(e) for e in card.world_lore_entries],
+            }
+            for card in cards
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    project_dir = settings.project_dir(project_id)
+    last_exc: FileExistsError | None = None
+    for _ in range(_BACKUP_MAX_ATTEMPTS):
+        path = project_dir / f"lore_backup_{stamp}_{uuid4().hex[:8]}.json"
+        try:
+            # 排他创建（"x" 模式）：撞上已存在的文件名就抛错，而不是 write_text
+            # 那样直接覆盖。随机后缀本身只是把碰撞概率压低，不是把它消除——
+            # 这里才是真正防止旧备份被覆盖的闸门，碰撞时换个新后缀重试。
+            with open(path, "x", encoding="utf-8") as f:
+                f.write(payload)
+            return path
+        except FileExistsError as exc:
+            last_exc = exc
+            continue
+    raise RuntimeError(
+        f"连续 {_BACKUP_MAX_ATTEMPTS} 次随机后缀都撞上已存在的备份文件名，已放弃写入"
+    ) from last_exc
 
 
 async def reclassify_project(
