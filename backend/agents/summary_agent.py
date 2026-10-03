@@ -14,6 +14,7 @@ from backend.utils.context import HEAD_TAIL, ContextBudget, fit_lines
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_dict
+from backend.utils.turns import render_turn
 
 logger = get_logger("agents.summary")
 
@@ -41,17 +42,7 @@ _FORMAT_INSTRUCTIONS = {
 
 
 def _transcript_lines(log: list[DialogueTurn], include_thoughts: bool = False) -> list[str]:
-    lines = []
-    for t in log:
-        parts = []
-        if t.action:
-            parts.append(f"*{t.action}*")
-        if t.dialogue:
-            parts.append(t.dialogue)
-        if include_thoughts and t.inner_thought:
-            parts.append(f"[{t.inner_thought}]")
-        lines.append(f"{t.character_name}: {' '.join(parts)}")
-    return lines
+    return [render_turn(t, inner_thought=include_thoughts) for t in log]
 
 
 def _format_transcript(log: list[DialogueTurn], include_thoughts: bool = False) -> str:

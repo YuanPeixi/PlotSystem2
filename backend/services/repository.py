@@ -38,6 +38,7 @@ from backend.models import (
     StoryboardPatch,
     StoryboardSource,
     StoryRecord,
+    TurnKind,
     WorldState,
     goal_revision,
     now,
@@ -215,6 +216,17 @@ def _parse_created_at(raw: object, label: str = "场景创建时间") -> datetim
         return now()
 
 
+def _turn_kind(raw: object) -> str:
+    """缺键（工单24/20 之前的旧轮次）即角色轮次；非法取值同样按角色轮次并 warning ——
+    当成环境回合的话，它会从 max_turns 与轮询选人里消失。"""
+    if raw is None:
+        return TurnKind.CHARACTER.value
+    if raw in {k.value for k in TurnKind}:
+        return str(raw)
+    logger.warning("轮次 kind 取值非法，按角色轮次处理：%r", raw)
+    return TurnKind.CHARACTER.value
+
+
 def _deserialize_scene(data: dict) -> Scene:
     log = [
         DialogueTurn(
@@ -228,6 +240,7 @@ def _deserialize_scene(data: dict) -> Scene:
             inner_thought=t.get("inner_thought"),
             memory_context_used=list(t.get("memory_context_used", []) or []),
             selector_notice=t.get("selector_notice", ""),
+            kind=_turn_kind(t.get("kind")),
         )
         for t in (data.get("dialogue_log") or [])
     ]

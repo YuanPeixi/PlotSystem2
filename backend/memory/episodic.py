@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from backend.models import DialogueTurn
 from backend.utils.logger import get_logger
+from backend.utils.turns import Perception, perceive
 
 logger = get_logger("memory.episodic")
 
@@ -44,31 +45,30 @@ class EpisodicMemory:
         self.summary: str = ""
         self._events: list[str] = []
 
-    def is_important(self, turn: DialogueTurn, include_inner_thought: bool = True) -> bool:
+    def is_important(self, turn: DialogueTurn, perception: Perception) -> bool:
         """启发式判断一轮对话是否构成重要事件。
 
-        include_inner_thought=False 用于记录他人轮次时：不得用其他角色的私有内心
-        独白参与判定或被写入摘要（CLAUDE.md 第7节“契约1”）。
+        他人轮次的私有内心独白不得参与判定或被写入摘要（CLAUDE.md 第7节“契约1”）。
         """
         texts = [turn.dialogue, turn.action]
-        if include_inner_thought:
+        if perception.inner_thought:
             texts.append(turn.inner_thought)
         text = " ".join(t for t in texts if t)
         return any(kw in text for kw in _IMPORTANT_KEYWORDS)
 
-    def record(self, turn: DialogueTurn, include_inner_thought: bool = True) -> bool:
+    def record(self, turn: DialogueTurn) -> bool:
         """若为重要事件则计入摘要，返回是否重要。
 
         不再返回可另外写入长期记忆的正文副本——摘要只用于 dump()/续跑回填，
         原文由调用方统一走 add_experience → consolidate 一次性入库（工单15去重）。
         """
-        snippet = self._snippet(turn, include_inner_thought=include_inner_thought)
+        snippet = self._snippet(turn, perceive(turn, self.character_id))
         if snippet is None:
             return False
         self._events.append(snippet)
         return True
 
-    def replay(self, turns: Sequence[DialogueTurn], *, self_character_id: str = "") -> None:
+    def replay(self, turns: Sequence[DialogueTurn]) -> None:
         """按场景日志重建这批轮次的事件条目，**幂等**（工单26 复盘·断言4）。
 
         续跑时这批轮次可能已经由 `prime()` 载入过一部分：`resolve_scene_states`
@@ -86,9 +86,8 @@ class EpisodicMemory:
         """
         wanted: list[str] = []
         for turn in turns:
-            snippet = self._snippet(
-                turn, include_inner_thought=turn.character_id == self_character_id
-            )
+            # 与 record 同一个判定函数：现场条目与重放条目逐字相同，去重才成立
+            snippet = self._snippet(turn, perceive(turn, self.character_id))
             if snippet is not None:
                 wanted.append(snippet)
         if not wanted:
@@ -96,14 +95,14 @@ class EpisodicMemory:
         seen = set(wanted)
         self._events = [e for e in self._events if e not in seen] + wanted
 
-    def _snippet(self, turn: DialogueTurn, *, include_inner_thought: bool = True) -> str | None:
+    def _snippet(self, turn: DialogueTurn, perception: Perception) -> str | None:
         """渲染一条事件摘要；不构成重要事件时返回 None。
 
         内心独白只参与重要性判定、不进正文——摘要会被他人可见的路径读取（契约1）。
         换行在此处塌成空格：条目是"一行一条"序列化的，正文带 \\n 会在 dump→load
         之后裂成多条（工单26 复盘）。
         """
-        if not self.is_important(turn, include_inner_thought=include_inner_thought):
+        if not self.is_important(turn, perception):
             return None
         parts = []
         if turn.action:

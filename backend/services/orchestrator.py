@@ -64,6 +64,7 @@ from backend.services.world_state import merge_world_variables
 from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_dict
+from backend.utils.turns import count_character_turns
 
 logger = get_logger("orchestrator")
 
@@ -1200,7 +1201,13 @@ async def apply_decision(
             # 重跑完成后场景重新变为 completed，开启新一轮可决策周期，
             # 因此 continue 决策不写入 decisions 表。
             extra = decision.extra_turns or 6
-            scene.max_turns = scene.turns_completed + extra
+            # max_turns 只数角色轮次（check_termination 同一口径），而 turns_completed 含环境回合：
+            # 直接用它算会让含环境回合的场景续跑时少跑几轮（工单24/20 设计单 §5.5）。
+            # 从 turns_completed 里扣掉环境回合，而不是改数日志：没有环境回合时与旧公式逐字相同，
+            # 不依赖 turns_completed 与日志长度一致
+            log = scene.dialogue_log
+            environment_turns = len(log) - count_character_turns(log)
+            scene.max_turns = scene.turns_completed - environment_turns + extra
             scene.status = SceneStatus.PENDING.value
             # 刻意**不动** inherited_story_history：它是分叉那一刻的既成事实，
             # 续跑只增加本场对白，不该改写继承来的过去。置 None 会把一条有权威

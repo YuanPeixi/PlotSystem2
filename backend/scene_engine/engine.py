@@ -32,6 +32,7 @@ from backend.scene_engine.speaker_selector import ScoringSpeakerSelector, Select
 from backend.scene_engine.termination import check_termination
 from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
+from backend.utils.turns import count_character_turns, render_turn
 
 logger = get_logger("scene_engine")
 
@@ -185,7 +186,7 @@ class SceneEngine:
                 terminated_reason = reason
                 break
 
-            agent, selector_notice = await self._select_speaker(turn_number, transcript, turns)
+            agent, selector_notice = await self._select_speaker(transcript, turns)
             raw = await agent.respond(self._scene_context(), transcript)
             turn_number += 1
             turn = self._parse_turn(raw, agent, turn_number)
@@ -345,16 +346,15 @@ class SceneEngine:
     async def _remember(self, turn: DialogueTurn) -> None:
         """在场即记忆（工单15）：本场全部参演角色都感知这一轮，不只是发言者。
 
-        对非发言者剥离内心独白，避免私有内心泄露给旁观角色（契约1）。
+        每个角色能感知到什么（他人的内心独白要剥离，契约1）由记忆层按 `perceive`
+        自行判定，这里不判 —— 续跑重放走的也是这个函数，判定只能有一处。
         """
         for participant in self.agents:
-            await participant.memory.add_experience(
-                turn, from_self=(participant.character_id == turn.character_id)
-            )
+            await participant.memory.add_experience(turn)
 
     # ---- 发言者选择 ----
     async def _select_speaker(
-        self, turn_number: int, transcript: list[str], turns: list[DialogueTurn]
+        self, transcript: list[str], turns: list[DialogueTurn]
     ) -> tuple[CharacterAgent, str]:
         """选出下一个发言者，并返回一句可展示给用户的降级提示（正常为空串）。"""
         mode = self.config.speaker_mode
@@ -374,8 +374,9 @@ class SceneEngine:
                 self.scene.scene_id,
                 mode,
             )
-        # 默认 round_robin
-        return self.agents[turn_number % len(self.agents)], ""
+        # 默认 round_robin。按角色轮次数取模而不是全局 turn_number：
+        # 环境回合不占发言顺序，按全局序号算的话每插一个环境回合轮转就错一位
+        return self.agents[count_character_turns(turns) % len(self.agents)], ""
 
     # ---- 解析 ----
     def _parse_turn(self, raw: str, agent: CharacterAgent, turn_number: int) -> DialogueTurn:
@@ -398,12 +399,8 @@ class SceneEngine:
 
     @staticmethod
     def _turn_line(turn: DialogueTurn) -> str:
-        parts = []
-        if turn.action:
-            parts.append(f"*{turn.action}*")
-        if turn.dialogue:
-            parts.append(turn.dialogue)
-        return f"{turn.character_name}: {' '.join(parts)}".strip()
+        """角色看到的"目前对话"里的一行：不含任何人的内心独白（契约1）。"""
+        return render_turn(turn).strip()
 
     # ---- 上下文/状态 ----
     def _scene_context(self) -> dict:

@@ -497,6 +497,40 @@ async def test_apply_decision_rejected_when_scene_not_completed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_continue_extends_max_turns_by_character_turns(monkeypatch):
+    """max_turns 只数角色轮次（工单24/20 设计单 §5.5），continue 的新上限必须同一口径。
+
+    turns_completed 含环境回合：直接拿它加 extra，含环境回合的场景续跑时会少跑几轮。
+    """
+    scene = await _setup_completed_scene(
+        "proj-continue-env", "scene-continue-env", "char-continue-env"
+    )
+
+    def _t(n: int, kind: str) -> DialogueTurn:
+        return DialogueTurn(turn_number=n, character_id="char-continue-env", kind=kind)
+
+    scene.dialogue_log = [
+        _t(1, "character"), _t(2, "environment"), _t(3, "character"), _t(4, "environment"),
+    ]
+    scene.turns_completed = 4
+    await repository.save_scene(scene)
+    monkeypatch.setattr(orchestrator, "DirectorAgent", _FakeDirectorForDecision)
+
+    async def fake_run_scene(scene_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(orchestrator, "run_scene", fake_run_scene)
+
+    await orchestrator.apply_decision(
+        scene.scene_id, DirectorDecision(decision_type="continue", extra_turns=3)
+    )
+    await asyncio.sleep(0)
+
+    updated = await repository.get_scene(scene.scene_id)
+    assert updated.max_turns == 2 + 3  # 2 个角色轮次 + extra，不是 4 + 3
+
+
+@pytest.mark.asyncio
 async def test_continue_decision_opens_new_decision_cycle(monkeypatch):
     """continue 不持久化决策：场景重置为 pending 重跑；重跑期间的重试被拒绝；
     重跑完成（重新 completed）后允许提交新决策。"""

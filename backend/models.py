@@ -80,6 +80,14 @@ class SpeakerMode(str, Enum):
     RANDOM = "random"
 
 
+class TurnKind(str, Enum):
+    """轮次的种类（工单24/20）。环境回合由环境层裁决角色动作产生，不占发言顺序、
+    不计入 max_turns；PR-0 只引入字段与计数口径，此时恒为 character。"""
+
+    CHARACTER = "character"
+    ENVIRONMENT = "environment"
+
+
 class DecisionType(str, Enum):
     CONTINUE = "continue"
     NEXT_SCENE = "next_scene"
@@ -429,6 +437,8 @@ class DialogueTurn:
     memory_context_used: list[str] = field(default_factory=list)
     # selector 选人降级时的短提示，供前端在角色名后灰字展示；正常为空串
     selector_notice: str = ""
+    # 计数一律走 utils/turns 的 character_turns，不要直接 len(dialogue_log)
+    kind: str = TurnKind.CHARACTER.value
 
 
 @dataclass
