@@ -20,6 +20,7 @@ from backend.services import orchestrator, repository
 from backend.snapshot import SnapshotManager
 from backend.utils.db import init_db
 from backend.utils.logger import get_logger
+from backend.utils.turns import render_turn
 
 logger = get_logger("demo")
 
@@ -89,12 +90,7 @@ async def main() -> None:
     scene = await repository.get_scene(scene.scene_id)
     logger.info("✔ 场景完成，共 %d 轮对话", scene.turns_completed)
     for t in scene.dialogue_log:
-        parts = []
-        if t.action:
-            parts.append(f"*{t.action}*")
-        if t.dialogue:
-            parts.append(t.dialogue)
-        print(f"  {t.character_name}: {' '.join(parts)}")
+        print(f"  {render_turn(t)}")
 
     # 5. 评估
     evaluation = await repository.get_evaluation(scene.scene_id)
