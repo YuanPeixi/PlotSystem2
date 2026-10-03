@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -178,6 +179,37 @@ async def test_classify_withholds_entire_entry_on_partial_name_match():
 
     assert verdict.visibility == WITHHELD
     assert lore_for_character([verdict], "c-sev") == []
+
+
+@pytest.mark.asyncio
+async def test_classify_withholds_entry_when_index_repeated_even_if_first_is_public():
+    """重复 index 不能靠"挑第一项"消化掉——哪怕第一项恰好是看起来最安全的 public。
+
+    旧实现用 setdefault 悄悄留下第一项：分类器先说 public、又自相矛盾地说 hidden，
+    结果仍以 public 把条目发给全员。重复本身就是判定不可信的信号，不看两次给出的
+    结论是否碰巧一致。
+    """
+    reply = [{"index": 0, "visibility": "public"}, {"index": 0, "visibility": "hidden"}]
+    with patch(_CLASSIFY_LLM, new=_llm_reply(reply)):
+        [verdict] = await LoreVisibilityClassifier().classify(_entries()[:1], _cards())
+
+    assert verdict.visibility == WITHHELD
+    assert not verdict.distributed
+
+
+@pytest.mark.asyncio
+async def test_classify_duplicate_index_does_not_affect_other_entries_in_batch():
+    """一个 index 重复，不能连带把同批里其他正常解析的条目也判不可信。"""
+    reply = [
+        {"index": 0, "visibility": "public"},
+        {"index": 0, "visibility": "hidden"},
+        {"index": 1, "visibility": "public"},
+    ]
+    with patch(_CLASSIFY_LLM, new=_llm_reply(reply)):
+        verdicts = await LoreVisibilityClassifier().classify(_entries()[:2], _cards())
+
+    assert verdicts[0].visibility == WITHHELD
+    assert verdicts[1].visibility == PUBLIC
 
 
 @pytest.mark.asyncio
@@ -356,6 +388,39 @@ async def test_reclassify_apply_twice_in_same_second_keeps_both_backups(monkeypa
     assert first.backup_path != second.backup_path
     assert first.backup_path.exists()
     assert second.backup_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_write_backup_retries_on_collision_without_overwriting(monkeypatch):
+    """排他创建踩到已存在的文件名必须换个新名重试，不能退化成覆盖写。
+
+    随机后缀只是把碰撞概率压低，不是消除——`--apply` 失败重跑、或同一进程里
+    连续调用，都可能撞上同一个 uuid4 前缀。这里强制第一次尝试撞车，断言第二次
+    尝试换了后缀、且第一份备份的内容原样未变。
+    """
+    project_id = "p-lore-collision"
+    await _legacy_project(project_id)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 1, 1, 0, 0, 0)
+
+    monkeypatch.setattr(reclassify_lore, "datetime", _FrozenDatetime)
+
+    project_dir = reclassify_lore.settings.project_dir(project_id)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    collided_path = project_dir / "lore_backup_20260101-000000_aaaaaaaa.json"
+    collided_path.write_text("别人的旧备份，不许动", encoding="utf-8")
+
+    hexes = iter(["aaaaaaaa11111111", "bbbbbbbb22222222"])
+    monkeypatch.setattr(reclassify_lore, "uuid4", lambda: SimpleNamespace(hex=next(hexes)))
+
+    cards = sorted(await repository.list_characters(project_id), key=lambda c: c.name)
+    path = reclassify_lore._write_backup(project_id, cards)
+
+    assert path.name == "lore_backup_20260101-000000_bbbbbbbb.json"
+    assert collided_path.read_text(encoding="utf-8") == "别人的旧备份，不许动"
 
 
 @pytest.mark.asyncio

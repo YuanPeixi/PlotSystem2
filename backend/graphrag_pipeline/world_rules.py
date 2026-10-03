@@ -219,13 +219,33 @@ class LoreVisibilityClassifier:
             logger.warning("世界设定可见性判定失败，本批 %d 条不发给任何角色：%s", len(batch), exc)
             return [LoreVerdict(e, note=CALL_FAILED) for e in batch]
 
-        by_index: dict[int, dict] = {}
+        counts: dict[int, int] = {}
+        first_item: dict[int, dict] = {}
         for item in _extract_json_array(raw):
             if isinstance(item, dict) and _is_index(item.get("index")):
-                by_index.setdefault(item["index"], item)
+                idx = item["index"]
+                counts[idx] = counts.get(idx, 0) + 1
+                first_item.setdefault(idx, item)
 
         name_to_id = {card.name.strip(): card.character_id for card in cards}
-        return [self._verdict(e, by_index.get(i), name_to_id) for i, e in enumerate(batch)]
+        verdicts: list[LoreVerdict] = []
+        for i, e in enumerate(batch):
+            if counts.get(i, 0) > 1:
+                # 同一个 index 出现两次，就说明这份判定本身不可信——不管两次给出的
+                # 可见性是否碰巧一致：模型没有遵守"一个 index 一项"的格式约束，
+                # 挑其中一个采信（旧实现用 setdefault 悄悄留下第一项）等于在信任
+                # 一份已经自相矛盾的回答。与 _verdict 里"知情者部分对不上就整条
+                # 不发"同一条原则：任何不确定都按不发处理，不按"挑一个更安全的"处理。
+                logger.warning(
+                    "设定「%s」在同一批判定里 index=%d 重复出现 %d 次，判定不可靠，不发给任何角色",
+                    _clip(e.content, 30),
+                    i,
+                    counts[i],
+                )
+                verdicts.append(LoreVerdict(e, note="重复索引，判定冲突"))
+                continue
+            verdicts.append(self._verdict(e, first_item.get(i), name_to_id))
+        return verdicts
 
     @staticmethod
     def _verdict(entry: LoreEntry, item: dict | None, name_to_id: dict[str, str]) -> LoreVerdict:
