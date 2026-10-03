@@ -86,6 +86,8 @@ export interface DialogueTurn {
   action: string | null
   inner_thought: string | null
   selector_notice?: string
+  // 环境回合（工单24/20）不占发言顺序、不计入 max_turns；旧数据缺省即 character
+  kind?: 'character' | 'environment'
 }
 
 export interface Scene {

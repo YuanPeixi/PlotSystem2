@@ -40,6 +40,7 @@ from backend.services.world_state import (
 from backend.utils.context import TAIL_ONLY, ContextBudget, compact_lines, fit_lines
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
+from backend.utils.turns import render_turn
 
 logger = get_logger("agents.director")
 
@@ -782,14 +783,4 @@ class DirectorAgent:
     @staticmethod
     def _transcript_lines(log: list[DialogueTurn]) -> list[str]:
         """导演有全知权，故保留 inner_thought。"""
-        lines = []
-        for t in log:
-            parts = []
-            if t.action:
-                parts.append(f"*{t.action}*")
-            if t.dialogue:
-                parts.append(t.dialogue)
-            if t.inner_thought:
-                parts.append(f"[{t.inner_thought}]")
-            lines.append(f"{t.character_name}: {' '.join(parts)}")
-        return lines
+        return [render_turn(t, inner_thought=True) for t in log]

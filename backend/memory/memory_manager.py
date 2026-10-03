@@ -14,25 +14,18 @@ from backend.memory.long_term import LongTermMemory
 from backend.memory.short_term import ShortTermMemory
 from backend.models import DialogueTurn, MemoryChunk, MemorySnapshot
 from backend.utils.logger import get_logger
+from backend.utils.turns import Perception, perceive, render_turn
 
 logger = get_logger("memory.manager")
 
 
-def _turn_to_text(turn: DialogueTurn, include_inner_thought: bool = True) -> str:
+def _turn_to_text(turn: DialogueTurn, perception: Perception) -> str:
     """将一轮对话渲染为记忆文本。
 
-    include_inner_thought=False 用于写入"他人轮次"（在场感知）：
-    必须剥离内心独白，否则会把该角色的私有内心泄露进旁观者的记忆库
-    （CLAUDE.md 第7节“契约1”，工单15）。
+    他人轮次（在场感知）必须剥离内心独白，否则会把该角色的私有内心泄露进旁观者的
+    记忆库（CLAUDE.md 第7节“契约1”，工单15）。
     """
-    parts = []
-    if turn.action:
-        parts.append(f"*{turn.action}*")
-    if turn.dialogue:
-        parts.append(turn.dialogue)
-    if include_inner_thought and turn.inner_thought:
-        parts.append(f"[{turn.inner_thought}]")
-    return f"{turn.character_name}: {' '.join(parts)}"
+    return render_turn(turn, inner_thought=perception.inner_thought)
 
 
 class MemoryManager:
@@ -52,23 +45,25 @@ class MemoryManager:
             await self.long_term.connect()
             self._connected = True
 
-    async def add_experience(self, turn: DialogueTurn, *, from_self: bool = True) -> None:
+    async def add_experience(self, turn: DialogueTurn) -> None:
         """记录一轮新对话（唯一写入点，由 SceneEngine 对本场全部参演角色调用）。
 
-        from_self=False 表示记录"在场感知"到的他人轮次：剥离内心独白，
-        并在 metadata 打上 speaker/self 标记供未来分层检索使用（工单15/09）。
+        本角色能感知到什么由 `perceive` 判定（他人轮次剥离内心独白），并在 metadata
+        打上 speaker/self 标记供未来分层检索使用（工单15/09）。不接受调用方传入的
+        判定：续跑重放（`replay_episodic`）用的是同一个函数，两边必须逐字一致。
 
         **只写短期缓冲，不触发固化**（工单26）：缓冲写满时自行 consolidate() 会绕过
         Scene.turns_consolidated 水位线，崩溃续跑就把已入库的轮次二次写入长期记忆。
         固化的触发权在 SceneEngine —— 只有它同时知道"写了几轮"和"水位线该推到哪"，
         并能在同一次落盘里把两者一起持久化。
         """
-        text = _turn_to_text(turn, include_inner_thought=from_self)
-        important = self.episodic.record(turn, include_inner_thought=from_self)
+        perception = perceive(turn, self.character_id)
+        text = _turn_to_text(turn, perception)
+        important = self.episodic.record(turn)
         self.short_term.add(
             text,
             important=important,
-            is_self=from_self,
+            is_self=perception.is_self,
             speaker=turn.character_name,
         )
 
@@ -88,7 +83,7 @@ class MemoryManager:
         重要性判定与内心独白的剥离规则与 add_experience 完全一致（契约1）：
         只有本角色自己的那几轮才带内心独白。
         """
-        self.episodic.replay(turns, self_character_id=self.character_id)
+        self.episodic.replay(turns)
 
     async def retrieve(self, query: str, top_k: int | None = None) -> list[MemoryChunk]:
         """从长期记忆检索相关片段。"""

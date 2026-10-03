@@ -199,6 +199,7 @@ backend/
 └── utils/
     ├── llm.py         ★ LLM 唯一出口（chat / chat_safe / estimate_tokens）
     ├── context.py     ★ 统一上下文压缩管线（fit_lines / compact_lines，4 种策略）
+    ├── turns.py       ★ 轮次的统一渲染 / 感知判定 / 计数口径（render_turn / perceive / character_turns）
     ├── db.py          SQLite DDL + 连接
     ├── serializer.py  to_dict（dataclass → JSON 安全字典）
     ├── logger.py
@@ -243,7 +244,7 @@ frontend/src/
 | `Storyboard` / `StoryBeat` / `ForkOrigin` | **分支级**导演分镜稿：路线图（带稳定 `beat_id` 的节拍）+ 长期备忘 + 分叉说明 + changelog + 修订号。**只进导演 prompt** | **文件** `storyboard/{branch_id}.json`，快照带时点副本 |
 | `StoryboardPatch` | 导演随评估产出的分镜稿修改（相对导演读到的那一版） | 内嵌于 `SceneEvaluation` |
 | `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
-| `Scene` / `DialogueTurn` | 场景与对话轮次 | SQLite `scenes`（轮次内嵌） |
+| `Scene` / `DialogueTurn` | 场景与对话轮次（轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24） | SQLite `scenes`（轮次内嵌） |
 | `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
 | `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 无锚点标记 `goal_missing` + 推荐决策 | SQLite `evaluations` |
@@ -613,6 +614,20 @@ frontend/src/
     一份副本，`LoreEntry` 不加"知情者列表"字段。已有项目用 `python -m scripts.reclassify_lore`
     修复（默认预览；`--apply` 先备份再写；任一批判定调用失败就整个不写，让人重试）。
 
+24. **轮次的渲染、感知与计数各只有一处实现**（`utils/turns.py`，工单24/20 PR-0），
+    为环境回合（`TurnKind.ENVIRONMENT`，PR-2 起产生）预留口径：
+    - **计数分两种**：`turn_number` / `turns_completed` / 水位线 `turns_consolidated` 数**全部**轮次；
+      `max_turns`、停滞检测、轮询选人、continue 的新上限只数**角色轮次**（`character_turns`）。
+      新增按轮次计数的逻辑时先想清楚是哪一种，不要直接 `len(dialogue_log)`。
+      continue 从 `turns_completed` 里扣掉环境回合数，而不是改数日志——没有环境回合时与旧公式逐字相同；
+    - **感知只经 `perceive(turn, viewer_id)`**：`MemoryManager.add_experience` 与 `EpisodicMemory`
+      用自己的 `character_id` 判定，不接受调用方传入的布尔。现场写入与续跑重放各判一次会漂移，
+      而事件摘要靠两边逐字相同去重（陷阱 9）；
+    - **`render_turn` 不去首尾空白**：记忆文本是长期记忆的寻址键，改一个字符就是一条新记录；
+      角色看到的"目前对话"由引擎自己 strip；
+    - **`EpisodicMemory._snippet` 的条目格式冻结、不并入 `render_turn`**：它是序列化格式，
+      老快照与重放去重都靠逐字相同。
+
 ---
 
 ## 5. 持久化契约 ★
@@ -727,8 +742,9 @@ graph TD
    （`selector` 模式下转交 `ScoringSpeakerSelector`：每个候选各一次并行打分调用，
    叠加被点名加分与重复发言惩罚；兜底必须 warning 可见，不得静默选 `agents[0]`）
    → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 → 追加 transcript
-   → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；写他人轮次时
-   剥离 `inner_thought`）→ 每满 `MEMORY_CONSOLIDATE_EVERY_TURNS` 轮**或缓冲占用逼近容量**
+   → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；每个角色能感知到
+   什么由记忆层按 `utils/turns.perceive` 自行判定——他人轮次剥离 `inner_thought`，
+   调用方不传判定，续跑重放走同一个函数）→ 每满 `MEMORY_CONSOLIDATE_EVERY_TURNS` 轮**或缓冲占用逼近容量**
    时走一次 `_consolidate_all`（先单独落一次日志 → 固化 + 推水位线 + `on_persist`，
    整体必须早于 SSE 推送）→ SSE 推送；
 5. 终止后做收尾固化（`_consolidate_all`：`consolidate(force=True)`，唯一写入点在第4步，不重复写入）

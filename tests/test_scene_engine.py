@@ -713,8 +713,8 @@ def test_episodic_replay_is_idempotent_and_keeps_order():
     def _final(preloaded: int) -> list[str]:
         ep = EpisodicMemory("c1")
         ep.load("\n".join(f"[重要] 甲: 我发誓第{i}件事。" for i in range(preloaded)))
-        ep.replay(turns, self_character_id="c1")
-        ep.replay(turns, self_character_id="c1")  # 重复调用不得增长
+        ep.replay(turns)
+        ep.replay(turns)  # 重复调用不得增长
         return ep._events
 
     baseline = _final(4)
@@ -725,8 +725,7 @@ def test_episodic_replay_is_idempotent_and_keeps_order():
     # 不重要的轮次不进摘要，也不会顶掉已有条目
     ep = EpisodicMemory("c1")
     ep.replay(
-        [DialogueTurn(turn_number=1, character_id="c1", character_name="甲", dialogue="今天天气不错")],
-        self_character_id="c1",
+        [DialogueTurn(turn_number=1, character_id="c1", character_name="甲", dialogue="今天天气不错")]
     )
     assert ep._events == []
 
@@ -760,7 +759,7 @@ def test_episodic_entry_survives_dump_load_roundtrip():
     assert restored._events == ep._events, "dump→load 不是恒等变换"
 
     # 正常 continue：快照恢复后再重放同一轮，必须收敛成同一条而不是累加
-    restored.replay([turn], self_character_id="c1")
+    restored.replay([turn])
     assert restored._events == ep._events, f"重放后条目膨胀：{restored._events}"
 
 
@@ -786,7 +785,7 @@ def test_episodic_load_merges_legacy_multiline_entry():
     assert len(ep._events) == 2, f"多行条目没有并回：{ep._events}"
     assert all("\n" not in e for e in ep._events)
 
-    ep.replay([turn], self_character_id="c1")
+    ep.replay([turn])
     assert len(ep._events) == 2, f"老条目与重放的新条目没对上：{ep._events}"
 
 
@@ -803,11 +802,11 @@ def test_episodic_replay_strips_others_inner_thought():
     )
 
     others = EpisodicMemory("c1")
-    others.replay([turn], self_character_id="c1")  # c1 视角：这是别人的轮次
+    others.replay([turn])  # c1 视角：这是别人的轮次
     assert others._events == [], others._events
 
     owner = EpisodicMemory("c2")
-    owner.replay([turn], self_character_id="c2")  # c2 视角：自己的轮次
+    owner.replay([turn])  # c2 视角：自己的轮次
     assert len(owner._events) == 1
     assert "背叛" not in owner._events[0], "内心独白泄露进了摘要正文"
 
