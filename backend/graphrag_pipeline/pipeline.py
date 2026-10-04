@@ -11,10 +11,14 @@ from backend.graphrag_pipeline.persona_builder import PersonaBuilder
 from backend.graphrag_pipeline.world_rules import (
     LoreVerdict,
     LoreVisibilityClassifier,
+    ObjectExtraction,
+    ObjectExtractor,
     WorldRulesExtractor,
+    classify_object_visibility,
 )
 from backend.knowledge_graph import GraphManager
-from backend.models import CharacterCard, Entity, LoreEntry, Relation
+from backend.models import CharacterCard, Entity, LoreEntry, Relation, WorldObject
+from backend.services.objects import clamp_object
 from backend.utils.logger import get_logger
 
 logger = get_logger("graphrag.pipeline")
@@ -40,6 +44,9 @@ class PipelineResult:
     lore_entries: list[LoreEntry] = field(default_factory=list)
     #: 每条设定的可见性判定。分发到角色卡只能依据它，不能直接用 lore_entries（工单29）
     lore_verdicts: list[LoreVerdict] = field(default_factory=list)
+    #: 物件（工单24），visibility 已按判定写好、已压回预算
+    objects: list[WorldObject] = field(default_factory=list)
+    object_verdicts: list[LoreVerdict] = field(default_factory=list)
     entity_count: int = 0
     relation_count: int = 0
 
@@ -71,6 +78,29 @@ def read_seed_texts(paths: list[str]) -> list[str]:
     return texts
 
 
+async def build_objects(
+    project_id: str,
+    texts: list[str],
+    cards: list[CharacterCard],
+    seed_context: str,
+    extractor: ObjectExtractor,
+    classifier: LoreVisibilityClassifier,
+) -> tuple[ObjectExtraction, list[LoreVerdict]]:
+    """抽取物件 → 判定可见性 → 压回预算（工单24）。构建与迁移脚本共用这一份。
+
+    构建期这道闸门截断并 warning（没人能当场改），用户编辑那道才是 422。
+    """
+    names = {c.name.strip() for c in cards if c.name.strip()}
+    extraction = await extractor.extract(texts, names)
+    verdicts = await classify_object_visibility(extraction.objects, cards, seed_context, classifier)
+    for obj in extraction.objects:
+        obj.project_id = project_id
+        issues = clamp_object(obj, names)
+        if issues:
+            logger.warning("物件「%s」超出预算已截断：%s", obj.name, "；".join(issues))
+    return extraction, verdicts
+
+
 def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
     if len(text) <= size:
         return [text]
@@ -93,6 +123,7 @@ class GraphRAGPipeline:
         self.persona_builder = PersonaBuilder()
         self.world_rules = WorldRulesExtractor()
         self.lore_visibility = LoreVisibilityClassifier()
+        self.objects = ObjectExtractor()
         self._entity_index: dict[str, Entity] = {}
 
     async def run(
@@ -154,12 +185,28 @@ class GraphRAGPipeline:
         await _report("判定世界规则可见性", 0.95)
         verdicts = await self.lore_visibility.classify(lore, cards, full_context)
 
+        # 物件（工单24）排在角色卡之后：别名要按角色名过滤，可见性同样要角色卡作证据。
+        # 物件是附加层，抽不出来不该让整个构建失败
+        await _report("提取物件", 0.97)
+        objects: list[WorldObject] = []
+        object_verdicts: list[LoreVerdict] = []
+        try:
+            extraction, object_verdicts = await build_objects(
+                self.project_id, texts, cards, full_context, self.objects, self.lore_visibility
+            )
+            objects = extraction.objects
+        except Exception:  # noqa: BLE001
+            logger.warning("物件抽取失败，本次构建不产出物件", exc_info=True)
+            objects, object_verdicts = [], []
+
         await _report("完成", 1.0)
         return PipelineResult(
             entity_ids=[e.entity_id for e in entities],
             character_cards=cards,
             lore_entries=lore,
             lore_verdicts=verdicts,
+            objects=objects,
+            object_verdicts=object_verdicts,
             entity_count=len(entities),
             relation_count=len(relations),
         )

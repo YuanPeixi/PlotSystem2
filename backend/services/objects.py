@@ -53,6 +53,27 @@ def object_id_for_request(project_id: str, request_id: str) -> str:
     return str(uuid.uuid5(_OBJECT_ID_NAMESPACE, f"{project_id}\n{request_id}"))
 
 
+def select_new_objects(
+    existing: list[WorldObject], extracted: list[WorldObject]
+) -> tuple[list[WorldObject], list[str]]:
+    """从抽取结果里挑出项目里还没有的物件，返回 (要新建的, 因同名跳过的名称)。
+
+    重新构建与迁移脚本共用：已有物件可能被用户手改过，按名称撞上就不覆盖。
+    名称、别名任一相同都算同一件东西 —— 抽取模型这次把"王冠"当名称、上次当别名很常见。
+    """
+    taken = {o.name for o in existing} | {a for o in existing for a in o.aliases}
+    fresh: list[WorldObject] = []
+    skipped: list[str] = []
+    for obj in extracted:
+        if obj.name in taken or any(a in taken for a in obj.aliases):
+            skipped.append(obj.name)
+            continue
+        fresh.append(obj)
+        taken.add(obj.name)
+        taken.update(obj.aliases)
+    return fresh, skipped
+
+
 def _fit(text: str, max_tokens: int) -> str:
     return fit_lines([text], ContextBudget(max_tokens=max_tokens)).text if text else ""
 
