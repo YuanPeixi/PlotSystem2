@@ -157,3 +157,34 @@ def test_turn_kind_deserialization_is_lenient():
     assert _turn_kind(None) == TurnKind.CHARACTER.value
     assert _turn_kind("environment") == TurnKind.ENVIRONMENT.value
     assert _turn_kind("bogus") == TurnKind.CHARACTER.value
+
+
+@pytest.mark.parametrize("raw", [[], {}, ["environment"], {"k": 1}, 1, True, 1.5])
+def test_turn_kind_non_string_falls_back_to_character(raw):
+    """非字符串取值也只降级、不抛异常：[] / {} 不可哈希，直接拿去查集合会 TypeError。"""
+    from backend.services.repository import _turn_kind
+
+    assert _turn_kind(raw) == TurnKind.CHARACTER.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [[], {}])
+async def test_corrupt_turn_kind_does_not_break_scene_list(raw):
+    """一条坏轮次不能让整个项目的场景列表五百（评审复现：基线读取成功，PR 读取失败）。"""
+    from backend.models import Project, Scene
+    from backend.services import repository
+
+    project_id = f"proj-bad-kind-{type(raw).__name__}"
+    await repository.save_project(Project(project_id=project_id, name=project_id))
+    scene = Scene(
+        scene_id=f"scene-bad-kind-{type(raw).__name__}",
+        project_id=project_id,
+        branch_id="branch-main",
+        dialogue_log=[_turn(dialogue="跟我走", kind=raw), _turn(turn_number=2, dialogue="好")],
+    )
+    await repository.save_scene(scene)
+
+    scenes = await repository.list_scenes(project_id)
+    assert [t.kind for t in scenes[0].dialogue_log] == [TurnKind.CHARACTER.value] * 2
+    loaded = await repository.get_scene(scene.scene_id)
+    assert loaded.dialogue_log[0].kind == TurnKind.CHARACTER.value
