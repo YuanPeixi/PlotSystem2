@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import re
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from backend.config import settings
 from backend.exceptions import (
     CharacterNotFoundError,
+    ObjectNotFoundError,
     ProjectNotFoundError,
     SceneNotFoundError,
 )
@@ -39,10 +43,12 @@ from backend.models import (
     StoryboardSource,
     StoryRecord,
     TurnKind,
+    WorldObject,
     WorldState,
     goal_revision,
     now,
 )
+from backend.services.objects import MAX_PROJECT_OBJECTS, clamp_object
 from backend.services.storyboard import clamp_storyboard
 from backend.services.world_state import clamp_world_variables
 from backend.utils import db
@@ -62,6 +68,27 @@ def _world_state_dir(project_id: str) -> Path:
     d = settings.project_dir(project_id) / "world_state"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _objects_dir(project_id: str) -> Path:
+    d = settings.project_dir(project_id) / "objects"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _atomic_write_text(target: Path, payload: str) -> None:
+    """原子替换目标文件。临时名唯一且短于目标名（CLAUDE.md §10.1，同
+    `snapshot_manager._atomic_write_json`；那边 import 了本模块，不能反向复用）。"""
+    tmp = target.with_name(f".{target.stem[:16]}.{uuid4().hex[:8]}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +220,117 @@ async def list_characters(project_id: str) -> list[CharacterCard]:
     for f in _characters_dir(project_id).glob("*.json"):
         cards.append(_deserialize_card(json.loads(f.read_text(encoding="utf-8"))))
     return cards
+
+
+# ---------------------------------------------------------------------------
+# WorldObject（工单24：项目级物件，文件存储，同角色卡）
+# ---------------------------------------------------------------------------
+
+#: 手工建的文件可以叫 `crown.json`，所以不要求 UUID；但不能含路径分隔符
+_OBJECT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _deserialize_object(
+    data: object, object_id: str, project_id: str, character_names: set[str]
+) -> WorldObject | None:
+    """还原物件并压回预算。返回 None 表示这份文件不构成一个物件（非对象 / 无名称）。
+
+    以文件名为准而不是 JSON 里的 `object_id`：手工复制一份文件改个名是最常见的编辑方式，
+    信 JSON 里的 id 会让两个文件冒充同一个物件，后写者覆盖前者。
+    """
+    if not isinstance(data, dict):
+        return None
+    if data.get("object_id") not in (None, object_id):
+        logger.warning("物件文件 %s 内的 object_id=%r 与文件名不一致，以文件名为准", object_id, data.get("object_id"))
+    obj = WorldObject(
+        object_id=object_id,
+        project_id=project_id,
+        name=str(data.get("name") or ""),
+        aliases=data.get("aliases"),  # type: ignore[arg-type]  # 交给 clamp_object 规整
+        public_description=str(data.get("public_description") or ""),
+        hidden_rules=data.get("hidden_rules"),  # type: ignore[arg-type]
+        visibility=data.get("visibility"),  # type: ignore[arg-type]
+        revision=max(0, _safe_int(data.get("revision"), 0)),
+        request_id=str(data.get("request_id") or ""),
+        request_digest=str(data.get("request_digest") or ""),
+        created_at=_parse_created_at(data.get("created_at"), "物件创建时间"),
+        updated_at=_parse_created_at(data.get("updated_at"), "物件更新时间"),
+    )
+    issues = clamp_object(obj, character_names)
+    if issues:
+        # 只压不写回：读路径不改用户手编的文件，下一次合法写入时自然收敛
+        logger.warning("物件 %s（%s）读取时已压回预算：%s", obj.name, object_id, "；".join(issues))
+    if not obj.name:
+        logger.warning("物件文件 %s 没有名称，已忽略", object_id)
+        return None
+    return obj
+
+
+def _read_object_file(path: Path, project_id: str, character_names: set[str]) -> WorldObject | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # 一个坏文件不能让整个物件列表五百
+        logger.warning("物件文件 %s 损坏，已忽略", path.name, exc_info=True)
+        return None
+    return _deserialize_object(data, path.stem, project_id, character_names)
+
+
+async def _character_names(project_id: str) -> set[str]:
+    return {c.name.strip() for c in await list_characters(project_id) if c.name.strip()}
+
+
+async def list_objects(project_id: str) -> list[WorldObject]:
+    """按创建时间列出物件。超过 `MAX_PROJECT_OBJECTS` 的部分不返回（warning），
+    手工往目录里塞几百个文件也不会把下游的候选集撑爆。"""
+    names = await _character_names(project_id)
+    objects = [
+        obj
+        for f in sorted(_objects_dir(project_id).glob("*.json"))
+        if (obj := _read_object_file(f, project_id, names)) is not None
+    ]
+    objects.sort(key=lambda o: (o.created_at, o.object_id))
+    if len(objects) > MAX_PROJECT_OBJECTS:
+        logger.warning(
+            "项目 %s 有 %d 个物件，超过上限 %d，只取最早创建的 %d 个",
+            project_id, len(objects), MAX_PROJECT_OBJECTS, MAX_PROJECT_OBJECTS,
+        )
+        objects = objects[:MAX_PROJECT_OBJECTS]
+    return objects
+
+
+async def find_object(project_id: str, object_id: str) -> WorldObject | None:
+    # object_id 来自 URL 路径参数，拼进文件路径前必须挡住 `../`
+    if not _OBJECT_ID_RE.fullmatch(object_id or ""):
+        return None
+    path = _objects_dir(project_id) / f"{object_id}.json"
+    if not path.is_file():
+        return None
+    return _read_object_file(path, project_id, await _character_names(project_id))
+
+
+async def get_object(project_id: str, object_id: str) -> WorldObject:
+    obj = await find_object(project_id, object_id)
+    if obj is None:
+        raise ObjectNotFoundError(f"物件不存在: {object_id}")
+    return obj
+
+
+async def save_object(obj: WorldObject) -> None:
+    if not obj.project_id or not obj.object_id:
+        raise ValueError("保存物件必须指定 project_id 与 object_id")
+    _atomic_write_text(_objects_dir(obj.project_id) / f"{obj.object_id}.json", to_json(obj))
+
+
+async def delete_object(project_id: str, object_id: str) -> bool:
+    """删除物件文件，返回是否真的删了（不存在不报错：删除天然幂等）。"""
+    if not _OBJECT_ID_RE.fullmatch(object_id or ""):
+        return False
+    path = _objects_dir(project_id) / f"{object_id}.json"
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True
 
 
 # ---------------------------------------------------------------------------

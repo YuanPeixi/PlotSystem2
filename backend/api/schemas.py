@@ -159,6 +159,31 @@ class UpdateStoryboardRequest(BaseModel):
     request_id: str = Field("", max_length=64)
 
 
+class CreateObjectRequest(BaseModel):
+    """新建物件（工单24）。预算在业务层校验，超限 422 不截断；这里的长度只防超大请求体。"""
+
+    name: str = Field(..., max_length=200)
+    aliases: list[str] = Field(default_factory=list, max_length=50)
+    public_description: str = Field("", max_length=20000)
+    hidden_rules: list[str] = Field(default_factory=list, max_length=50)
+    # global / hidden / character:{角色 id}
+    visibility: str = Field("hidden", max_length=128)
+    # 幂等键（契约5）：物件 ID 由它确定性生成，重放落在同一个物件上
+    request_id: str = Field(..., min_length=1, max_length=64)
+
+
+class UpdateObjectRequest(BaseModel):
+    """修改物件，字段为 null 则不改。`revision` 是读取时拿到的修订号，不匹配 409。"""
+
+    name: str | None = Field(None, max_length=200)
+    aliases: list[str] | None = Field(None, max_length=50)
+    public_description: str | None = Field(None, max_length=20000)
+    hidden_rules: list[str] | None = Field(None, max_length=50)
+    visibility: str | None = Field(None, max_length=128)
+    revision: int
+    request_id: str = Field(..., min_length=1, max_length=64)
+
+
 class OutputRequest(BaseModel):
     format: str  # web_novel | screenplay | stage_play | summary | raw
     branch_id: str | None = None
