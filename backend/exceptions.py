@@ -27,6 +27,10 @@ class BranchNotFoundError(PlotSystemError):
     pass
 
 
+class ObjectNotFoundError(PlotSystemError):
+    pass
+
+
 class SceneEngineError(PlotSystemError):
     pass
 

@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.api import branches, characters, director, graph, output, projects, scenes
+from backend.api import branches, characters, director, graph, objects, output, projects, scenes
 from backend.api.schemas import ApiResponse
 from backend.config import settings
 from backend.exceptions import ConflictError, InvalidRequestError, PlotSystemError
@@ -96,6 +96,7 @@ for r in (
     director.project_router,
     branches.project_router,
     branches.snapshot_router,
+    objects.router,
     output.router,
     graph.router,
 ):

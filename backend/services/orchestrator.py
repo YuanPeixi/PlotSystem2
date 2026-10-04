@@ -48,12 +48,19 @@ from backend.models import (
     StoryboardPatch,
     StoryboardView,
     StoryRecord,
+    WorldObject,
     WorldState,
     goal_revision,
     new_id,
 )
 from backend.scene_engine import SceneEngine
 from backend.services import autopilot, events, inspection, repository
+from backend.services.objects import (
+    MAX_PROJECT_OBJECTS,
+    ObjectFields,
+    apply_object_edit,
+    object_id_for_request,
+)
 from backend.services.storyboard import (
     apply_user_edit,
     fork_storyboard,
@@ -910,6 +917,90 @@ async def update_storyboard(
         if changed:
             await repository.save_storyboard(board)
     return _storyboard_view(board, project.narrative_goal)
+
+
+# ---------------------------------------------------------------------------
+# 物件（工单24）：用户增删改。读-改-写在项目级物件锁内，同 `_branch_lock` 的理由
+# ---------------------------------------------------------------------------
+
+_object_locks: dict[str, asyncio.Lock] = {}
+
+
+def _object_lock(project_id: str) -> asyncio.Lock:
+    """取项目物件锁。取与写之间没有 await，单线程事件循环下原子；用完不删（同 `_branch_lock`）。"""
+    lock = _object_locks.get(project_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _object_locks[project_id] = lock
+    return lock
+
+
+async def _character_index(project_id: str) -> tuple[set[str], set[str]]:
+    cards = await repository.list_characters(project_id)
+    return {c.name.strip() for c in cards if c.name.strip()}, {c.character_id for c in cards}
+
+
+async def create_object(project_id: str, fields: ObjectFields, *, request_id: str) -> WorldObject:
+    """新建物件。ID 由幂等键确定性生成，重放落在同一个文件上（契约5）。
+
+    该 ID 上已有物件、且它最近一次写入的键已不是本键：物件是本请求建的、之后又被编辑过，
+    按重放返回当前内容 —— 不能报 409，客户端只是没收到创建的响应。
+    已知边界：物件被删除后，迟到的创建重放会把它再建出来（同 continue 的迟到重试，可接受）。
+    """
+    await repository.get_project(project_id)
+    names, ids = await _character_index(project_id)
+    object_id = object_id_for_request(project_id, request_id)
+    async with _object_lock(project_id):
+        current = await repository.find_object(project_id, object_id)
+        if current is not None and current.request_id != request_id:
+            return current
+        if current is None and len(await repository.list_objects(project_id)) >= MAX_PROJECT_OBJECTS:
+            raise InvalidRequestError(f"每个项目最多 {MAX_PROJECT_OBJECTS} 个物件")
+        obj, changed = apply_object_edit(
+            current,
+            fields,
+            project_id=project_id,
+            object_id=object_id,
+            base_revision=0,
+            request_id=request_id,
+            character_names=names,
+            character_ids=ids,
+        )
+        if changed:
+            await repository.save_object(obj)
+    return obj
+
+
+async def update_object(
+    project_id: str,
+    object_id: str,
+    fields: ObjectFields,
+    *,
+    base_revision: int,
+    request_id: str,
+) -> WorldObject:
+    """修改物件（字段为 None 不改）。版本比对、幂等键查找与写入在同一把锁内。"""
+    names, ids = await _character_index(project_id)
+    async with _object_lock(project_id):
+        current = await repository.get_object(project_id, object_id)
+        obj, changed = apply_object_edit(
+            current,
+            fields,
+            project_id=project_id,
+            object_id=object_id,
+            base_revision=base_revision,
+            request_id=request_id,
+            character_names=names,
+            character_ids=ids,
+        )
+        if changed:
+            await repository.save_object(obj)
+    return obj
+
+
+async def delete_object(project_id: str, object_id: str) -> bool:
+    async with _object_lock(project_id):
+        return await repository.delete_object(project_id, object_id)
 
 
 async def _persist_character_states(agents: list[CharacterAgent]) -> None:

@@ -156,6 +156,43 @@ class LoreEntry:
     priority: int = 5  # 1-10
 
 
+#: 物件可见性的两个固定取值；另一种是 `character:{角色 id}`（仅本人知道它的存在与公开描述）。
+#: 与 `LoreEntry.scope` 同一套（工单29），非法或缺失一律按 hidden，失败即收紧。
+OBJECT_VISIBILITY_GLOBAL = "global"
+OBJECT_VISIBILITY_HIDDEN = "hidden"
+OBJECT_VISIBILITY_CHARACTER_PREFIX = "character:"
+
+
+@dataclass
+class WorldObject:
+    """场景里可被角色作用的物件（工单24）。
+
+    物件是**被动规则**，不是角色：它不发言、没有意图，只在角色对它做动作时由环境层裁决。
+    `hidden_rules`（触发条件、机关、真实功能）**只进导演与环境层**，不进任何角色、
+    selector 打分或意图抽取的 prompt（契约1，设计单 R1）。
+
+    项目级、存为 `objects/{object_id}.json`（同角色卡），支持人工编辑，因此读取侧必须
+    压回预算（`services/objects.py::clamp_object`，同陷阱 19）。
+    """
+
+    object_id: str = field(default_factory=new_id)
+    project_id: str = ""
+    name: str = ""
+    #: 预过滤靠 name 与别名做子串匹配。单字别名、与角色同名的别名会让每轮都命中，被丢弃
+    aliases: list[str] = field(default_factory=list)
+    #: 在场的人肉眼可见的部分；按 visibility 进角色视野（PR-2 起）
+    public_description: str = ""
+    hidden_rules: list[str] = field(default_factory=list)
+    visibility: str = OBJECT_VISIBILITY_HIDDEN
+    #: 每次用户编辑 +1，PATCH 必须带回读取时的值（乐观并发）
+    revision: int = 0
+    #: 最近一次用户写入的幂等键与请求摘要（契约5）
+    request_id: str = ""
+    request_digest: str = ""
+    created_at: datetime = field(default_factory=now)
+    updated_at: datetime = field(default_factory=now)
+
+
 # ---------------------------------------------------------------------------
 # 实体（GraphRAG 提取结果）
 # ---------------------------------------------------------------------------
