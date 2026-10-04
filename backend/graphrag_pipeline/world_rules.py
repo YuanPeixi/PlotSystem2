@@ -6,7 +6,14 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 
-from backend.models import CharacterCard, LoreEntry
+from backend.models import (
+    OBJECT_VISIBILITY_CHARACTER_PREFIX,
+    OBJECT_VISIBILITY_GLOBAL,
+    OBJECT_VISIBILITY_HIDDEN,
+    CharacterCard,
+    LoreEntry,
+    WorldObject,
+)
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -343,3 +350,128 @@ class LoreVisibilityClassifier:
         if not holders:
             return LoreVerdict(entry, note="private 未给出知情者")
         return LoreVerdict(entry, PRIVATE, holders)
+
+
+# ---------------------------------------------------------------------------
+# 物件（工单24）
+# ---------------------------------------------------------------------------
+
+_OBJECT_PROMPT = """你是剧情道具设定专家。从下面的文本中找出"角色可以对它做动作、且它会按某种规则作出反应"的物件：
+法器、机关、带特殊功能的道具、暗格或密门等。普通陈设、武器的寻常用法、抽象概念都不算。
+
+每个物件分两部分写，**不要混写**：
+- public_description：在场的人用眼睛就能看到的部分（外观、摆放位置），一两句。
+  不写它的功能、来历与触发条件；
+- hidden_rules：触发条件、机关的开法、真实功能、限制，每条一句。
+
+aliases 写文中对它的其他叫法：至少两个字，不要写角色名。
+
+严格输出 JSON 数组（不要额外文字）；没有符合条件的物件就输出 []：
+[
+  {{"name": "物件名", "aliases": ["别名"], "public_description": "外观", "hidden_rules": ["规则"]}}
+]
+
+文本：
+\"\"\"
+{text}
+\"\"\"
+"""
+
+
+@dataclass
+class ObjectExtraction:
+    """物件抽取结果。`failed_chunks` 非零时迁移脚本整个不写（让人重试）；构建照常落盘已抽到的。"""
+
+    objects: list[WorldObject] = field(default_factory=list)
+    failed_chunks: int = 0
+
+
+def _str_list(value: object) -> list[str]:
+    return [str(v) for v in value if isinstance(v, (str, int, float))] if isinstance(value, list) else []
+
+
+class ObjectExtractor:
+    """从种子文本抽取物件（工单24）。只抽内容，可见性交给 `classify_object_visibility`。"""
+
+    async def extract(self, texts: list[str], character_names: set[str]) -> ObjectExtraction:
+        result = ObjectExtraction()
+        by_name: dict[str, WorldObject] = {}
+        for text in texts:
+            prompt = _OBJECT_PROMPT.format(text=text[:6000])
+            try:
+                raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.3)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("物件抽取失败，已跳过一段：%s", exc)
+                result.failed_chunks += 1
+                continue
+            for item in _extract_json_array(raw):
+                if not isinstance(item, dict):
+                    continue
+                name = " ".join(str(item.get("name") or "").split())
+                if not name:
+                    continue
+                if name in character_names:
+                    # 与角色同名的物件会让预过滤每轮命中；多半是模型把人当成了物件
+                    logger.warning("抽取出的物件「%s」与角色同名，已丢弃", name)
+                    continue
+                aliases = _str_list(item.get("aliases"))
+                rules = _str_list(item.get("hidden_rules"))
+                existing = by_name.get(name)
+                if existing is not None:
+                    # 分块重叠或多段文本提到同一件东西：合并别名与规则，公开描述留第一份
+                    existing.aliases = list(dict.fromkeys([*existing.aliases, *aliases]))
+                    existing.hidden_rules = list(dict.fromkeys([*existing.hidden_rules, *rules]))
+                    continue
+                by_name[name] = WorldObject(
+                    name=name,
+                    aliases=aliases,
+                    public_description=str(item.get("public_description") or "").strip(),
+                    hidden_rules=rules,
+                )
+        result.objects = list(by_name.values())
+        return result
+
+
+def object_visibility(verdict: LoreVerdict) -> str:
+    """把设定可见性判定映射成物件的 visibility，拿不准的一律 hidden（失败即收紧）。
+
+    多人知情的私有物件暂时收紧为 hidden：`visibility` 只能指向一个角色，而设定那边按知情者
+    各发一份副本的办法对项目级的单个物件文件不适用。PR-1 没有任何运行时读取 visibility，
+    收紧没有代价；PR-2 把公开描述注入角色视野时再决定是否改成列表。
+    """
+    if verdict.visibility == PUBLIC:
+        return OBJECT_VISIBILITY_GLOBAL
+    if verdict.visibility == PRIVATE and len(verdict.holders) == 1:
+        return f"{OBJECT_VISIBILITY_CHARACTER_PREFIX}{verdict.holders[0]}"
+    if verdict.visibility == PRIVATE:
+        logger.warning(
+            "物件「%s」有 %d 位知情者，单值 visibility 表达不了，暂按 hidden 处理",
+            _clip(verdict.entry.content, 20),
+            len(verdict.holders),
+        )
+    return OBJECT_VISIBILITY_HIDDEN
+
+
+async def classify_object_visibility(
+    objects: list[WorldObject],
+    cards: list[CharacterCard],
+    seed_text: str,
+    classifier: LoreVisibilityClassifier,
+) -> list[LoreVerdict]:
+    """判定每个物件"谁知道它的存在与外观"，就地写入 `visibility`，返回判定（供计数）。
+
+    复用设定的分类器（工单29 的三道收紧安全网随之继承），送进去的只有名称与公开描述：
+    隐藏规则按定义谁都不发，拿去分类只会让模型因为规则里的秘密把整个物件判成 hidden。
+    """
+    entries = [
+        LoreEntry(
+            lore_id=obj.object_id,
+            content=f"{obj.name}：{obj.public_description}" if obj.public_description else obj.name,
+            keywords=list(obj.aliases),
+        )
+        for obj in objects
+    ]
+    verdicts = await classifier.classify(entries, cards, seed_text)
+    for obj, verdict in zip(objects, verdicts, strict=True):
+        obj.visibility = object_visibility(verdict)
+    return verdicts

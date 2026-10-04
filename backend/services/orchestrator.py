@@ -26,6 +26,7 @@ from backend.graphrag_pipeline.world_rules import lore_for_character
 from backend.knowledge_graph import GraphManager
 from backend.memory import MemoryManager
 from backend.models import (
+    OBJECT_VISIBILITY_HIDDEN,
     PROGRESS_UNAVAILABLE,
     AutoPilotSession,
     Branch,
@@ -60,6 +61,7 @@ from backend.services.objects import (
     ObjectFields,
     apply_object_edit,
     object_id_for_request,
+    select_new_objects,
 )
 from backend.services.storyboard import (
     apply_user_edit,
@@ -281,6 +283,21 @@ async def run_graphrag(project_id: str) -> None:
         card.world_lore_entries = lore_for_character(result.lore_verdicts, card.character_id)
         await repository.save_character(card)
 
+    # 物件（工单24）：已有同名物件（用户手改过的、上次构建留下的）不覆盖。
+    # 上限按项目总数算，超出的不落盘并 warning
+    existing = await repository.list_objects(project_id)
+    fresh, skipped = select_new_objects(existing, result.objects)
+    room = max(0, MAX_PROJECT_OBJECTS - len(existing))
+    if len(fresh) > room:
+        logger.warning(
+            "构建抽出 %d 个新物件，超过项目上限 %d，只保存前 %d 个", len(fresh), MAX_PROJECT_OBJECTS, room
+        )
+        fresh = fresh[:room]
+    if skipped:
+        logger.info("已有同名物件，构建时跳过：%s", "、".join(skipped))
+    for obj in fresh:
+        await repository.save_object(obj)
+
     # 创建主分支
     sm = SnapshotManager(project_id)
     await sm.ensure_main_branch()
@@ -297,6 +314,9 @@ async def run_graphrag(project_id: str) -> None:
             "character_count": len(result.character_cards),
             "lore_count": len(result.lore_entries),
             "lore_withheld": sum(1 for v in result.lore_verdicts if not v.distributed),
+            "object_count": len(fresh),
+            # 判定为隐藏或判定失败、不让任何角色知道其存在的物件（导演与环境层照样可见）
+            "object_hidden": sum(1 for o in fresh if o.visibility == OBJECT_VISIBILITY_HIDDEN),
         },
     )
 
