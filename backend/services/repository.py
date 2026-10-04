@@ -221,8 +221,10 @@ def _turn_kind(raw: object) -> str:
     当成环境回合的话，它会从 max_turns 与轮询选人里消失。"""
     if raw is None:
         return TurnKind.CHARACTER.value
-    if raw in {k.value for k in TurnKind}:
-        return str(raw)
+    # 先判类型再查集合：[] / {} 不可哈希，`in` 会抛 TypeError，一条坏轮次就让整个
+    # list_scenes 五百（同陷阱 16"一条坏记录不能让 list_scenes 五百"）
+    if isinstance(raw, str) and raw in {k.value for k in TurnKind}:
+        return raw
     logger.warning("轮次 kind 取值非法，按角色轮次处理：%r", raw)
     return TurnKind.CHARACTER.value
 
