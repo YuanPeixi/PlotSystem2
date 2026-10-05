@@ -21,6 +21,9 @@ from backend.exceptions import (
 )
 from backend.models import (
     PROGRESS_UNAVAILABLE,
+    ActionIntent,
+    ActionSkipReason,
+    ActionStatus,
     BeatStatus,
     CharacterCard,
     DecisionSource,
@@ -345,6 +348,48 @@ def _parse_created_at(raw: object, label: str = "场景创建时间") -> datetim
         return now()
 
 
+_ACTION_STATUSES = {s.value for s in ActionStatus}
+_SKIP_REASONS = {r.value for r in ActionSkipReason}
+
+
+def _deserialize_actions(raw: object) -> list[ActionIntent]:
+    """还原一轮的动作意图。坏条目跳过，一条坏记录不能让 list_scenes 五百。
+
+    **未知 status 一律收紧为 skipped**（设计单 §4）：PR-2 会按 pending 补裁决，
+    手改出的脏值必须落到"什么都不做"那一档，不能变成"待裁决"。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[ActionIntent] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            logger.warning("动作意图条目不是对象，已跳过：%r", item)
+            continue
+        index = item.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            logger.warning("动作意图的 index 非法，已跳过：%r", index)
+            continue
+        status = item.get("status")
+        reason = item.get("skip_reason")
+        if status not in _ACTION_STATUSES:
+            logger.warning("动作意图的 status 非法，按 skipped 处理：%r", status)
+            status, reason = ActionStatus.SKIPPED.value, ""
+        if status == ActionStatus.RECORDED.value or reason not in _SKIP_REASONS:
+            reason = ""
+        out.append(
+            ActionIntent(
+                index=index,
+                text=str(item.get("text") or ""),
+                object_id=str(item.get("object_id") or ""),
+                verb=str(item.get("verb") or ""),
+                detail=str(item.get("detail") or ""),
+                status=status,
+                skip_reason=reason,
+            )
+        )
+    return out
+
+
 def _turn_kind(raw: object) -> str:
     """缺键（工单24/20 之前的旧轮次）即角色轮次；非法取值同样按角色轮次并 warning ——
     当成环境回合的话，它会从 max_turns 与轮询选人里消失。"""
@@ -372,6 +417,7 @@ def _deserialize_scene(data: dict) -> Scene:
             memory_context_used=list(t.get("memory_context_used", []) or []),
             selector_notice=t.get("selector_notice", ""),
             kind=_turn_kind(t.get("kind")),
+            actions=_deserialize_actions(t.get("actions")),
         )
         for t in (data.get("dialogue_log") or [])
     ]

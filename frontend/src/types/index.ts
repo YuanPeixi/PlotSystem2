@@ -88,6 +88,18 @@ export interface DialogueTurn {
   selector_notice?: string
   // 环境回合（工单24/20）不占发言顺序、不计入 max_turns；旧数据缺省即 character
   kind?: 'character' | 'environment'
+  /** 每个 *动作* 段的意图（工单24，record 档才有）。只给导演/用户看，不进角色上下文 */
+  actions?: ActionIntent[]
+}
+
+export interface ActionIntent {
+  index: number
+  text: string
+  object_id: string
+  verb: string
+  detail: string
+  status: 'recorded' | 'skipped'
+  skip_reason: '' | 'no_object' | 'over_limit' | 'not_attempt' | 'invalid_object' | 'extract_failed'
 }
 
 export interface Scene {

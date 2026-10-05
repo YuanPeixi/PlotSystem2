@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from backend.models import SpeakerMode
+from backend.models import EnvironmentMode, SpeakerMode
 
 
 class Settings(BaseSettings):
@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     # 允许连续自动回滚几次。每次回滚都新建一条分支，评分长期偏低时不设限会一路长分支
     AUTOPILOT_DEFAULT_MAX_ROLLBACKS: int = 2
 
+    # --- 环境层（工单24/20）---
+    # off / record。adjudicate 在 PR-2 落地前不接受（启动即失败），否则它是个看起来生效、
+    # 实际什么都不做的选项。每次进 run_scene 读一次、整段不变（设计单 A21）
+    ENVIRONMENT_MODE: str = "off"
+
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
 
@@ -149,6 +154,16 @@ class Settings(BaseSettings):
         allowed = sorted(m.value for m in SpeakerMode)
         if v not in allowed:
             raise ValueError(f"DEFAULT_SPEAKER_MODE 必须是 {allowed} 之一，收到 {v!r}")
+        return v
+
+    @field_validator("ENVIRONMENT_MODE")
+    @classmethod
+    def _validate_environment_mode(cls, v: str) -> str:
+        allowed = sorted(m.value for m in EnvironmentMode)
+        if v == "adjudicate":
+            raise ValueError("ENVIRONMENT_MODE=adjudicate 需要工单20（PR-2）落地后才可用，目前只支持 off / record")
+        if v not in allowed:
+            raise ValueError(f"ENVIRONMENT_MODE 必须是 {allowed} 之一，收到 {v!r}")
         return v
 
     @field_validator("DIRECTOR_TRANSCRIPT_STRATEGY")
