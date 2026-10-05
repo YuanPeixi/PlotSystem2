@@ -10,7 +10,7 @@ const script = source
   .match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   .replace(/^import .*$/gm, '')
 const compiled = ts.transpileModule(script + `
-globalThis.subject = { objects, draft, saving, conflict, saveError, loadError, actionError, blockers, rows,
+globalThis.subject = { objects, listed, draft, saving, conflict, saveError, loadError, actionError, blockers, rows,
   load, startCreate, startEdit, cancelEdit, addAlias, removeAlias, addRule, removeRule, moveRule,
   setVisibility, toggleAudience, save, saveAsNew, reloadAfterConflict, remove };
 `, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
@@ -296,6 +296,100 @@ test('delete removes the object even if an older list response arrives later', a
   stale.resolve([obj('o1'), obj('o2')])
   await tick()
   assert.deepEqual(h.objects.value.map(o => o.object_id), ['o2'])
+  // 作废的方式是补发一次：它在删除之后发出
+  assert.equal(h.lists.length, 3)
+  h.lists.at(-1).resolve([obj('o2')])
+  await tick()
+  assert.deepEqual(h.objects.value.map(o => o.object_id), ['o2'])
+})
+
+test('no follow-up read after a write when the list was complete and idle', async () => {
+  const h = await loaded([obj('o1')])
+  h.startEdit(h.objects.value[0])
+  h.draft.value.public_description = '改'
+  const saving = h.save()
+  h.updates[0].resolve(obj('o1', { revision: 3 }))
+  await saving
+  assert.equal(h.lists.length, 1)
+})
+
+test('creating is blocked until the first list load succeeds', async () => {
+  const h = harness()
+  h.startCreate()
+  assert.equal(h.draft.value, null)
+  h.lists[0].reject(new Error('网络错误'))
+  await tick()
+  h.startCreate()
+  assert.equal(h.draft.value, null)
+  assert.equal(h.listed.value, false)
+  h.load()
+  h.lists.at(-1).resolve([obj('o1')])
+  await tick()
+  h.startCreate()
+  assert.ok(h.draft.value)
+})
+
+test('a save overlapping an in-flight load re-reads instead of trusting only the saved object', async () => {
+  const h = await loaded([obj('o1'), obj('o2')])
+  h.startEdit(h.objects.value[0])
+  h.draft.value.public_description = '改'
+  h.load()
+  const inflight = h.lists.at(-1)
+  const saving = h.save()
+  h.updates[0].resolve(obj('o1', { revision: 3, public_description: '改' }))
+  await saving
+  inflight.resolve([obj('o1'), obj('o2')])
+  await tick()
+  assert.equal(h.objects.value[0].revision, 3)
+  const followUp = h.lists.at(-1)
+  assert.notEqual(followUp, inflight)
+  followUp.resolve([obj('o1', { revision: 3 }), obj('o2'), obj('o3')])
+  await tick()
+  assert.deepEqual(h.objects.value.map(o => o.object_id), ['o1', 'o2', 'o3'])
+})
+
+test('a build refresh overlapping a save still brings in the newly extracted objects', async () => {
+  const h = await loaded([obj('o1')])
+  h.startEdit(h.objects.value[0])
+  h.draft.value.public_description = '改'
+  h.props.refreshKey = 1
+  h.flush()
+  const buildRefresh = h.lists.at(-1)
+  const saving = h.save()
+  h.updates[0].resolve(obj('o1', { revision: 3 }))
+  await saving
+  buildRefresh.resolve([obj('o1'), obj('built1')])
+  await tick()
+  h.lists.at(-1).resolve([obj('o1', { revision: 3 }), obj('built1'), obj('built2')])
+  await tick()
+  assert.deepEqual(h.objects.value.map(o => o.object_id), ['o1', 'built1', 'built2'])
+  assert.equal(h.objects.value[0].revision, 3)
+})
+
+test('a build refresh overlapping a delete still brings in the newly extracted objects', async () => {
+  const h = await loaded([obj('o1')])
+  h.props.refreshKey = 1
+  h.flush()
+  const buildRefresh = h.lists.at(-1)
+  const removing = h.remove(h.objects.value[0])
+  h.deletes[0].resolve({ deleted: 'o1', existed: true })
+  await removing
+  buildRefresh.resolve([obj('o1'), obj('built1')])
+  await tick()
+  h.lists.at(-1).resolve([obj('built1')])
+  await tick()
+  assert.deepEqual(h.objects.value.map(o => o.object_id), ['built1'])
+})
+
+test('a failed load keeps its error visible and the list marked incomplete', async () => {
+  const h = await loaded([obj('o1')])
+  h.load()
+  h.lists.at(-1).reject(new Error('网络错误'))
+  await tick()
+  assert.equal(h.listed.value, false)
+  assert.ok(h.loadError.value)
+  h.startCreate()
+  assert.equal(h.draft.value, null)
 })
 
 test('refreshKey reloads the list but leaves an open draft alone', async () => {
