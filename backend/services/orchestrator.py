@@ -955,11 +955,6 @@ def _object_lock(project_id: str) -> asyncio.Lock:
     return lock
 
 
-async def _character_index(project_id: str) -> tuple[set[str], set[str]]:
-    cards = await repository.list_characters(project_id)
-    return {c.name.strip() for c in cards if c.name.strip()}, {c.character_id for c in cards}
-
-
 async def create_object(project_id: str, fields: ObjectFields, *, request_id: str) -> WorldObject:
     """新建物件。ID 由幂等键确定性生成，重放落在同一个文件上（契约5）。
 
@@ -968,7 +963,7 @@ async def create_object(project_id: str, fields: ObjectFields, *, request_id: st
     已知边界：物件被删除后，迟到的创建重放会把它再建出来（同 continue 的迟到重试，可接受）。
     """
     await repository.get_project(project_id)
-    names, ids = await _character_index(project_id)
+    names, ids = await repository.character_index(project_id)
     object_id = object_id_for_request(project_id, request_id)
     async with _object_lock(project_id):
         current = await repository.find_object(project_id, object_id)
@@ -1000,7 +995,7 @@ async def update_object(
     request_id: str,
 ) -> WorldObject:
     """修改物件（字段为 None 不改）。版本比对、幂等键查找与写入在同一把锁内。"""
-    names, ids = await _character_index(project_id)
+    names, ids = await repository.character_index(project_id)
     async with _object_lock(project_id):
         current = await repository.get_object(project_id, object_id)
         obj, changed = apply_object_edit(

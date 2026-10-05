@@ -156,11 +156,13 @@ class LoreEntry:
     priority: int = 5  # 1-10
 
 
-#: 物件可见性的两个固定取值；另一种是 `character:{角色 id}`（仅本人知道它的存在与公开描述）。
-#: 与 `LoreEntry.scope` 同一套（工单29），非法或缺失一律按 hidden，失败即收紧。
+#: 物件可见性的三种取值；`private` 的知情者由 `WorldObject.known_by` 给出。
+#: 不沿用 `LoreEntry.scope` 的 `character:{id}`：设定按知情者各发一份副本，物件是项目级的
+#: 单个文件，"A、B 知道、C 不知道"只能存一份名单（设计单 A11）。非法或缺失一律按 hidden。
 OBJECT_VISIBILITY_GLOBAL = "global"
+OBJECT_VISIBILITY_PRIVATE = "private"
 OBJECT_VISIBILITY_HIDDEN = "hidden"
-OBJECT_VISIBILITY_CHARACTER_PREFIX = "character:"
+OBJECT_VISIBILITIES = (OBJECT_VISIBILITY_GLOBAL, OBJECT_VISIBILITY_PRIVATE, OBJECT_VISIBILITY_HIDDEN)
 
 
 @dataclass
@@ -184,6 +186,8 @@ class WorldObject:
     public_description: str = ""
     hidden_rules: list[str] = field(default_factory=list)
     visibility: str = OBJECT_VISIBILITY_HIDDEN
+    #: 知道它存在与外观的角色 id，仅 `private` 有意义；过滤后为空按 hidden（失败即收紧）
+    known_by: list[str] = field(default_factory=list)
     #: 每次用户编辑 +1，PATCH 必须带回读取时的值（乐观并发）
     revision: int = 0
     #: 最近一次用户写入的幂等键与请求摘要（契约5）

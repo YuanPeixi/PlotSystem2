@@ -231,7 +231,7 @@ _OBJECT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def _deserialize_object(
-    data: object, object_id: str, project_id: str, character_names: set[str]
+    data: object, object_id: str, project_id: str, character_names: set[str], character_ids: set[str]
 ) -> WorldObject | None:
     """还原物件并压回预算。返回 None 表示这份文件不构成一个物件（非对象 / 无名称）。
 
@@ -250,13 +250,14 @@ def _deserialize_object(
         public_description=str(data.get("public_description") or ""),
         hidden_rules=data.get("hidden_rules"),  # type: ignore[arg-type]
         visibility=data.get("visibility"),  # type: ignore[arg-type]
+        known_by=data.get("known_by"),  # type: ignore[arg-type]
         revision=max(0, _safe_int(data.get("revision"), 0)),
         request_id=str(data.get("request_id") or ""),
         request_digest=str(data.get("request_digest") or ""),
         created_at=_parse_created_at(data.get("created_at"), "物件创建时间"),
         updated_at=_parse_created_at(data.get("updated_at"), "物件更新时间"),
     )
-    issues = clamp_object(obj, character_names)
+    issues = clamp_object(obj, character_names, character_ids)
     if issues:
         # 只压不写回：读路径不改用户手编的文件，下一次合法写入时自然收敛
         logger.warning("物件 %s（%s）读取时已压回预算：%s", obj.name, object_id, "；".join(issues))
@@ -266,28 +267,32 @@ def _deserialize_object(
     return obj
 
 
-def _read_object_file(path: Path, project_id: str, character_names: set[str]) -> WorldObject | None:
+def _read_object_file(
+    path: Path, project_id: str, character_names: set[str], character_ids: set[str]
+) -> WorldObject | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         # 一个坏文件不能让整个物件列表五百
         logger.warning("物件文件 %s 损坏，已忽略", path.name, exc_info=True)
         return None
-    return _deserialize_object(data, path.stem, project_id, character_names)
+    return _deserialize_object(data, path.stem, project_id, character_names, character_ids)
 
 
-async def _character_names(project_id: str) -> set[str]:
-    return {c.name.strip() for c in await list_characters(project_id) if c.name.strip()}
+async def character_index(project_id: str) -> tuple[set[str], set[str]]:
+    """本项目的 (角色名, 角色 id)。物件的别名过滤与知情者核对都按它，读写两侧共用。"""
+    cards = await list_characters(project_id)
+    return {c.name.strip() for c in cards if c.name.strip()}, {c.character_id for c in cards}
 
 
 async def list_objects(project_id: str) -> list[WorldObject]:
     """按创建时间列出物件。超过 `MAX_PROJECT_OBJECTS` 的部分不返回（warning），
     手工往目录里塞几百个文件也不会把下游的候选集撑爆。"""
-    names = await _character_names(project_id)
+    names, ids = await character_index(project_id)
     objects = [
         obj
         for f in sorted(_objects_dir(project_id).glob("*.json"))
-        if (obj := _read_object_file(f, project_id, names)) is not None
+        if (obj := _read_object_file(f, project_id, names, ids)) is not None
     ]
     objects.sort(key=lambda o: (o.created_at, o.object_id))
     if len(objects) > MAX_PROJECT_OBJECTS:
@@ -306,7 +311,8 @@ async def find_object(project_id: str, object_id: str) -> WorldObject | None:
     path = _objects_dir(project_id) / f"{object_id}.json"
     if not path.is_file():
         return None
-    return _read_object_file(path, project_id, await _character_names(project_id))
+    names, ids = await character_index(project_id)
+    return _read_object_file(path, project_id, names, ids)
 
 
 async def get_object(project_id: str, object_id: str) -> WorldObject:

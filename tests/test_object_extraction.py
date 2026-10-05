@@ -92,7 +92,8 @@ async def test_glass_crown_objects_are_extracted_with_rules_kept_hidden():
     assert set(by_name) == {"玻璃王冠", "暗格"}, "与角色同名的物件必须丢弃"
     crown, niche = by_name["玻璃王冠"], by_name["暗格"]
     assert crown.visibility == "global"
-    assert niche.visibility == "character:c-noan"
+    assert (niche.visibility, niche.known_by) == ("private", ["c-noan"])
+    assert crown.known_by == []
     assert crown.aliases == ["王冠"], "单字别名与角色名别名必须丢弃"
     assert niche.hidden_rules == [_OPEN_METHOD]
     assert _OPEN_METHOD not in niche.public_description
@@ -117,13 +118,16 @@ async def test_classifier_failure_tightens_every_object_to_hidden():
 
 
 @pytest.mark.asyncio
-async def test_multi_holder_private_object_is_tightened_to_hidden():
+async def test_multi_holder_private_object_keeps_every_holder():
+    """A、B 知道、C 不知道：塞芙拉不在名单里，诺安与伊莎贝尔都在（设计单 A11）。"""
     reply = [
         {"index": 0, "visibility": "private", "known_by": ["诺安", "伊莎贝尔"]},
         {"index": 1, "visibility": "hidden", "known_by": []},
     ]
     extraction, _ = await _build(_Router(visibility=reply))
-    assert {o.visibility for o in extraction.objects} == {"hidden"}
+    crown, niche = extraction.objects
+    assert (crown.visibility, crown.known_by) == ("private", ["c-noan", "c-isa"])
+    assert (niche.visibility, niche.known_by) == ("hidden", [])
 
 
 @pytest.mark.asyncio
