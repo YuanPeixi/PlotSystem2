@@ -121,6 +121,48 @@ test('409 keeps the draft, does not retry, and reload reopens on the latest revi
   assert.equal(h.conflict.value, '')
 })
 
+test('a failed reload after 409 keeps the conflicting draft and stays retryable', async () => {
+  const h = await loaded([obj('o1', { revision: 2 })])
+  h.startEdit(h.objects.value[0])
+  h.draft.value.public_description = '我的改动'
+  const saving = h.save()
+  h.updates[0].reject(new h.ApiError('物件已被修改', 409))
+  await saving
+
+  let reloading = h.reloadAfterConflict()
+  h.lists.at(-1).reject(new Error('网络错误'))
+  await reloading
+  // 列表还是旧的：不得拿修订号 2 重开草稿，冲突状态保留以便重试
+  assert.equal(h.draft.value.public_description, '我的改动')
+  assert.equal(h.draft.value.revision, 2)
+  assert.match(h.conflict.value, /重新加载失败/)
+
+  reloading = h.reloadAfterConflict()
+  h.lists.at(-1).resolve([obj('o1', { revision: 5, public_description: '别人的改动' })])
+  await reloading
+  assert.equal(h.draft.value.revision, 5)
+  assert.equal(h.conflict.value, '')
+})
+
+test('aliases beyond the limit stay in the input and block saving instead of vanishing', async () => {
+  const h = await loaded([obj('o1', { aliases: ['甲甲', '乙乙', '丙丙', '丁丁', '戊戊'] })])
+  h.startEdit(h.objects.value[0])
+  h.draft.value.aliasInput = '己己、庚庚、辛辛'
+  h.addAlias()
+  assert.equal(h.draft.value.aliases.length, 6)
+  assert.equal(h.draft.value.aliasInput, '庚庚、辛辛')
+  assert.ok(h.blockers.value.some(b => b.includes('未添加')))
+  await h.save()
+  assert.equal(h.updates.length, 0)
+
+  // 删掉一个再回车，剩下的照常加进去
+  h.removeAlias(0)
+  h.addAlias()
+  assert.equal(h.draft.value.aliasInput, '辛辛')
+  h.draft.value.aliasInput = ''
+  assert.equal(h.blockers.value.length, 0)
+})
+
 test('update: an unchanged retry reuses the idempotency key, changed content gets a new one', async () => {
   const h = await loaded()
   h.startEdit(h.objects.value[0])
