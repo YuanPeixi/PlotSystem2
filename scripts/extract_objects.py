@@ -99,18 +99,18 @@ async def extract_project_objects(
 def _print_report(report: ExtractReport, apply: bool) -> None:
     names = {c.character_id: c.name for c in report.cards}
 
-    def _who(visibility: str) -> str:
-        if visibility == "global":
+    def _who(obj: WorldObject) -> str:
+        if obj.visibility == "global":
             return "公开"
-        if visibility.startswith("character:"):
-            return f"仅 {names.get(visibility.split(':', 1)[1], '?')}"
+        if obj.visibility == "private":
+            return "仅 " + "、".join(names.get(cid, "?") for cid in obj.known_by)
         return "隐藏"
 
     print(f"项目已有物件 {len(report.existing)} 个。")
     if report.fresh:
         print(f"\n新抽出 {len(report.fresh)} 个物件：\n")
         for obj in report.fresh:
-            print(f"[{_who(obj.visibility)}] {obj.name}（别名：{'、'.join(obj.aliases) or '无'}）")
+            print(f"[{_who(obj)}] {obj.name}（别名：{'、'.join(obj.aliases) or '无'}）")
             print(f"    外观：{obj.public_description[:100] or '（无）'}")
             for rule in obj.hidden_rules:
                 print(f"    规则：{rule[:100]}")

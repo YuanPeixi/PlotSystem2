@@ -71,7 +71,7 @@ def test_clamp_caps_alias_count():
     assert len(obj.aliases) == MAX_OBJECT_ALIASES
 
 
-@pytest.mark.parametrize("raw", [None, "", "public", "character:", "character:a b", "GLOBAL", 1, ["global"]])
+@pytest.mark.parametrize("raw", [None, "", "public", "character:c-noan", "PRIVATE", "GLOBAL", 1, ["global"]])
 def test_clamp_invalid_visibility_tightens_to_hidden(raw):
     """非法或缺失按 hidden（失败即收紧，同工单29），绝不退回 global。"""
     obj = _crown(visibility=raw)
@@ -79,10 +79,36 @@ def test_clamp_invalid_visibility_tightens_to_hidden(raw):
     assert obj.visibility == "hidden"
 
 
-def test_clamp_keeps_character_visibility():
-    obj = _crown(visibility="character:c-noan")
-    clamp_object(obj)
-    assert obj.visibility == "character:c-noan"
+def test_clamp_keeps_every_holder_of_a_private_object():
+    """A、B 知道、C 不知道：名单必须原样留下，单值表达不了（设计单 A11）。"""
+    obj = _crown(visibility="private", known_by=["c-noan", "c-isa", "c-noan", " "])
+    assert clamp_object(obj, CHAR_NAMES, CHAR_IDS) == []
+    assert obj.visibility == "private"
+    assert obj.known_by == ["c-noan", "c-isa"]
+
+
+def test_clamp_drops_unknown_holders_and_tightens_when_none_left():
+    obj = _crown(visibility="private", known_by=["c-noan", "c-ghost"])
+    issues = clamp_object(obj, CHAR_NAMES, CHAR_IDS)
+    assert obj.known_by == ["c-noan"] and any("c-ghost" in i for i in issues)
+
+    obj = _crown(visibility="private", known_by=["c-ghost"])
+    clamp_object(obj, CHAR_NAMES, CHAR_IDS)
+    assert obj.visibility == "hidden" and obj.known_by == []
+
+
+@pytest.mark.parametrize("raw", [[], None, "c-noan-as-string-is-ok-but-unknown", [{"id": 1}]])
+def test_clamp_private_without_valid_holders_is_hidden(raw):
+    obj = _crown(visibility="private", known_by=raw)
+    clamp_object(obj, CHAR_NAMES, CHAR_IDS)
+    assert obj.visibility == "hidden"
+
+
+def test_clamp_clears_holders_when_not_private():
+    """名单只属于 private；留着的话改回 private 会复活一份过时的知情者。"""
+    obj = _crown(visibility="global", known_by=["c-noan"])
+    clamp_object(obj, CHAR_NAMES, CHAR_IDS)
+    assert obj.known_by == []
 
 
 def test_clamp_squeezes_budgets_and_collapses_lines():
@@ -133,6 +159,7 @@ async def test_hand_edited_file_is_clamped_on_read_but_not_rewritten():
             "public_description": "长" * 5000,
             "hidden_rules": "只写了一条字符串",
             "visibility": "everyone",
+            "known_by": ["c-noan"],
         },
         ensure_ascii=False,
     )
@@ -143,8 +170,21 @@ async def test_hand_edited_file_is_clamped_on_read_but_not_rewritten():
     assert obj.aliases == ["王冠"]
     assert estimate_tokens(obj.public_description) <= OBJECT_DESC_TOKENS + 5
     assert obj.hidden_rules == ["只写了一条字符串"]
-    assert obj.visibility == "hidden"
+    assert obj.visibility == "hidden" and obj.known_by == []
     assert path.read_text(encoding="utf-8") == raw, "读取侧只压不写回"
+
+
+@pytest.mark.asyncio
+async def test_private_holders_survive_round_trip_and_track_deleted_characters():
+    pid = "p-obj-holders"
+    await _project_with_chars(pid)
+    await repository.save_object(_crown(project_id=pid, visibility="private", known_by=["c-noan", "c-isa"]))
+    loaded = await repository.get_object(pid, "o-crown")
+    assert (loaded.visibility, loaded.known_by) == ("private", ["c-noan", "c-isa"])
+
+    # 角色卡没了（项目重建过）：读取侧把它从名单里拿掉，名单空了就收紧
+    repository._characters_dir(pid).joinpath("c-isa.json").unlink()
+    assert (await repository.get_object(pid, "o-crown")).known_by == ["c-noan"]
 
 
 @pytest.mark.asyncio
@@ -241,6 +281,16 @@ def test_update_bumps_revision_and_checks_base_revision():
         _edit(updated, ObjectFields(public_description="又碎了一角。"), base_revision=0, request_id="r3")
 
 
+def test_private_holders_are_kept_and_dropped_when_visibility_changes():
+    obj, _ = _edit(None, _create_fields(visibility="private", known_by=["c-noan", "c-isa"]))
+    assert obj.known_by == ["c-noan", "c-isa"]
+    public, _ = _edit(obj, ObjectFields(visibility="global"), request_id="r2")
+    assert public.known_by == []
+    # 改回 private 不带名单 → 422，而不是悄悄复活旧名单
+    with pytest.raises(InvalidRequestError, match="至少一位知情者"):
+        _edit(public, ObjectFields(visibility="private"), base_revision=1, request_id="r3")
+
+
 def test_update_with_same_content_is_a_noop_even_on_stale_revision():
     obj, _ = _edit(None, _create_fields())
     updated, _ = _edit(obj, ObjectFields(public_description="碎了一角。"), request_id="r2")
@@ -261,7 +311,9 @@ def test_update_with_same_content_is_a_noop_even_on_stale_revision():
         (dict(hidden_rules=["规"] * (MAX_HIDDEN_RULES + 1)), "隐藏规则最多"),
         (dict(hidden_rules=["长" * (HIDDEN_RULE_TOKENS + 10)]), "超过"),
         (dict(visibility="public"), "可见性"),
-        (dict(visibility="character:c-ghost"), "角色不存在"),
+        (dict(visibility="character:c-noan"), "可见性"),
+        (dict(visibility="private"), "至少一位知情者"),
+        (dict(visibility="private", known_by=["c-ghost"]), "不是本项目的角色"),
     ],
 )
 def test_user_edit_rejects_instead_of_truncating(fields, message):

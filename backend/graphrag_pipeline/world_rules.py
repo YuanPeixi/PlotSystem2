@@ -7,9 +7,9 @@ import re
 from dataclasses import dataclass, field, replace
 
 from backend.models import (
-    OBJECT_VISIBILITY_CHARACTER_PREFIX,
     OBJECT_VISIBILITY_GLOBAL,
     OBJECT_VISIBILITY_HIDDEN,
+    OBJECT_VISIBILITY_PRIVATE,
     CharacterCard,
     LoreEntry,
     WorldObject,
@@ -432,24 +432,17 @@ class ObjectExtractor:
         return result
 
 
-def object_visibility(verdict: LoreVerdict) -> str:
-    """把设定可见性判定映射成物件的 visibility，拿不准的一律 hidden（失败即收紧）。
+def object_visibility(verdict: LoreVerdict) -> tuple[str, list[str]]:
+    """把设定可见性判定映射成物件的 (visibility, known_by)，拿不准的一律 hidden（失败即收紧）。
 
-    多人知情的私有物件暂时收紧为 hidden：`visibility` 只能指向一个角色，而设定那边按知情者
-    各发一份副本的办法对项目级的单个物件文件不适用。PR-1 没有任何运行时读取 visibility，
-    收紧没有代价；PR-2 把公开描述注入角色视野时再决定是否改成列表。
+    `holders` 已由分类器解析成角色 id，名单原样保留（设计单 A11）；`private` 而没有知情者的
+    判定本来就不是 distributed，这里同样落到 hidden。
     """
     if verdict.visibility == PUBLIC:
-        return OBJECT_VISIBILITY_GLOBAL
-    if verdict.visibility == PRIVATE and len(verdict.holders) == 1:
-        return f"{OBJECT_VISIBILITY_CHARACTER_PREFIX}{verdict.holders[0]}"
-    if verdict.visibility == PRIVATE:
-        logger.warning(
-            "物件「%s」有 %d 位知情者，单值 visibility 表达不了，暂按 hidden 处理",
-            _clip(verdict.entry.content, 20),
-            len(verdict.holders),
-        )
-    return OBJECT_VISIBILITY_HIDDEN
+        return OBJECT_VISIBILITY_GLOBAL, []
+    if verdict.visibility == PRIVATE and verdict.holders:
+        return OBJECT_VISIBILITY_PRIVATE, list(verdict.holders)
+    return OBJECT_VISIBILITY_HIDDEN, []
 
 
 async def classify_object_visibility(
@@ -458,7 +451,7 @@ async def classify_object_visibility(
     seed_text: str,
     classifier: LoreVisibilityClassifier,
 ) -> list[LoreVerdict]:
-    """判定每个物件"谁知道它的存在与外观"，就地写入 `visibility`，返回判定（供计数）。
+    """判定每个物件"谁知道它的存在与外观"，就地写入 `visibility` / `known_by`，返回判定（供计数）。
 
     复用设定的分类器（工单29 的三道收紧安全网随之继承），送进去的只有名称与公开描述：
     隐藏规则按定义谁都不发，拿去分类只会让模型因为规则里的秘密把整个物件判成 hidden。
@@ -473,5 +466,5 @@ async def classify_object_visibility(
     ]
     verdicts = await classifier.classify(entries, cards, seed_text)
     for obj, verdict in zip(objects, verdicts, strict=True):
-        obj.visibility = object_visibility(verdict)
+        obj.visibility, obj.known_by = object_visibility(verdict)
     return verdicts

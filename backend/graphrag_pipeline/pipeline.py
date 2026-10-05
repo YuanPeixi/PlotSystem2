@@ -91,11 +91,12 @@ async def build_objects(
     构建期这道闸门截断并 warning（没人能当场改），用户编辑那道才是 422。
     """
     names = {c.name.strip() for c in cards if c.name.strip()}
+    character_ids = {c.character_id for c in cards}
     extraction = await extractor.extract(texts, names)
     verdicts = await classify_object_visibility(extraction.objects, cards, seed_context, classifier)
     for obj in extraction.objects:
         obj.project_id = project_id
-        issues = clamp_object(obj, names)
+        issues = clamp_object(obj, names, character_ids)
         if issues:
             logger.warning("物件「%s」超出预算已截断：%s", obj.name, "；".join(issues))
     return extraction, verdicts

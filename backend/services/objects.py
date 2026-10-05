@@ -22,9 +22,9 @@ from dataclasses import dataclass
 
 from backend.exceptions import ConflictError, InvalidRequestError
 from backend.models import (
-    OBJECT_VISIBILITY_CHARACTER_PREFIX,
-    OBJECT_VISIBILITY_GLOBAL,
+    OBJECT_VISIBILITIES,
     OBJECT_VISIBILITY_HIDDEN,
+    OBJECT_VISIBILITY_PRIVATE,
     WorldObject,
     now,
 )
@@ -82,19 +82,10 @@ def _over(text: str, max_tokens: int) -> bool:
     return bool(text) and estimate_tokens(text) > max_tokens
 
 
-def is_valid_visibility(value: str) -> bool:
-    if value in (OBJECT_VISIBILITY_GLOBAL, OBJECT_VISIBILITY_HIDDEN):
-        return True
-    if not value.startswith(OBJECT_VISIBILITY_CHARACTER_PREFIX):
-        return False
-    cid = value[len(OBJECT_VISIBILITY_CHARACTER_PREFIX):]
-    return bool(cid) and cid == single_line(cid) and " " not in cid
-
-
 def normalize_visibility(raw: object) -> str:
     """非法或缺失一律按 hidden（失败即收紧，同工单29）：漏给一个物件只是角色少看见一样东西，
     错给则是把只有某人知道的东西摆到全员眼前。"""
-    return raw if isinstance(raw, str) and is_valid_visibility(raw) else OBJECT_VISIBILITY_HIDDEN
+    return raw if isinstance(raw, str) and raw in OBJECT_VISIBILITIES else OBJECT_VISIBILITY_HIDDEN
 
 
 def _as_str_list(raw: object) -> list[str]:
@@ -150,12 +141,18 @@ def _clamp_rules(raw: object) -> tuple[list[str], list[str]]:
     return kept, issues
 
 
-def clamp_object(obj: WorldObject, character_names: set[str] | None = None) -> list[str]:
+def clamp_object(
+    obj: WorldObject,
+    character_names: set[str] | None = None,
+    character_ids: set[str] | None = None,
+) -> list[str]:
     """把一份**来历不明**的物件就地压回形状与预算，返回问题描述（供 warning）。
 
     读取侧与构建期共用。只压不写回 —— 读路径不该因为一次读取就改掉用户手编的文件，
     超限内容在下一次合法写入时自然收敛。公开描述在存储里保留换行（前端是多行文本框），
     预算按塌单行后的渲染形状量；其余字段一律塌单行（"一行一条"约束的是渲染结果）。
+
+    `character_ids` 为 None 时只规整 `known_by` 的形状、不核对角色是否存在。
     """
     names = character_names or set()
     issues: list[str] = []
@@ -180,8 +177,23 @@ def clamp_object(obj: WorldObject, character_names: set[str] | None = None) -> l
     visibility = normalize_visibility(obj.visibility)
     if visibility != obj.visibility:
         issues.append(f"可见性 {obj.visibility!r} 非法，按 hidden 处理")
+    known_by = _clean_ids(obj.known_by)
+    if character_ids is not None:
+        missing = [cid for cid in known_by if cid not in character_ids]
+        if missing:
+            issues.append(f"知情者 {'、'.join(missing)} 不是本项目的角色，已移除")
+            known_by = [cid for cid in known_by if cid in character_ids]
+    if visibility == OBJECT_VISIBILITY_PRIVATE and not known_by:
+        issues.append("可见性为 private 但没有知情者，按 hidden 处理")
+        visibility = OBJECT_VISIBILITY_HIDDEN
     obj.visibility = visibility
+    # 非 private 不带名单：留着的话改回 private 会复活一份过时的知情者
+    obj.known_by = known_by if visibility == OBJECT_VISIBILITY_PRIVATE else []
     return issues
+
+
+def _clean_ids(raw: object) -> list[str]:
+    return [cid for cid in dict.fromkeys(single_line(c) for c in _as_str_list(raw)) if cid]
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +210,12 @@ class ObjectFields:
     public_description: str | None = None
     hidden_rules: list[str] | None = None
     visibility: str | None = None
+    known_by: list[str] | None = None
 
     def digest(self, base_revision: int) -> str:
         payload = [
             self.name, self.aliases, self.public_description, self.hidden_rules,
-            self.visibility, base_revision,
+            self.visibility, self.known_by, base_revision,
         ]
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -252,17 +265,22 @@ def _validated(
         raise InvalidRequestError(f"隐藏规则总长超过 {HIDDEN_RULES_BUDGET_TOKENS} tokens")
     out.hidden_rules = rules
 
-    if not is_valid_visibility(out.visibility):
+    if out.visibility not in OBJECT_VISIBILITIES:
         raise InvalidRequestError(f"可见性 {out.visibility!r} 无效")
-    if out.visibility.startswith(OBJECT_VISIBILITY_CHARACTER_PREFIX):
-        cid = out.visibility[len(OBJECT_VISIBILITY_CHARACTER_PREFIX):]
-        if cid not in character_ids:
-            raise InvalidRequestError(f"可见性指向的角色不存在：{cid}")
+    if out.visibility == OBJECT_VISIBILITY_PRIVATE:
+        out.known_by = _clean_ids(out.known_by)
+        if not out.known_by:
+            raise InvalidRequestError("可见性为 private 时必须指定至少一位知情者")
+        missing = [cid for cid in out.known_by if cid not in character_ids]
+        if missing:
+            raise InvalidRequestError(f"知情者不是本项目的角色：{missing[0]}")
+    else:
+        out.known_by = []
     return out
 
 
 def _content_key(obj: WorldObject) -> list:
-    return [obj.name, obj.aliases, obj.public_description, obj.hidden_rules, obj.visibility]
+    return [obj.name, obj.aliases, obj.public_description, obj.hidden_rules, obj.visibility, obj.known_by]
 
 
 def apply_object_edit(
@@ -307,6 +325,8 @@ def apply_object_edit(
         base.hidden_rules = list(fields.hidden_rules)
     if fields.visibility is not None:
         base.visibility = fields.visibility
+    if fields.known_by is not None:
+        base.known_by = list(fields.known_by)
 
     if current is not None:
         if _content_key(_safe_normalized(base)) == _content_key(current):
@@ -332,4 +352,5 @@ def _safe_normalized(obj: WorldObject) -> WorldObject:
     out.aliases = [a for a in dict.fromkeys(single_line(a) for a in out.aliases) if a and a != out.name]
     out.public_description = normalize_memo(out.public_description)
     out.hidden_rules = [r for r in (single_line(r) for r in out.hidden_rules) if r]
+    out.known_by = _clean_ids(out.known_by) if out.visibility == OBJECT_VISIBILITY_PRIVATE else []
     return out
