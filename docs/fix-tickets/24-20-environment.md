@@ -9,6 +9,11 @@
 >
 > 本单写目标、判据、已定设计与红线，不写分步实现。§9 的决策已由 owner 授权按建议拍板；
 > 实现中若发现与判据冲突，先改本单再改代码。
+>
+> **2026-10-05 修订**（PR-1 评审暴露的六处设计缺口，见 §9 A11–A16）：可见性改为
+> `private` + `known_by`（§4 / §6）；手动选择 `objects_present` 并入 PR-1（§10）；
+> 20b 拆成裁决与生成两次调用（§5.1 / R2）；当事人视图取现场而非快照（R2）；
+> 环境回合额度改为调用前预占（§5.5）；环境 delta 持久化待补写（§5.6）。
 
 ---
 
@@ -57,10 +62,16 @@
 
 | 模型 | 要点 | 存放 | 可见性 |
 |---|---|---|---|
-| `WorldObject` | `object_id`、`name`、`aliases`、`public_description`、`hidden_rules`、`visibility`（`global` / `character:{id}` / `hidden`，**与 29 同一套 scope**） | 文件 `objects/{object_id}.json`，项目级，同角色卡 | 公开描述按 scope 进角色 system；**隐藏规则只进导演与环境层** |
+| `WorldObject` | `object_id`、`name`、`aliases`、`public_description`、`hidden_rules`、`visibility`（`global` / `private` / `hidden`）+ `known_by`（角色 id 列表，仅 `private` 有意义） | 文件 `objects/{object_id}.json`，项目级，同角色卡 | 公开描述按可见性进角色 system；**隐藏规则只进导演与环境层** |
 | `ActionIntent` | `index`、`text`、`object_id`、`verb`、`detail`、`status` | 挂在 `DialogueTurn.actions` | 导演 / 用户 |
 | `DialogueTurn` 扩展 | `kind`（character / environment）、`narration`、`private_detail`、`perceived_by`、`source_turn_id`、`source_action_index`、`revision` | 随 `dialogue_log` 存 `scenes.data_json` | `private_detail` 只给导演 / 用户 / `perceived_by` 的记忆 |
-| `Scene` / `SceneConfig` 扩展 | `objects_present`、`environment_script`（导演预制揭示）、`environment_state`（场景内物件公开状态） | `scenes.data_json` | `environment_script` **绝不进 `initial_conditions` / `scene_context`**（陷阱 20） |
+| `Scene` / `SceneConfig` 扩展 | `objects_present`（PR-1）、`environment_script`（导演预制揭示）、`environment_state`（场景内物件公开状态）、`environment_delta_applied`（§5.6） | `scenes.data_json` | `environment_script` **绝不进 `initial_conditions` / `scene_context`**（陷阱 20） |
+
+**可见性为什么不沿用 29 的 `character:{id}`**（A11）：设定是"按知情者各发一份副本"进角色卡，
+单值 scope 够用；物件是项目级的**单个文件**，"A、B 知道、C 不知道"只能存一份名单。
+单值表达不了时收紧成 hidden 虽然安全，但知情者名单就此丢失，以后只能重新调 LLM 判定。
+`private` 而 `known_by` 过滤后为空 → 按 hidden（失败即收紧，同 29）。
+**只有这一种表示**：不同时保留 `character:{id}` 与名单两套写法，同一件事两种存法迟早漂移。
 
 `ActionIntent.status`：
 
@@ -85,22 +96,35 @@
  ├─ 解析：每个 *动作* 段各生成一个 ActionIntent（`turn.action` 拼接字段保持不变）
  ├─ 预过滤（本地子串匹配，零 LLM）：段文本是否含本场 objects_present 的 name / alias
  │    未命中 → skipped（绝大多数 *神态* 走这条）
+ ├─ [adjudicate] 额度预占（§5.5）：本场环境回合 + 已 pending 的动作 ≥ 上限 → 命中段直接
+ │    skipped，**本轮不发起意图抽取**
  ├─ 意图抽取（selector 小模型，**一轮最多一次调用**，批量处理本轮命中段）
  │    输入：命中段 + 本轮对白 + 候选物件的 name 与**公开描述**（不给隐藏规则，免得预判结果）
  │    输出：object_id ∈ 候选 / verb / is_attempt / detail
  │    不构成尝试、object_id 越界、调用失败 → skipped
- │    构成尝试 → record 档置 recorded；adjudicate 档置 pending
+ │    构成尝试 → record 档置 recorded；adjudicate 档按剩余额度置 pending，超出的 skipped
  ├─ 落盘 + 推 SSE `turn`（第一次落盘时意图已完整）
  ├─ [adjudicate] 环境裁决（EnvironmentAgent，导演模型，温度 0.3，JSON 文本输出）
  │    输入：物件公开描述 + 隐藏规则 + environment_state + 本物件的 environment_script
- │         + 动作原文与执行者 + [仅 20b] 当事人的可见视图（§7 R2）
+ │         + 动作原文与执行者（**不含**任何角色的视图）
  │    输出：executable / triggered / reveal_source / narration / private_detail / state_changes
- ├─ 校验：state_changes 只许动本物件的键、不得撞保留字、塌单行、过预算；环境回合未超上限
+ │         reveal_source=② 时 private_detail 留空，只给"效果说明"（如"投出佩戴者最深的一段记忆"）
+ ├─ [仅 20b，reveal_source=②] 揭示生成（第二次调用，A13）
+ │    输入：**只有**效果说明 + 当事人现场视图（R2）；不含隐藏规则、environment_script、
+ │         其他角色的任何信息
+ │    输出：private_detail
+ ├─ 校验：state_changes 只许动本物件的键、不得撞保留字、塌单行、过预算
  ├─ 一次 save_scene 原子提交：追加环境回合 + 动作置 resolved + 来源轮次 revision+1
  │    + environment_state 更新（同在 scenes.data_json，天然原子，无需跨库事务）
  ├─ 写记忆（§5.3）
  └─ 推 SSE：`turn_update`（来源角色轮次）→ `turn`（环境回合）
 ```
+
+**20b 为什么必须拆成两次调用**（A13）：R2 只保证当事人视图里没有 `unknown_facts`，
+但裁决调用同时看着 `environment_script` 与隐藏规则 —— 前者是导演写的，导演看得到全部角色的秘密，
+完全可能写着"王冠投出王后的记忆，因为伊莎贝尔非亲生"。同一次调用里"别用脚本里的秘密"
+只能靠提示词约束，恰是 R2 要排除的做法。拆开后生成调用**结构上**拿不到这些材料。
+代价是 ② 号来源多一次调用；① ③ 不受影响。
 
 **抽取放在第一次落盘之前**（2026-10-03 细化）：抽取期间崩溃，这一轮还没落盘，等于没发生，
 续跑重新生成；落盘的轮次意图恒完整，续跑只需补"裁决"一种半截状态，不需要"待抽取"状态与补抽逻辑。
@@ -172,7 +196,11 @@
 - `turn_number` 仍是全局序号（含环境回合）；`turns_completed` 保持 `len(dialogue_log)`，
   与水位线 `turns_consolidated` 同一口径，不动；
 - **`max_turns` 只数角色轮次**；另设每场环境回合上限 `MAX_ENVIRONMENT_TURNS`（默认 8），
-  超限的动作置 `skipped` 并 warning；
+  **在调用前预占**（A15）：已产生的环境回合 + 日志里仍 `pending` 的动作 ≥ 上限时，
+  命中段直接 `skipped` 并 warning，不发起意图抽取，更不发起裁决。放在裁决之后判断的话，
+  到顶后每个命中轮次仍白付一次抽取 + 一次裁决再丢弃结果。
+  `pending` 必须计入：续跑补裁决会把它们变成环境回合，不计入则续跑后超限；
+  据此 `failed` 不占额度（不会再产生回合），`skipped` 不占额度；
 - **轮询选人**按角色轮次数取模——否则每插一个环境回合轮转就错一位；
 - **停滞检测**只看角色轮次——否则两次连续的环境回合会被判成"对话停滞"；
 - ⚠️ **`apply_decision` 的 continue**：`max_turns = turns_completed + extra` 改为角色轮次数 + extra。
@@ -194,6 +222,19 @@ PR-0 先把前四项后端口径改成"数角色轮次"（此时恒等于全部�
   （导演可修正）；
 - **评估失败时环境 delta 照样要落**——它是已经发生的事实。现在评估失败会整段跳过世界变量更新，
   这里要拆成两个独立的 `try`；
+- **环境 delta 的补写必须能跨进程恢复**（A16）。场景在评估**之前**就以 completed 落库，
+  而 `_pending_world_patch` 是进程内状态：评估期间进程退出，环境 delta 就永远落不进分支世界状态，
+  后置快照里也没有，从它分叉的分支继承的是旧世界 —— 与陷阱 19 补写窗口同一类静默丢失，
+  且这次重启后连 409 都不报。判据：
+  - `Scene.environment_delta_applied`（与 `environment_state` 同在 `scenes.data_json`）：
+    场景收尾落库时为 false，环境 delta 合并进分支世界状态**并**补写进后置快照后置 true；
+  - 恢复点是**启动对账**（6.4，与 `reconcile_stale_scenes` 并列），不是分叉：启动时没有请求在跑，
+    没有并发窗口；环境 delta 可由 `environment_state` 确定性重算，不依赖评估结果；
+  - **已排除：在分叉时补写来源分支**。那会让分叉写来源分支（破 I2），且把旧 delta 套在来源分支
+    **当前**的世界状态上 —— 期间后续场次删改过的键会被旧值盖回去；
+  - **已排除：把整个补写窗口（评估 / 导演历史 / 分镜稿）持久化**。评估在落库前中断时无从恢复，
+    只能永久拒绝分叉；这三者是导演的判断，丢失时降级为"缺一场评估"，与现状一致。
+    只有环境 delta 是**已经发生的事实**，非补不可；
 - 键名 `物件名·属性`（如 `王冠·佩戴者`）；占世界变量预算，PR-2 实测后再决定是否给物件单独分额度；
 - `environment_state` 只许放**所有在场角色都能感知**的公开状态（契约 1）；私密结果只进
   `private_detail`。
@@ -236,6 +277,8 @@ system prompt，别名决定预过滤的命中率（即成本）。
   否则预过滤每轮都命中，抽取成本失控；
 - `public_description` / `hidden_rules`：单条与总量 token 上限；
 - `visibility` 非法或缺失 → **按 hidden 处理**（失败即收紧，与 29 一致）；
+  `known_by` 只保留存在的角色 id 并去重；`private` 而名单为空 → hidden；
+  非 `private` 时 `known_by` 清空（否则改回 private 会复活一份过时名单）；
 - 文件名与 JSON 内 `object_id` 不一致 → 以文件名为准并 warning；
 - 场景级：`objects_present` 条数上限、角色 system 里物件描述总 token 上限、
   `environment_script` 条数上限、`environment_state` 键数与总 token 上限。
@@ -248,8 +291,14 @@ system prompt，别名决定预过滤的命中率（即成本）。
 
 - **R1 隐藏规则与预制揭示只进导演与环境层**：不进 `scene_context`、角色 system / user、
   selector 打分 prompt、意图抽取 prompt（契约 1，陷阱 20）；
-- **R2 现场生成（20b）结构上拿不到 `unknown_facts`**：裁决器的输入只接受
-  `inspect_character(include_private=False)` 产出的视图，不靠提示词约束"别用"；
+- **R2 现场生成（20b）结构上拿不到 `unknown_facts`、隐藏规则与 `environment_script`**：
+  生成调用与裁决调用分开（§5.1，A13），生成调用的输入只有效果说明与当事人视图；
+  当事人视图由 `services/inspection.py` 的**纯函数**从当事人的角色卡与**本场正在使用的**
+  `MemoryManager` 构造（`include_private=False` 同一口径），不靠提示词约束"别用"。
+  **不得用 `inspect_character` 的快照视图代替**（A14）：快照里没有本场刚经历、尚未固化的内容，
+  后置快照又在 consolidate 之后打，"她刚听说的事"恰好两头都不在。
+  **已排除：全局登记运行中的引擎供 inspection 回读**——引擎本来就持有当事人的智能体，
+  由引擎把对象传进纯函数即可，多一份进程内注册表只多一种生命周期 bug；
 - **R3 "目前对话"只写 `narration`**：`private_detail` 不进 transcript；
 - **R4 场景内变化的状态只进 user 块**，不回写 system（契约 3）；
 - **R5 落盘先于推送**：环境回合与状态更新同一次 `save_scene`，之后才推 SSE（工单23）；
@@ -283,6 +332,13 @@ system prompt，别名决定预过滤的命中率（即成本）。
 **结构性用例**（节选）：
 - 隐藏规则不出现在任何角色的 system / user、selector 打分、意图抽取 prompt 中；
 - 20b 构造"非亲生"进伊莎贝尔 `unknown_facts`，断言它不出现在裁决 prompt 里；
+- 20b 构造"非亲生"写进 `environment_script` 与隐藏规则，断言它不出现在**生成** prompt 里；
+- 20b 当事人本场刚听到、尚未固化的一句台词出现在生成 prompt 里；
+- 额度用尽后的命中轮次：意图抽取与裁决调用次数均为 0；
+- 评估期间中断（场景已 completed、环境 delta 未落）→ 重启对账后分支世界状态与后置快照都含该 delta，
+  且只合并一次；
+- 物件 `private` + `known_by=[A, B]`：读回名单不丢；名单里的角色全部不存在 → hidden；
+- 手动选的 `objects_present` 经 next_scene 覆盖、分叉、回滚三条建场景路径都保留；
 - 在"动作已落盘、裁决未出"时中断，续跑后只补出**一次**环境回合；
 - 两个环境回合相连不触发停滞；含环境回合的场景 continue 后角色轮次数正确；
 - `perceive` 参数化用例：现场写入 = 重放产出（§5.3）；
@@ -305,15 +361,26 @@ system prompt，别名决定预过滤的命中率（即成本）。
 | A9 | 抽取时机 | 第一次落盘之前（§5.1） |
 | A10 | 未触发规则 | 照样生成环境回合（§5.7） |
 
+**2026-10-05 补充**（PR-1 评审，owner 拍板）：
+
+| # | 问题 | 结论 |
+|---|---|---|
+| A11 | 多人知情的物件 | `visibility ∈ {global, private, hidden}` + `known_by`，只此一种表示（§4） |
+| A12 | PR-1 的 record 档没有物件可命中 | 手动选择 `objects_present` 并入 PR-1：字段 + 持久化 + SceneComposer 勾选 + 所有建场景路径搬运（next_scene / 分叉 / 回滚，同陷阱 3、13）；导演规划时自动选仍在 PR-2 |
+| A13 | 20b 裁决调用看得到导演脚本里的秘密 | 拆成裁决 + 生成两次调用（§5.1、R2） |
+| A14 | 当事人视图取快照会缺本场内容 | 引擎持有的现场记忆经 inspection 纯函数构造（R2） |
+| A15 | 环境回合上限放在裁决之后 | 调用前预占，pending 计入额度（§5.5） |
+| A16 | 评估期间重启，环境 delta 丢失 | `environment_delta_applied` + 启动对账补写；不在分叉时补（§5.6） |
+
 ## 10. PR 拆分
 
 | PR | 内容 | 合入后的行为变化 |
 |---|---|---|
 | **PR-0** | ① `render_turn` 收拢五处 transcript 式渲染；② `perceive` 收敛感知判定，去掉 `from_self` / `self_character_id`；③ `DialogueTurn.kind`（恒为 character）+ 反序列化 + 前端类型；④ 计数辅助函数，轮询选人 / 轮次上限 / 停滞检测 / continue 改数角色轮次 | 无（golden 字符串用例钉住渲染输出逐字不变） |
 | **25** | 场景级 token / 调用计数（独立成单，可与 PR-1 并行） | 只增观测 |
-| **PR-1 = 24** | `WorldObject` 模型 / 存储 / 三道预算闸门；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）+ Workspace 编辑器；`DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/extract_objects` | 默认 off 无变化；record 档可评估命中率与成本 |
-| **PR-2 = 20a** | EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、计数口径的 `kind` 过滤）；`turn_update` + `revision`；【当前环境】块；格式规范"只写尝试"；`plan_scene` 产出 `objects_present` / `environment_script`；环境 delta 并入世界变量；前端显示环境回合 | `adjudicate` 档可用 |
-| **PR-3 = 20b** | 揭示来源 ②（当事人可见视图）；《玻璃王冠》整场验收；成本报告 | — |
+| **PR-1 = 24** | `WorldObject` 模型 / 存储 / 三道预算闸门（可见性含 `known_by`）；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）+ Workspace 编辑器；`Scene.objects_present` 持久化 + SceneComposer 手动勾选 + 全部建场景路径搬运；`DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/extract_objects` | 默认 off 无变化；record 档可评估命中率与成本 |
+| **PR-2 = 20a** | EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、计数口径的 `kind` 过滤）；`turn_update` + `revision`；【当前环境】块；格式规范"只写尝试"；`plan_scene` 产出 `objects_present` / `environment_script`；环境 delta 并入世界变量 + `environment_delta_applied` 启动对账；前端显示环境回合 | `adjudicate` 档可用 |
+| **PR-3 = 20b** | 揭示来源 ②（独立生成调用 + 现场当事人视图）；《玻璃王冠》整场验收；成本报告 | — |
 
 收尾：CLAUDE.md 第 13 节"环境智能体"移入正文（【设想】→【实况】），新增陷阱条目；
 §8 SSE 事件、§9.2 前端要点、5.4 checklist 涉及的反序列化函数同步登记。
@@ -328,6 +395,10 @@ system prompt，别名决定预过滤的命中率（即成本）。
 - 预算与读取侧压回的参照：`services/world_state.py::clamp_world_variables`、
   `services/storyboard.py::clamp_storyboard`、`repository._deserialize_world_state`；
 - 世界变量合并与补写窗口：`orchestrator._apply_world_delta`、`_branch_lock`、`_pending_world_patch`；
+  启动对账：`orchestrator.reconcile_stale_scenes`、`main.py` 的 lifespan；
+- 建场景路径（`objects_present` 要跟的地方）：`api/scenes.create_scene`、`create_scene_from_config`、
+  `fork_from_snapshot`（rollback 也走它）、`apply_decision` 的 next_scene 人工覆盖；
+  前端 `SceneComposer.vue`、`Director.vue` 的草稿；
 - continue 的轮次计算：`orchestrator.apply_decision`；
 - 逐轮落盘与 SSE：`orchestrator.run_scene` 里的 `on_turn`；前端 `stores/scenes.ts` 的 `openStream` /
   `reconcileLog`；`StageView` 的轮次进度；
