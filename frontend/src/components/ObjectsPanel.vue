@@ -61,6 +61,9 @@ const VISIBILITY: Record<Visibility, { label: string; hint: string }> = {
 const objects = ref<WorldObject[]>([])
 const loading = ref(false)
 const loadError = ref('')
+// 列表是否完整：当前项目最近一次读取成功才算。首次加载完成前、或加载失败后，
+// 列表可能缺项，计数与"满 40 个"的判断都不可信，新建要等它
+const listed = ref(false)
 const actionError = ref('')
 const draft = ref<Draft | null>(null)
 const saving = ref(false)
@@ -135,6 +138,7 @@ async function load(): Promise<boolean> {
   const seq = ++loadSeq
   if (!pid) {
     objects.value = []
+    listed.value = false
     return false
   }
   loading.value = true
@@ -143,13 +147,29 @@ async function load(): Promise<boolean> {
     const list = await api.listObjects(pid)
     if (seq !== loadSeq || pid !== props.projectId) return false
     objects.value = list
+    listed.value = true
     return true
   } catch (err) {
-    if (seq === loadSeq) loadError.value = errorText(err, '物件加载失败')
+    if (seq === loadSeq) {
+      loadError.value = errorText(err, '物件加载失败')
+      listed.value = false
+    }
     return false
   } finally {
     if (seq === loadSeq) loading.value = false
   }
+}
+
+/**
+ * 写入成功、本地列表已更新之后调用。
+ *
+ * 在途的读取可能是在写入之前发出的，晚回来会把列表盖回旧修订号（再编辑必 409），必须作废；
+ * 但写入的响应只有这一个物件，不像分镜稿那样是整份 —— 只作废不补，在途读取本该带回的
+ * 其他物件（构建刚抽出的、首次加载的全部）就丢了。所以作废的方式是重新发一次：它在写入
+ * 之后发出，读到的一定已含本次写入。列表本就不完整时同理。
+ */
+function refreshAfterWrite() {
+  if (loading.value || !listed.value) void load()
 }
 
 watch(
@@ -161,6 +181,7 @@ watch(
     saveError.value = ''
     actionError.value = ''
     objects.value = []
+    listed.value = false
     saveSeq++
     saving.value = false
     deleting.value = ''
@@ -197,7 +218,7 @@ function openDraft(o: WorldObject | null) {
 }
 
 function startCreate() {
-  if (draft.value || objects.value.length >= MAX_OBJECTS) return
+  if (draft.value || !listed.value || objects.value.length >= MAX_OBJECTS) return
   openDraft(null)
 }
 
@@ -325,11 +346,9 @@ async function save() {
           request_id: d.requestId,
         })
     if (draft.value !== d) return
-    loadSeq++
-    loading.value = false
-    loadError.value = ''
     upsert(saved)
     draft.value = null
+    refreshAfterWrite()
   } catch (err) {
     if (draft.value !== d) return
     const status = err instanceof ApiError ? err.status : 0
@@ -396,10 +415,8 @@ async function remove(o: WorldObject) {
   try {
     await api.deleteObject(pid, o.object_id)
     if (pid !== props.projectId) return
-    // 在途的列表刷新可能还带着它
-    loadSeq++
-    loading.value = false
     objects.value = objects.value.filter((x) => x.object_id !== o.object_id)
+    refreshAfterWrite()
   } catch (err) {
     if (pid === props.projectId) actionError.value = errorText(err, '删除失败')
   } finally {
@@ -411,13 +428,19 @@ async function remove(o: WorldObject) {
 <template>
   <div class="objects">
     <div class="section-title">
-      <span>物件 <span class="num">{{ objects.length }} / {{ MAX_OBJECTS }}</span></span>
+      <span>物件 <span class="num">{{ listed ? `${objects.length} / ${MAX_OBJECTS}` : '列表未加载' }}</span></span>
       <div class="head-actions">
         <button class="icon sm" title="重新加载" :disabled="loading" @click="load"><Icon name="refresh" :size="14" /></button>
         <button
           class="ghost small-btn"
-          :disabled="!!draft || objects.length >= MAX_OBJECTS"
-          :title="objects.length >= MAX_OBJECTS ? `每个项目最多 ${MAX_OBJECTS} 个物件` : '新建物件'"
+          :disabled="!!draft || !listed || objects.length >= MAX_OBJECTS"
+          :title="
+            !listed
+              ? '物件列表加载完成后才能新建'
+              : objects.length >= MAX_OBJECTS
+                ? `每个项目最多 ${MAX_OBJECTS} 个物件`
+                : '新建物件'
+          "
           @click="startCreate"
         >
           <Icon name="plus" :size="14" />新建
