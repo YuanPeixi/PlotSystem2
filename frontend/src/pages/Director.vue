@@ -6,7 +6,7 @@ import { useProjectStore } from '@/stores/project'
 import { useSceneStore } from '@/stores/scenes'
 import { useDirectorStore } from '@/stores/director'
 import { api } from '@/api/client'
-import type { Scene, SceneConfig } from '@/types'
+import type { Scene, SceneConfig, WorldObject } from '@/types'
 import DirectorPanel from '@/components/DirectorPanel.vue'
 import CharacterInspector from '@/components/CharacterInspector.vue'
 import StoryboardPanel from '@/components/StoryboardPanel.vue'
@@ -32,6 +32,8 @@ const planning = ref(false)
 const composeError = ref('')
 const creating = ref(false)
 const draft = ref<SceneConfig | null>(null)
+// 项目物件（工单24）：规划草稿与"下一场"决策里选在场物件用
+const objects = ref<WorldObject[]>([])
 const branchId = ref('')
 const inspectingId = ref('')
 const scenes = ref<Scene[]>([])
@@ -90,6 +92,11 @@ onMounted(async () => {
     await projectStore.selectProject(props.projectId)
   }
   await charStore.load(props.projectId)
+  // 物件只是可选项：读失败不该挡住整个导演台
+  api.listObjects(props.projectId).then(
+    (list) => (objects.value = list),
+    () => (objects.value = []),
+  )
   await directorStore.loadBranches(props.projectId)
 
   // 刷新恢复：URL 上的 scene 参数优先，其次落到该分支最近一场。
@@ -248,6 +255,7 @@ async function startScene() {
       description: draft.value.description,
       participating_characters: draft.value.participating_characters,
       location: draft.value.location,
+      objects_present: draft.value.objects_present || [],
       initial_conditions: draft.value.initial_conditions,
       max_turns: draft.value.max_turns,
       opening_narration: draft.value.opening_narration,
@@ -478,6 +486,7 @@ async function stopAutopilot() {
           :busy="sceneStore.running"
           :goal="narrativeGoal"
           :characters="charStore.characters"
+          :objects="objects"
           @plan="plan"
           @start="startScene"
           @cancel="cancelCompose"
@@ -547,6 +556,7 @@ async function stopAutopilot() {
                 :evaluation="sceneStore.evaluation"
                 :scene-id="sceneStore.currentScene?.scene_id || ''"
                 :characters="charStore.characters"
+                :objects="objects"
                 :snapshots="branchSnapshots"
                 :applied-decision="sceneStore.appliedDecision"
                 :pending="sceneStore.decisionPending"

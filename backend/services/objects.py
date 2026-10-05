@@ -43,6 +43,8 @@ OBJECT_DESC_TOKENS = 200
 MAX_HIDDEN_RULES = 8
 HIDDEN_RULE_TOKENS = 150
 HIDDEN_RULES_BUDGET_TOKENS = 800
+#: 每场在场物件上限。意图抽取每轮要带上候选物件的名称与公开描述，候选越多每次越贵
+MAX_OBJECTS_PRESENT = 10
 
 #: 幂等键 → object_id 的命名空间。同一项目内同一个键恒得到同一个 ID，创建请求的重放
 #: 才能落在同一个文件上，而不是再建一个同名物件
@@ -72,6 +74,16 @@ def select_new_objects(
         taken.add(obj.name)
         taken.update(obj.aliases)
     return fresh, skipped
+
+
+def clamp_objects_present(raw: object) -> list[str]:
+    """场景里存的物件 ID 名单：去重、去空、截到上限。读取侧用，只压不报错。
+
+    不核对物件是否还存在：物件可能在建场景之后被删，留着悬空 ID 由消费方跳过即可，
+    读一次场景就去扫物件目录不值当。
+    """
+    ids = [i for i in dict.fromkeys(single_line(x) for x in _as_str_list(raw)) if i]
+    return ids[:MAX_OBJECTS_PRESENT]
 
 
 def _fit(text: str, max_tokens: int) -> str:

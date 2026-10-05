@@ -5,7 +5,7 @@
  */
 import { ref, watch } from 'vue'
 import Icon from '@/components/ui/Icon.vue'
-import type { CharacterCard, SceneConfig } from '@/types'
+import type { CharacterCard, SceneConfig, WorldObject } from '@/types'
 
 const props = defineProps<{
   draft: SceneConfig | null
@@ -19,6 +19,8 @@ const props = defineProps<{
   busy: boolean
   goal: string
   characters: CharacterCard[]
+  /** 项目物件（工单24）；为空时不显示选择区 */
+  objects: WorldObject[]
 }>()
 const emit = defineEmits<{
   (e: 'update:intent', v: string): void
@@ -59,12 +61,23 @@ function removeRow(i: number) {
   writeBack()
 }
 
+function toggleIn(list: string[], id: string) {
+  const i = list.indexOf(id)
+  if (i >= 0) list.splice(i, 1)
+  else list.push(id)
+}
 function toggleCast(cid: string) {
   if (!props.draft) return
-  const list = props.draft.participating_characters
-  const i = list.indexOf(cid)
-  if (i >= 0) list.splice(i, 1)
-  else list.push(cid)
+  toggleIn(props.draft.participating_characters, cid)
+}
+// 后端 10 个上限；超了就不让再选，免得开演时才被 422 拦下
+const MAX_OBJECTS_PRESENT = 10
+function toggleObject(oid: string) {
+  if (!props.draft) return
+  props.draft.objects_present ??= []
+  const list = props.draft.objects_present
+  if (!list.includes(oid) && list.length >= MAX_OBJECTS_PRESENT) return
+  toggleIn(list, oid)
 }
 </script>
 
@@ -116,6 +129,22 @@ function toggleCast(cid: string) {
               @click="toggleCast(c.character_id)"
             >
               {{ c.name }}
+            </button>
+          </div>
+        </div>
+        <div v-if="objects.length" class="field">
+          <label>在场物件<span class="dim label-hint">角色对它们做的动作会被记录下来</span></label>
+          <div class="cast">
+            <button
+              v-for="o in objects"
+              :key="o.object_id"
+              type="button"
+              class="chip"
+              :aria-pressed="(draft.objects_present || []).includes(o.object_id)"
+              :title="o.public_description"
+              @click="toggleObject(o.object_id)"
+            >
+              {{ o.name }}
             </button>
           </div>
         </div>
@@ -302,6 +331,10 @@ function toggleCast(cid: string) {
 }
 .opening {
   font-size: 15.5px;
+}
+.label-hint {
+  font-weight: 400;
+  margin-left: 8px;
 }
 .more {
   border-top: 1px solid var(--line);

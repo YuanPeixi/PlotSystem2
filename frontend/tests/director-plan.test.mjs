@@ -255,6 +255,24 @@ for (const [name, leave] of [
   })
 }
 
+test('the objects picked in the draft are sent with the new scene', async () => {
+  const h = harness()
+  h.branchId.value = 'A'
+  h.startCompose()
+  h.draft.value = { ...DRAFT(), objects_present: ['o-crown'] }
+  await h.startScene()
+  assert.equal(JSON.stringify(h.creates[0].objects_present), '["o-crown"]')
+})
+
+test('a draft without objects_present (older backend) sends an empty list', async () => {
+  const h = harness()
+  h.branchId.value = 'A'
+  h.startCompose()
+  h.draft.value = DRAFT()
+  await h.startScene()
+  assert.equal(JSON.stringify(h.creates[0].objects_present), '[]')
+})
+
 test('leaving the director page mid-plan drops the late plan response', async () => {
   const d = deferred()
   const h = harness({ goal: 'g', planImpl: () => d.promise })

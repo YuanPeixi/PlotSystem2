@@ -48,7 +48,7 @@ from backend.models import (
     goal_revision,
     now,
 )
-from backend.services.objects import MAX_PROJECT_OBJECTS, clamp_object
+from backend.services.objects import MAX_PROJECT_OBJECTS, clamp_object, clamp_objects_present
 from backend.services.storyboard import clamp_storyboard
 from backend.services.world_state import clamp_world_variables
 from backend.utils import db
@@ -399,6 +399,7 @@ def _deserialize_scene(data: dict) -> Scene:
         description=data.get("description", ""),
         participating_characters=list(data.get("participating_characters", []) or []),
         location=data.get("location", ""),
+        objects_present=clamp_objects_present(data.get("objects_present")),
         initial_conditions=data.get("initial_conditions", {}) or {},
         max_turns=data.get("max_turns", 20),
         status=data.get("status", "pending"),
@@ -943,6 +944,7 @@ async def get_decision(scene_id: str) -> DirectorDecision | None:
         next_participating_characters=data.get("next_participating_characters"),
         next_location=data.get("next_location"),
         next_initial_conditions=data.get("next_initial_conditions"),
+        next_objects_present=data.get("next_objects_present"),
         rollback_notes=data.get("rollback_notes"),
         source=data.get("source") or DecisionSource.HUMAN.value,
     )

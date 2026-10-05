@@ -57,6 +57,7 @@ from backend.models import (
 from backend.scene_engine import SceneEngine
 from backend.services import autopilot, events, inspection, repository
 from backend.services.objects import (
+    MAX_OBJECTS_PRESENT,
     MAX_PROJECT_OBJECTS,
     ObjectFields,
     apply_object_edit,
@@ -567,6 +568,7 @@ async def create_scene_from_config(
         description=config.description,
         participating_characters=config.participating_characters,
         location=config.location,
+        objects_present=list(config.objects_present),
         initial_conditions=initial_conditions,
         max_turns=config.max_turns,
         speaker_mode=config.speaker_mode,
@@ -614,6 +616,7 @@ async def run_scene(scene_id: str) -> None:
             description=scene.description,
             participating_characters=scene.participating_characters,
             location=scene.location,
+            objects_present=list(scene.objects_present),
             initial_conditions=scene.initial_conditions,
             max_turns=scene.max_turns,
             speaker_mode=scene.speaker_mode,
@@ -955,6 +958,19 @@ def _object_lock(project_id: str) -> asyncio.Lock:
     return lock
 
 
+async def check_objects_present(project_id: str, object_ids: list[str]) -> list[str]:
+    """校验用户为一场选的物件：去重后超上限或含不存在的物件都 422，不悄悄丢掉。"""
+    ids = list(dict.fromkeys(i.strip() for i in object_ids if i.strip()))
+    if len(ids) > MAX_OBJECTS_PRESENT:
+        raise InvalidRequestError(f"每场最多 {MAX_OBJECTS_PRESENT} 个在场物件，收到 {len(ids)} 个")
+    if ids:
+        known = {o.object_id for o in await repository.list_objects(project_id)}
+        missing = [i for i in ids if i not in known]
+        if missing:
+            raise InvalidRequestError(f"物件不存在：{missing[0]}")
+    return ids
+
+
 async def create_object(project_id: str, fields: ObjectFields, *, request_id: str) -> WorldObject:
     """新建物件。ID 由幂等键确定性生成，重放落在同一个文件上（契约5）。
 
@@ -1162,6 +1178,8 @@ async def fork_from_snapshot(
             list(src.participating_characters) if src else list(snap.character_states.keys())
         ),
         location=src.location if src else "",
+        # 不核对存在性：分叉只读来源，悬空 ID 由消费方跳过（同 clamp_objects_present）
+        objects_present=list(src.objects_present) if src else [],
         initial_conditions={**base_conditions, **(conditions or {})},
         max_turns=src.max_turns if src else 20,
         # 漏传会让 selector 场景静默退回轮询（CLAUDE.md §4.2 陷阱 3）
@@ -1333,6 +1351,12 @@ async def apply_decision(
             # 参与角色/地点/初始条件（均为 None 时保持 AI 自动规划的结果，工单13）。
             # 用户填的"下一场目标"是本场意图（第三层），不是主线目标：把它当 goal 传
             # 会让主线锚点被"延续上一场"这类动量描述顶掉，连跑几场后系统就只剩动量。
+            # 物件覆盖先校验：非法时 422 不该白付一次规划
+            objects_present = (
+                await check_objects_present(scene.project_id, decision.next_objects_present)
+                if decision.next_objects_present
+                else None
+            )
             config = await plan_scene(
                 scene.project_id,
                 scene.branch_id,
@@ -1345,6 +1369,8 @@ async def apply_decision(
                 config.location = decision.next_location
             if decision.next_initial_conditions:
                 config.initial_conditions = decision.next_initial_conditions
+            if objects_present:
+                config.objects_present = objects_present
             new_scene = await create_scene_from_config(scene.project_id, scene.branch_id, config)
             # 记录父子关系
             new_scene.parent_scene_id = scene.scene_id

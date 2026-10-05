@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import Icon from '@/components/ui/Icon.vue'
-import type { CharacterCard, SceneEvaluation, SnapshotMeta } from '@/types'
+import type { CharacterCard, SceneEvaluation, SnapshotMeta, WorldObject } from '@/types'
 
 const props = defineProps<{
   evaluation: SceneEvaluation | null
   sceneId: string
   characters?: CharacterCard[]
+  objects?: WorldObject[]
   snapshots?: SnapshotMeta[]
   appliedDecision?: Record<string, unknown> | null
   pending?: boolean
@@ -30,6 +31,7 @@ const showNextScene = ref(false)
 // “下一场”人工可编辑覆盖项（均留空/不选时保持 AI 自动规划的结果，工单13）
 const nextChars = ref<string[]>([])
 const nextLocation = ref('')
+const nextObjects = ref<string[]>([])
 const nextConditions = ref('')
 
 const DECISION_LABEL: Record<string, string> = {
@@ -104,6 +106,7 @@ function confirmNextScene() {
       next_scene_description: nextSceneGoal.value.trim() || null,
       next_participating_characters: nextChars.value.length ? nextChars.value : null,
       next_location: nextLocation.value.trim() || null,
+      next_objects_present: nextObjects.value.length ? nextObjects.value : null,
       next_initial_conditions: conditions,
     },
     (ok) => {
@@ -112,6 +115,7 @@ function confirmNextScene() {
       nextSceneGoal.value = ''
       nextChars.value = []
       nextLocation.value = ''
+      nextObjects.value = []
       nextConditions.value = ''
     },
   )
@@ -254,6 +258,14 @@ function confirmRollback() {
         <div class="field">
           <label>地点（留空则由导演决定）</label>
           <input v-model="nextLocation" placeholder="例如：雨夜的酒馆" />
+        </div>
+        <div v-if="objects?.length" class="field">
+          <label>在场物件（不选则由导演决定）</label>
+          <div class="pills">
+            <label v-for="o in objects" :key="o.object_id" class="pill">
+              <input v-model="nextObjects" type="checkbox" :value="o.object_id" />{{ o.name }}
+            </label>
+          </div>
         </div>
         <div class="field">
           <label>初始条件（JSON，留空则由导演决定）</label>

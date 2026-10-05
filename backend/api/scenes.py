@@ -55,6 +55,7 @@ async def create_scene(project_id: str, req: CreateSceneRequest) -> ApiResponse:
     initial = dict(req.initial_conditions)
     if req.opening_narration:
         initial["opening_narration"] = req.opening_narration
+    objects_present = await orchestrator.check_objects_present(project_id, req.objects_present)
     scene = Scene(
         scene_id=new_id(),
         project_id=project_id,
@@ -63,6 +64,7 @@ async def create_scene(project_id: str, req: CreateSceneRequest) -> ApiResponse:
         description=req.description,
         participating_characters=req.participating_characters,
         location=req.location,
+        objects_present=objects_present,
         initial_conditions=initial,
         max_turns=req.max_turns,
         speaker_mode=req.speaker_mode or settings.DEFAULT_SPEAKER_MODE,

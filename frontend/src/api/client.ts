@@ -15,6 +15,7 @@ import type {
   SnapshotMeta,
   Storyboard,
   StoryboardUpdate,
+  WorldObject,
 } from '@/types'
 
 const API_BASE = '/api/v1'
@@ -94,6 +95,9 @@ export const api = {
     unwrap<CharacterInspection>(
       http.get(`/projects/${id}/characters/${cid}/inspect`, { params }),
     ),
+
+  // 物件（工单24）
+  listObjects: (id: string) => unwrap<WorldObject[]>(http.get(`/projects/${id}/objects`)),
 
   // 场景
   /** scene_intent 是本场意图；主线目标由后端固定读 project.narrative_goal。 */
