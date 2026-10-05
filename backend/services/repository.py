@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 from backend.config import settings
 from backend.exceptions import (
@@ -45,6 +43,7 @@ from backend.models import (
     TurnKind,
     WorldObject,
     WorldState,
+    as_aware,
     goal_revision,
     now,
 )
@@ -52,6 +51,7 @@ from backend.services.objects import MAX_PROJECT_OBJECTS, clamp_object, clamp_ob
 from backend.services.storyboard import clamp_storyboard
 from backend.services.world_state import clamp_world_variables
 from backend.utils import db
+from backend.utils.fileio import atomic_write_text
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_json
 
@@ -74,21 +74,6 @@ def _objects_dir(project_id: str) -> Path:
     d = settings.project_dir(project_id) / "objects"
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def _atomic_write_text(target: Path, payload: str) -> None:
-    """原子替换目标文件。临时名唯一且短于目标名（CLAUDE.md §10.1，同
-    `snapshot_manager._atomic_write_json`；那边 import 了本模块，不能反向复用）。"""
-    tmp = target.with_name(f".{target.stem[:16]}.{uuid4().hex[:8]}.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, target)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +257,7 @@ def _read_object_file(
 ) -> WorldObject | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         # 一个坏文件不能让整个物件列表五百
         logger.warning("物件文件 %s 损坏，已忽略", path.name, exc_info=True)
         return None
@@ -325,7 +310,7 @@ async def get_object(project_id: str, object_id: str) -> WorldObject:
 async def save_object(obj: WorldObject) -> None:
     if not obj.project_id or not obj.object_id:
         raise ValueError("保存物件必须指定 project_id 与 object_id")
-    _atomic_write_text(_objects_dir(obj.project_id) / f"{obj.object_id}.json", to_json(obj))
+    atomic_write_text(_objects_dir(obj.project_id) / f"{obj.object_id}.json", to_json(obj))
 
 
 async def delete_object(project_id: str, object_id: str) -> bool:
@@ -354,7 +339,7 @@ def _parse_created_at(raw: object, label: str = "场景创建时间") -> datetim
     if not raw:
         return now()
     try:
-        return datetime.fromisoformat(str(raw))
+        return as_aware(datetime.fromisoformat(str(raw)))
     except (TypeError, ValueError):
         logger.warning("%s无法解析，按当前时间处理：%r", label, raw)
         return now()
@@ -764,7 +749,7 @@ async def get_world_state(project_id: str, branch_id: str) -> WorldState:
         return WorldState(project_id=project_id, branch_id=branch_id)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         # 世界变量是增量演化的附加层，读不出来不该让整场推演起不来
         logger.warning("分支 %s 的世界状态文件损坏，按空世界状态处理", branch_id, exc_info=True)
         return WorldState(project_id=project_id, branch_id=branch_id)
@@ -884,7 +869,7 @@ async def get_storyboard(project_id: str, branch_id: str) -> Storyboard:
         return Storyboard(project_id=project_id, branch_id=branch_id)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("分支 %s 的分镜稿文件损坏，按空分镜稿处理", branch_id, exc_info=True)
         return Storyboard(project_id=project_id, branch_id=branch_id)
     return deserialize_storyboard(data, project_id, branch_id)

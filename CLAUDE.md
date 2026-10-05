@@ -198,6 +198,7 @@ backend/
 │   └── world_rules.py
 │
 └── utils/
+    ├── fileio.py      ★ 原子写文件的唯一实现（临时名唯一且不长于目标名）
     ├── llm.py         ★ LLM 唯一出口（chat / chat_safe / estimate_tokens）
     ├── context.py     ★ 统一上下文压缩管线（fit_lines / compact_lines，4 种策略）
     ├── turns.py       ★ 轮次的统一渲染 / 感知判定 / 计数口径（render_turn / perceive / character_turns）
@@ -1186,12 +1187,18 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 - 所有 IO（LLM / DB / 文件）必须 `async`；禁止 `time.sleep`。
 - 内部数据用 `@dataclass`（集中在 `models.py`），跨 API 边界用 Pydantic（`api/schemas.py`）。
 - 异常继承 `PlotSystemError`（`exceptions.py`），不要裸 `raise Exception`。
-- **原子写文件时，临时名必须唯一且不长于目标名**。这条已经踩过两次：
+- **原子写文件时，临时名必须唯一且不长于目标名**。这条已经踩过三次：
   `f".{目标全名}.{uuid4().hex}.tmp"` 会净增 38 字符，目标名含 sha256 时
   很容易越过 Windows MAX_PATH(260)，抛出伪装成 `FileNotFoundError` 的错误；
-  而 `path.with_suffix('.tmp')` 会让 `meta.json` 与 `meta.tmp` 共用一个名字，
-  并发写互相覆盖。参考 `snapshot_manager._atomic_write_json` 与
-  `branch_memory._pending_path`：短前缀 + 截断 uuid，replace 前 fsync，失败清理。
+  `path.with_suffix('.tmp')` 会让 `meta.json` 与 `meta.tmp` 共用一个名字，
+  并发写互相覆盖；"目标名前 16 字 + 8 位 uuid"对 `crown.json` 这种短名又会拉长 9 个字符。
+  **唯一实现是 `utils/fileio.py`**（`atomic_write_text` / `temp_path_for`）：临时名不含目标名、
+  按目标名长度取随机串，replace 前 fsync，失败清理。不要再在别处手写一份。
+  测"不留临时文件"用 `is_temp_name`，不要写死某种 glob —— 命名一改断言就恒真。
+- **读人工可编辑的 JSON 文件，损坏判定要含 `UnicodeDecodeError`**：记事本另存为 ANSI 就是 GBK，
+  它既不是 `OSError` 也不是 `JSONDecodeError`。
+- **反序列化时间戳统一走 `models.as_aware`**：手写文件常不带时区，与系统写的带时区时间
+  一比较就抛 `TypeError`（`_parse_created_at` / `_parse_snapshot_time` 已接上）。
 - **整个数据目录的路径预算约 65 字符**，别再挥霍。默认布局下最长的两条已达
   195（分支初始化 marker，含 64 字符 sha256）与 205 字符
   （`snapshots/{id}/chroma_collections/{uuid}/data_level0.bin`，**由 Chroma 生成、

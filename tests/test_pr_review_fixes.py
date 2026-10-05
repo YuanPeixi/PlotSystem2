@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -36,6 +36,7 @@ from backend.utils.branch_memory import (
     is_fork_initialized,
     mark_fork_initialized,
 )
+from backend.utils.fileio import is_temp_name, temp_path_for
 
 GOAL = "揭露叛徒"
 
@@ -63,7 +64,10 @@ def test_created_at_degrades_instead_of_raising(raw):
 
 
 def test_created_at_roundtrips_valid_value():
-    assert _parse_created_at("2026-09-09T10:01:19") == datetime(2026, 9, 9, 10, 1, 19)
+    aware = datetime(2026, 9, 9, 10, 1, 19, tzinfo=UTC)
+    assert _parse_created_at(aware.isoformat()) == aware
+    # 手写文件常不带时区：按 UTC 补上，否则与系统写的时间一比较就 TypeError
+    assert _parse_created_at("2026-09-09T10:01:19") == aware
 
 
 async def test_list_scenes_survives_corrupted_created_at():
@@ -136,28 +140,44 @@ def test_merge_tolerates_records_without_scene_id():
 # ---------------------------------------------------------------------------
 
 
+def _temps(directory: Path) -> list[str]:
+    # 按临时名的真实形状找，而不是写死旧的 `.*.tmp` —— 命名改了而断言没跟上，
+    # "没有残留临时文件"就会恒真
+    return [p.name for p in directory.iterdir() if is_temp_name(p.name)]
+
+
 def test_atomic_write_uses_unique_short_temp_name(tmp_path):
     target = tmp_path / "meta.json"
-    pending = target.with_name(f".{target.stem[:16]}.deadbeef.tmp")
-    # 临时名必须与目标区分开：meta.with_suffix('.tmp') 会得到 meta.tmp，
-    # 两次并发补写争用同一个名字。
-    assert pending.name != "meta.tmp"
+    names = {temp_path_for(target).name for _ in range(200)}
+    # 唯一：meta.with_suffix('.tmp') 会让两次并发补写争用同一个名字
+    assert len(names) == 200
+    assert all(is_temp_name(n) for n in names)
     _atomic_write_json(target, '{"ok": true}')
     assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True}
-    assert list(tmp_path.glob(".*.tmp")) == []
+    assert _temps(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["meta.json", "crown.json", "o-crown.json", "6f1c2b1e-24a0-4c55-9b0e-0b7ec7a4e024.json", "a" * 64 + ".initialized"],
+)
+def test_temp_name_is_never_longer_than_target(name):
+    """CLAUDE.md §10.1：截目标名前缀 + 8 位 uuid 的旧写法会把 crown.json 拉长 9 个字符。"""
+    target = Path("d") / name
+    assert len(temp_path_for(target).name) <= len(name)
 
 
 def test_atomic_write_leaves_no_temp_on_failure(tmp_path, monkeypatch):
     target = tmp_path / "meta.json"
     target.write_text("original", encoding="utf-8")
     monkeypatch.setattr(
-        "backend.snapshot.snapshot_manager.os.replace",
+        "backend.utils.fileio.os.replace",
         lambda *a, **k: (_ for _ in ()).throw(OSError("boom")),
     )
     with pytest.raises(OSError):
         _atomic_write_json(target, "new")
     assert target.read_text(encoding="utf-8") == "original"
-    assert list(tmp_path.glob(".*.tmp")) == []
+    assert _temps(tmp_path) == []
 
 
 def test_concurrent_atomic_writes_do_not_corrupt(tmp_path):
@@ -181,7 +201,7 @@ def test_concurrent_atomic_writes_do_not_corrupt(tmp_path):
 
     asyncio.run(run())
     assert json.loads(target.read_text(encoding="utf-8"))["n"] in range(12)
-    assert list(tmp_path.glob(".*.tmp")) == []
+    assert _temps(tmp_path) == []
 
 
 async def test_record_story_history_uses_atomic_write(monkeypatch, request):
@@ -212,7 +232,7 @@ async def test_record_story_history_uses_atomic_write(monkeypatch, request):
     assert json.loads(meta.read_text(encoding="utf-8"))["story_history"][0]["scene_id"] == "s"
     # 不留下临时文件，且不生成 meta.tmp 这种与目标同 stem 的名字
     assert not (meta.parent / "meta.tmp").exists()
-    assert list(meta.parent.glob(".*.tmp")) == []
+    assert _temps(meta.parent) == []
 
 
 async def test_record_story_history_preserves_created_at(request):
@@ -263,7 +283,7 @@ def test_mark_fork_initialized_survives_path_that_broke_legacy_naming(tmp_path):
     assert is_fork_initialized(deep, branch)
     # 幂等：重复调用不抛错，也不留下临时文件
     mark_fork_initialized(deep, branch)
-    assert list((deep / "branch_initialization").glob(".*.tmp")) == []
+    assert _temps(deep / "branch_initialization") == []
 
 
 # ---------------------------------------------------------------------------

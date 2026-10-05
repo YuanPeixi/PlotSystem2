@@ -8,14 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 import tempfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from backend.config import settings
 from backend.exceptions import MemoryError as MemoryCopyError
@@ -29,6 +27,7 @@ from backend.models import (
     Snapshot,
     Storyboard,
     StoryRecord,
+    as_aware,
     new_id,
     now,
 )
@@ -36,6 +35,7 @@ from backend.services.repository import deserialize_story_history, deserialize_s
 from backend.snapshot.branch_tree import build_branch_tree
 from backend.utils import db
 from backend.utils.branch_memory import is_fork_initialized, mark_fork_initialized
+from backend.utils.fileio import atomic_write_text
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_json
 
@@ -53,7 +53,7 @@ def _parse_snapshot_time(raw: object) -> datetime:
     if not raw:
         return now()
     try:
-        return datetime.fromisoformat(str(raw))
+        return as_aware(datetime.fromisoformat(str(raw)))
     except (TypeError, ValueError):
         logger.warning("快照创建时间无法解析，按当前时间处理：%r", raw)
         return now()
@@ -66,18 +66,9 @@ def _atomic_write_json(target: Path, payload: str) -> None:
     两次并发补写（例如 continue 重跑与延迟到达的评估回调）会争用同一个临时名，
     后写者的 replace 可能把半截内容挪成 meta.json。加唯一后缀隔离，并在 replace
     前 fsync，避免断电后留下一个已改名但内容为空的 meta.json。
-    临时名不叠加目标全名，是为了不吃掉 Windows MAX_PATH 余量（见 branch_memory）。
+    临时名的长度约束见 `utils/fileio.py`。
     """
-    tmp = target.with_name(f".{target.stem[:16]}.{uuid4().hex[:8]}.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, target)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    atomic_write_text(target, payload)
 
 
 def _deserialize_character_state(data: dict) -> CharacterState:
