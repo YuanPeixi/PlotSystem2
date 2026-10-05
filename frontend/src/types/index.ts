@@ -175,6 +175,23 @@ export interface WorldObject {
   updated_at?: string
 }
 
+/** 物件的可编辑字段。预算由后端校验，超限 422 不截断。 */
+export type WorldObjectFields = Pick<
+  WorldObject,
+  'name' | 'aliases' | 'public_description' | 'hidden_rules' | 'visibility' | 'known_by'
+>
+
+/** 新建物件：request_id 是幂等键，物件 ID 由它确定性生成。 */
+export interface WorldObjectCreate extends WorldObjectFields {
+  request_id: string
+}
+
+/** 修改物件：revision 是读取时的修订号，不匹配 409；request_id 命中视为重放。 */
+export interface WorldObjectUpdate extends WorldObjectFields {
+  revision: number
+  request_id: string
+}
+
 export interface SceneEvaluation {
   scene_id: string
   synopsis: string

@@ -211,7 +211,8 @@ backend/
 frontend/src/
 ├── pages/       Workspace.vue（项目+图谱） / Director.vue（导演台） / BranchMap.vue（分支图） / Output.vue
 ├── components/  DialogLog.vue（剧本格式台词）、DirectorPanel.vue、StoryboardPanel.vue、
-│                CharacterInspector.vue、CharacterCard.vue、GraphViewer.vue、GraphViewer2.vue
+│                CharacterInspector.vue、CharacterCard.vue、ObjectsPanel.vue（物件编辑器）、
+│                GraphViewer.vue、GraphViewer2.vue
 │   ├── director/  BranchRail.vue（左栏：当前谱系+场景）、StageView.vue（舞台）、SceneComposer.vue（开演前规划）、
 │   │              AutoPilotControl.vue（舞台底栏的自动推演开关）
 │   └── ui/        Icon.vue + icons.ts（内联 SVG 图标）、PageHeader.vue
@@ -1087,7 +1088,7 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 
 | 页面 | 路由 | 功能 |
 |------|------|------|
-| `Workspace.vue` | `/` | 项目管理、**主线目标编辑**、种子上传、构建进度轮询、G6 图谱 |
+| `Workspace.vue` | `/` | 项目管理、**主线目标编辑**、种子上传、构建进度轮询、G6 图谱、角色、**物件编辑** |
 | `Director.vue` | `/director/:projectId` | 三栏：左栏当前谱系与本分支场景；中间舞台（剧本格式实时日志 / 开演前规划）；右侧检查器（评估 / 决策 / 分镜稿 / 快照，角色内部状态也在这里打开） |
 | `BranchMap.vue` | `/branches/:projectId` | 分支图：纵轴第几场、横轴分支，点任意一场回导演台打开 |
 | `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 纸面预览 → 下载；右栏是给后续导出功能的预留区 |
@@ -1144,7 +1145,7 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
   生命周期版本前进，离页前发出的轮询/开启/停止/跟随结果一律作废，别的项目的会话一律不收。
 - **检查器各标签页用 `v-show` 而不是 `v-if`**：分镜稿的编辑草稿与决策表单切走再回来不能丢。
   角色内部状态（`CharacterInspector embedded`）盖在标签页上，返回即恢复。
-- **测试直接执行 `Director.vue` / `DirectorPanel.vue` / `Output.vue` / `StoryboardPanel.vue`
+- **测试直接执行 `Director.vue` / `DirectorPanel.vue` / `Output.vue` / `StoryboardPanel.vue` / `ObjectsPanel.vue`
   的脚本块**，环境里只注入了它们用到的全局名。给这几个文件加逻辑时只加 `ref` / 函数，
   不要在顶层调用新的 store 或 composable；新布局逻辑放进子组件。`Output.vue` 的重试按钮
   还被测试按 `<button v-if="scopeError" ... @click="loadScope">` 的写法匹配。
@@ -1179,6 +1180,14 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
   幂等键 `request_id` 随草稿内容走，内容没变的重试沿用同一个；确认目标重排时旁边显示的
   是开始编辑时响应里的目标原文，带回的是它的版本。`refresh-key` 绑本场评估：评估事件到达时
   分镜稿已合并落盘，正在编辑时不刷新。区分 409 靠 `api/client.ts` 抛出的 `ApiError.status`。
+- **物件编辑器（`ObjectsPanel.vue`，工单24 PR-1c）沿用分镜稿面板的草稿归属、只认本草稿的响应、
+  保存期间只读、保存/删除让在途刷新作废、409 保留草稿不自动覆盖**，另有三条自己的：
+  **幂等键两种用法**——修改随内容走，新建一份草稿从头到尾只用一个键（创建响应丢了、用户改完再提交时，
+  换新键会建出第二个同名物件；沿用旧键则后端 422"幂等键已用于另一份内容"，面板据此刷新列表）；
+  编辑中物件被删（PATCH 404，后端不会重建）草稿转只读，只能"另存为新物件"，换新键走 POST；
+  本地只拦必然 422 的形状问题（空名、单字别名、与角色同名、private 无知情者），token 预算以后端
+  422 原文为准。非 private 时提交空 `known_by`，但草稿里保留名单，切回 private 不必重选。
+  知情者名单里不存在的角色照样显示、照样提交，不在前端悄悄删。`refresh-key` 绑构建完成，只刷列表不动草稿。
 - **决策后要把分支选择一起切**：rollback 会把新场景建到新分支上，`onDecision` 必须按
   `currentScene.branch_id` 同步 `branchId`（切时先抑制 watcher，否则它会把当前场景改写成
   新分支的最后一场）。不同步的话，后续“让导演规划”和场景列表仍按旧分支走。
