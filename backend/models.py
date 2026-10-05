@@ -494,6 +494,9 @@ class Scene:
     description: str = ""
     participating_characters: list[str] = field(default_factory=list)
     location: str = ""
+    #: 本场在场物件的 ID（工单24）。只是候选名单：隐藏规则不随它进任何角色上下文。
+    #: 新建场景的每条路径都要搬运它（同陷阱 3 / 13），漏一条就是"那一场物件凭空消失"
+    objects_present: list[str] = field(default_factory=list)
     initial_conditions: dict = field(default_factory=dict)
     max_turns: int = 20
     status: str = SceneStatus.PENDING.value
@@ -539,6 +542,7 @@ class SceneConfig:
     description: str = ""
     participating_characters: list[str] = field(default_factory=list)
     location: str = ""
+    objects_present: list[str] = field(default_factory=list)
     initial_conditions: dict = field(default_factory=dict)
     max_turns: int = 20
     speaker_mode: str = SpeakerMode.ROUND_ROBIN.value
@@ -630,6 +634,7 @@ class DirectorDecision:
     next_participating_characters: list[str] | None = None
     next_location: str | None = None
     next_initial_conditions: dict | None = None
+    next_objects_present: list[str] | None = None
     rollback_notes: str | None = None
     # 人工提交 / AutoPilot 自动执行（工单12）。旧记录没有这个键，按人工处理
     source: str = DecisionSource.HUMAN.value

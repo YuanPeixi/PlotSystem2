@@ -154,12 +154,13 @@ backend/
 │   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON + 分支世界变量 / 分镜稿 JSON）
 │   ├── world_state.py    世界变量的规范化/预算/渲染（纯函数，无 IO；读写两侧共用）
 │   ├── storyboard.py     导演分镜稿的预算/渲染/patch 合并/用户编辑/分叉（纯函数，工单18）
+│   ├── objects.py        物件的预算/可见性规整/用户编辑（纯函数，工单24）
 │   ├── autopilot.py      AutoPilot 会话的停止判定与记账（纯函数，工单12；调度在 orchestrator）
 │   ├── inspection.py     ★ 角色内部状态的唯一只读查询层（面板/导演/总结共用）
 │   └── events.py         SSE 内存事件总线（asyncio.Queue）
 │
 ├── api/                路由层：只做参数校验 → 调 services → to_dict
-│   projects / characters / scenes / director / branches / output / graph / schemas
+│   projects / characters / scenes / director / branches / objects / output / graph / schemas
 │
 ├── agents/
 │   ├── character_agent.py  角色演绎（prompt 构建 + 记忆检索 + chat_safe）
@@ -244,7 +245,8 @@ frontend/src/
 | `Storyboard` / `StoryBeat` / `ForkOrigin` | **分支级**导演分镜稿：路线图（带稳定 `beat_id` 的节拍）+ 长期备忘 + 分叉说明 + changelog + 修订号。**只进导演 prompt** | **文件** `storyboard/{branch_id}.json`，快照带时点副本 |
 | `StoryboardPatch` | 导演随评估产出的分镜稿修改（相对导演读到的那一版） | 内嵌于 `SceneEvaluation` |
 | `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
-| `Scene` / `DialogueTurn` | 场景与对话轮次（轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24） | SQLite `scenes`（轮次内嵌） |
+| `Scene` / `DialogueTurn` | 场景与对话轮次（`Scene.objects_present` 为本场在场物件；轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24） | SQLite `scenes`（轮次内嵌） |
+| `WorldObject` | **项目级**物件：公开描述 + 隐藏规则（**只进导演与环境层**）+ 可见性 `global` / `private`（配 `known_by` 名单）/ `hidden` | **文件** `objects/{object_id}.json` |
 | `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
 | `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 无锚点标记 `goal_missing` + 推荐决策 | SQLite `evaluations` |
@@ -360,6 +362,10 @@ frontend/src/
     因此**任何新增的建场景路径都必须显式搬运**（工单04 D1：`create_scene_from_config` 漏搬，
     导致导演自己写的开场白在 `next_scene` 自动路径上永远不生效，而手动建场景路径正常——
     这类"两条路径只有一条对"的 bug 不会被前端发现）。
+    **`Scene.objects_present`（工单24）是同一类字段**：手建、`create_scene_from_config`、
+    next_scene 的人工覆盖（`next_objects_present`）、`fork_from_snapshot`（回滚也走它）
+    四条路径都要搬，`tests/test_objects_present.py` 逐条钉住。写入侧校验存在性与上限（422），
+    读取侧只去重截断、不核对物件是否还在 —— 物件可能在建场景之后被删，悬空 ID 由消费方跳过。
 
 14. **`SceneEvaluation` 的四项分数为 `-1` 表示评估未生成**（LLM 返回内容无法解析为 JSON）。
     不要把它当成"很低的分"参与阈值比较——旧实现在解析失败时给全部维度填 5.0，
@@ -668,6 +674,7 @@ snapshots/{snapshot_id}/
     character_states/{cid}.json
     chroma_collections/
 storyboard/{branch_id}.json       ★ 分支级导演分镜稿，同样不入库（工单18）
+objects/{object_id}.json          ★ 项目级物件，同样不入库，支持人工编辑（工单24）
 build_status.json                 构建进度（供重启后对账）
 ```
 
@@ -678,7 +685,8 @@ build_status.json                 构建进度（供重启后对账）
 `_active_scenes`（并发守卫）、`_running_engines`（暂停/中断）、`_build_status`（有磁盘兜底）、
 `_branch_locks`（分支级文件——世界变量与分镜稿——的读-改-写临界区，见 4.2 陷阱 19 / 21）、
 `_pending_world_patch`（后置快照的世界状态与分镜稿补写窗口守卫，同见 4.2 陷阱 19）、
-`_autopilot_sessions`（自动推演会话，见 4.2 陷阱 22）、`_autopilot_locks`（开启会话的临界区）
+`_autopilot_sessions`（自动推演会话，见 4.2 陷阱 22）、`_autopilot_locks`（开启会话的临界区）、
+`_object_locks`（项目物件的读-改-写临界区）
 与 `_background_tasks`（持有自动推演 `create_task` 的引用，防止被回收）、
 `events._subscribers`（SSE 订阅者）、每个 `MemoryManager` 的短期与事件记忆。
 
@@ -687,7 +695,7 @@ build_status.json                 构建进度（供重启后对账）
 1. 改 `backend/models.py` 的 dataclass；
 2. **同步改 `services/repository.py` 里对应的 `_deserialize_*`**（`_deserialize_card` /
    `_deserialize_scene` / `deserialize_story_history` / `deserialize_storyboard` /
-   快照的 `_deserialize_character_state`）——漏这步字段会静默丢失；
+   `_deserialize_object` / 快照的 `_deserialize_character_state`）——漏这步字段会静默丢失；
 3. 评估是否需要新增 SQL 列（只有需要索引/过滤/CAS 时才加，普通字段靠 `data_json` 自动携带）。
 
 前端有对应类型时，同步改 `frontend/src/types/index.ts`。
@@ -1011,7 +1019,7 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 | GET | `/projects/{project_id}/characters/{char_id}/memory` | 运行时记忆（短期缓冲 + 事件摘要），读自快照 |
 | GET | `/projects/{project_id}/characters/{char_id}/inspect` | 角色内部视图（人设 + 时点状态 + 三层记忆） |
 | POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**）。请求体只有 `branch_id` 与可选的 `scene_intent`；主线目标固定读 `project.narrative_goal` |
-| POST | `/projects/{project_id}/scenes` | 创建场景 |
+| POST | `/projects/{project_id}/scenes` | 创建场景。`objects_present` 选本场在场物件（每场上限 10，含不存在的物件 422） |
 | GET | `/projects/{project_id}/scenes` | 列出场景（`?branch_id=` 可选），前端刷新后恢复导航用 |
 | GET | `/projects/{project_id}/scenes/{scene_id}` | 场景详情 |
 | GET | `/scenes/{scene_id}` | 场景详情（无需 project_id） |
@@ -1028,6 +1036,11 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 | GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404 |
 | GET | `/projects/{project_id}/branches/{branch_id}/storyboard` | 分支导演分镜稿（工单18）。无记录返回空分镜稿而非 404；附 `goal_stale`（路线图基于旧版主线目标）与这一刻的 `narrative_goal` / `current_goal_revision` |
 | PUT | `/projects/{project_id}/branches/{branch_id}/storyboard` | 用户整份替换 `outline` / `memo`，带读取时的 `revision`：不匹配 409；超预算、引用不存在的 `beat_id` 422（不截断）；`request_id` 为幂等键，命中已生效的编辑视为重放（200、不写），同键不同内容 422；与当前内容完全相同视为无操作。`confirm_goal` 显式确认已按目标重排，须同时带回读取时的 `goal_revision_seen`（缺失 422），写回的就是它。分支不存在 404。`goal_revision` / `fork_origin` / `changelog` / `revision` 由后端维护 |
+| GET | `/projects/{project_id}/objects` | 物件列表（工单24，含隐藏规则：面向用户/导演，同角色卡返回 `unknown_facts`） |
+| GET | `/projects/{project_id}/objects/{object_id}` | 物件详情 |
+| POST | `/projects/{project_id}/objects` | 新建物件。`request_id` 必填，物件 ID 由它确定性生成，重放返回同一物件；超预算、`private` 无知情者或知情者不存在 422（不截断）；每项目上限 40 |
+| PATCH | `/projects/{project_id}/objects/{object_id}` | 修改物件（字段为 null 不改），带读取时的 `revision`：不匹配 409；`request_id` 为幂等键；与当前内容相同视为无操作 |
+| DELETE | `/projects/{project_id}/objects/{object_id}` | 删除物件，已不存在也成功（`existed` 区分） |
 | GET | `/projects/{project_id}/snapshots` | 快照列表：id / scene_id / branch_id / label / created_at / `character_count`（不带角色状态明细与导演历史，SQL 侧投影） |
 | POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}`。若目标快照所属场景的评估/世界状态补写仍在进行中，返回 409（`ConflictError`），稍后重试即可（见 6.3.1） |
 | DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**，且按项目约束） |

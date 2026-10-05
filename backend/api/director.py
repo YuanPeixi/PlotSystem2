@@ -44,6 +44,7 @@ async def submit_decision(scene_id: str, req: DecisionRequest) -> ApiResponse:
         next_participating_characters=req.next_participating_characters,
         next_location=req.next_location,
         next_initial_conditions=req.next_initial_conditions,
+        next_objects_present=req.next_objects_present,
     )
     # 幂等保护（工单13）：同一场景的决策已生效时，orchestrator 会直接重放持久化
     # 结果（200，同一个 next_scene_id）；并发提交/不同类型的二次决策会抛出

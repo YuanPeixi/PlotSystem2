@@ -81,6 +81,8 @@ class CreateSceneRequest(BaseModel):
     description: str = ""
     participating_characters: list[str] = Field(default_factory=list)
     location: str = ""
+    # 本场在场物件的 ID（工单24）；条数上限与存在性在业务层校验（422）
+    objects_present: list[str] = Field(default_factory=list, max_length=50)
     initial_conditions: dict = Field(default_factory=dict)
     max_turns: int = 12
     opening_narration: str = ""
@@ -107,6 +109,7 @@ class DecisionRequest(BaseModel):
     next_participating_characters: list[str] | None = None
     next_location: str | None = None
     next_initial_conditions: dict | None = None
+    next_objects_present: list[str] | None = Field(None, max_length=50)
 
 
 class StartAutoPilotRequest(BaseModel):

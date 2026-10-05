@@ -99,6 +99,8 @@ export interface Scene {
   description: string
   participating_characters: string[]
   location: string
+  /** 本场在场物件的 ID（工单24） */
+  objects_present: string[]
   initial_conditions: Record<string, unknown>
   max_turns: number
   status: string
@@ -136,10 +138,29 @@ export interface SceneConfig {
   description: string
   participating_characters: string[]
   location: string
+  objects_present: string[]
   initial_conditions: Record<string, unknown>
   max_turns: number
   speaker_mode: string
   opening_narration: string
+}
+
+/**
+ * 项目级物件（工单24）。hidden_rules 只给导演与用户看，绝不进角色上下文。
+ * private 时 known_by 是知道它存在与外观的角色 id。
+ */
+export interface WorldObject {
+  object_id: string
+  project_id: string
+  name: string
+  aliases: string[]
+  public_description: string
+  hidden_rules: string[]
+  visibility: 'global' | 'private' | 'hidden'
+  known_by: string[]
+  revision: number
+  created_at?: string
+  updated_at?: string
 }
 
 export interface SceneEvaluation {
