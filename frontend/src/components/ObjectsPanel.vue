@@ -69,6 +69,8 @@ const saveError = ref('')
 const deleting = ref('')
 let loadSeq = 0
 let saveSeq = 0
+// 冲突后的重新加载在途：防连点，各自重开一次草稿
+let reloading = false
 
 const characterNames = computed(() => new Set(props.characters.map((c) => c.name)))
 const nameOf = computed(() => new Map(props.characters.map((c) => [c.character_id, c.name])))
@@ -106,6 +108,11 @@ const blockers = computed(() => {
     else if (alias.length > ALIAS_CHARS) out.push(`别名「${alias.slice(0, ALIAS_CHARS)}…」超过 ${ALIAS_CHARS} 字`)
     else if (characterNames.value.has(alias)) out.push(`别名「${alias}」与角色同名`)
   }
+  // 放不下的别名留在输入框里：此时保存会把它们丢掉，先拦下
+  const pending = oneLine(d.aliasInput)
+  if (pending && d.aliases.length >= MAX_ALIASES) {
+    out.push(`别名最多 ${MAX_ALIASES} 个，输入框里的「${pending}」未添加：删掉一些别名后回车，或清空输入框`)
+  }
   if (d.visibility === 'private' && !d.known_by.length) out.push('私有物件至少要选一位知情者')
   return out
 })
@@ -122,21 +129,24 @@ function audienceText(o: WorldObject): string {
   return o.known_by.map((id) => nameOf.value.get(id) || '（角色已不存在）').join('、')
 }
 
-async function load() {
+/** 返回本次读取是否成功且仍是最新一次；被作废或失败时列表未更新，调用方不能据此重开草稿。 */
+async function load(): Promise<boolean> {
   const pid = props.projectId
   const seq = ++loadSeq
   if (!pid) {
     objects.value = []
-    return
+    return false
   }
   loading.value = true
   loadError.value = ''
   try {
     const list = await api.listObjects(pid)
-    if (seq !== loadSeq || pid !== props.projectId) return
+    if (seq !== loadSeq || pid !== props.projectId) return false
     objects.value = list
+    return true
   } catch (err) {
     if (seq === loadSeq) loadError.value = errorText(err, '物件加载失败')
+    return false
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -212,13 +222,16 @@ function editable(): Draft | null {
 function addAlias() {
   const d = editable()
   if (!d) return
-  // 一次粘贴多个：按中英文逗号、顿号拆开
+  // 一次粘贴多个：按中英文逗号、顿号拆开。超过上限的留在输入框里，由 blockers 提示 ——
+  // 清空输入框等于替用户截断，与"超限不截断"同一条原则
+  const overflow: string[] = []
   for (const part of d.aliasInput.split(/[,，、]/)) {
     const alias = oneLine(part)
-    if (!alias || d.aliases.includes(alias) || d.aliases.length >= MAX_ALIASES) continue
-    d.aliases.push(alias)
+    if (!alias || d.aliases.includes(alias) || overflow.includes(alias)) continue
+    if (d.aliases.length >= MAX_ALIASES) overflow.push(alias)
+    else d.aliases.push(alias)
   }
-  d.aliasInput = ''
+  d.aliasInput = overflow.join('、')
 }
 
 function removeAlias(index: number) {
@@ -352,12 +365,23 @@ function saveAsNew() {
 
 async function reloadAfterConflict() {
   const d = draft.value
-  if (!d || saving.value) return
+  if (!d || saving.value || reloading) return
+  reloading = true
+  let ok: boolean
+  try {
+    ok = await load()
+  } finally {
+    reloading = false
+  }
+  if (draft.value !== d) return
+  if (!ok) {
+    // 列表还是旧的：用它重开草稿只会带着旧修订号再撞一次 409。保留草稿与冲突状态，可直接重试
+    conflict.value = '物件已被他人修改，但重新加载失败。草稿已保留，请稍后再点重新加载。'
+    return
+  }
   draft.value = null
   conflict.value = ''
   saveError.value = ''
-  await load()
-  if (draft.value || props.projectId !== d.projectId) return
   const latest = objects.value.find((o) => o.object_id === d.objectId)
   if (latest) openDraft(latest)
   else actionError.value = '这个物件已被删除。'
@@ -427,11 +451,11 @@ async function remove(o: WorldObject) {
                   {{ a }}
                   <button type="button" class="icon xs" :title="`移除别名「${a}」`" @click="removeAlias(i)"><Icon name="close" :size="12" /></button>
                 </span>
+                <!-- 满了也不禁用：放不下的别名留在这里，用户得能清掉它 -->
                 <input
                   v-model="draft.aliasInput"
                   class="alias-input"
-                  :disabled="draft.aliases.length >= MAX_ALIASES"
-                  placeholder="输入后回车，多个用顿号分隔"
+                  :placeholder="draft.aliases.length >= MAX_ALIASES ? `已满 ${MAX_ALIASES} 个` : '输入后回车，多个用顿号分隔'"
                   @keydown.enter.prevent="addAlias"
                   @blur="addAlias"
                 />
