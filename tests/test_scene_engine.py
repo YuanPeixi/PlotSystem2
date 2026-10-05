@@ -54,6 +54,52 @@ def test_parse_turn_separates_formats():
     assert turn.inner_thought == "他在隐藏什么"
 
 
+@pytest.mark.parametrize(
+    ("raw", "action", "dialogue", "thought"),
+    [
+        # 独白嵌在动作里：旧实现先取动作，整段 `把王冠戴上[我怕]` 进了 action，
+        # 随 transcript 进全场角色的 prompt 与他人记忆
+        ("*把王冠戴上[我怕]* 好。", "把王冠戴上", "好。", "我怕"),
+        # 全角方括号：格式规范写的是半角，模型常写成全角
+        ("好。［她在撒谎］*点头*", "点头", "好。", "她在撒谎"),
+        # 没闭合：从 `[` 到末尾都收进独白，宁可少公开一点
+        ("*走近* 你来了[她在撒谎", "走近", "你来了", "她在撒谎"),
+        # 剩下一个孤立的 `*` 是未闭合动作的既有行为（与独白无关，不在本修复范围），独白没有漏出去
+        ("*走近[她在撒谎* 你来了", None, "*走近", "她在撒谎* 你来了"),
+        # 空括号不能触发未闭合规则吞掉后文
+        ("*空[]括号* 好", "空括号", "好", None),
+    ],
+)
+def test_parse_turn_never_leaves_inner_thought_in_public_fields(raw, action, dialogue, thought):
+    """契约1：独白只能落在 inner_thought。action / dialogue 是公开的，会进 transcript 与他人记忆。"""
+    agent = _make_agent("c1", "甲")
+    engine = SceneEngine(
+        Scene(scene_id="s-leak", project_id="proj-se"), SceneConfig(name="x"), [agent], SnapshotManager("proj-se")
+    )
+    turn = engine._parse_turn(raw, agent, 1)
+    assert (turn.action, turn.dialogue, turn.inner_thought) == (action, dialogue, thought)
+    public = f"{turn.action or ''}{turn.dialogue or ''}"
+    assert not any(ch in public for ch in "[]［］")
+
+
+@pytest.mark.asyncio
+async def test_inner_thought_inside_action_does_not_reach_other_agents():
+    """端到端：嵌在动作里的独白不进 transcript，也不进旁观者的记忆。"""
+    agent_a = _make_agent("c1", "甲")
+    agent_b = _make_agent("c2", "乙")
+    scene = Scene(scene_id="s-leak-e2e", project_id="proj-se", branch_id="b-leak")
+    config = SceneConfig(name="对峙", participating_characters=["c1", "c2"], max_turns=1)
+    engine = SceneEngine(scene, config, [agent_a, agent_b], SnapshotManager("proj-se"))
+    with (
+        patch.object(CharacterAgent, "respond", new=AsyncMock(return_value="*把王冠戴上[我其实非亲生]* 好。")),
+        patch("backend.memory.memory_manager.MemoryManager.consolidate", new=AsyncMock()),
+    ):
+        result = await engine.run()
+    assert "非亲生" not in engine._turn_line(result.dialogue_log[0])
+    assert all("非亲生" not in text for text in agent_b.memory.short_term.dump())
+    assert any("非亲生" in text for text in agent_a.memory.short_term.dump()), "本人记得自己的独白"
+
+
 @pytest.mark.asyncio
 async def test_scene_run_creates_snapshots_and_log():
     agent_a = _make_agent("c1", "甲")
