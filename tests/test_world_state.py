@@ -39,6 +39,7 @@ from backend.models import (
     SceneConfig,
     SceneEvaluation,
     SceneResult,
+    Storyboard,
     WorldState,
 )
 from backend.scene_engine import SceneEngine
@@ -531,6 +532,22 @@ async def test_corrupted_world_state_file_degrades_to_empty():
     _world_state_file(project_id, "b").write_text("{不是 JSON", encoding="utf-8")
 
     assert (await repository.get_world_state(project_id, "b")).variables == {}
+
+
+@pytest.mark.asyncio
+async def test_non_utf8_world_state_and_storyboard_degrade_to_empty():
+    """手工另存为 GBK：UnicodeDecodeError 不在 JSON / OS 错误之列，曾让读取直接五百。"""
+    project_id = "proj-world-gbk"
+    payload = '{"variables": {"季节": "隆冬"}}'.encode("gbk")
+    await repository.save_world_state(
+        WorldState(project_id=project_id, branch_id="b", variables={"季节": "隆冬"})
+    )
+    _world_state_file(project_id, "b").write_bytes(payload)
+    assert (await repository.get_world_state(project_id, "b")).variables == {}
+
+    await repository.save_storyboard(Storyboard(project_id=project_id, branch_id="b", memo="备忘"))
+    repository._storyboard_path(project_id, "b").write_bytes('{"memo": "备忘"}'.encode("gbk"))
+    assert (await repository.get_storyboard(project_id, "b")).memo == ""
 
 
 @pytest.mark.asyncio

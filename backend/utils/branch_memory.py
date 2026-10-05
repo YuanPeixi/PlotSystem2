@@ -11,7 +11,8 @@ from __future__ import annotations
 import os
 from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
+
+from backend.utils.fileio import temp_path_for
 
 
 def _marker_path(db_dir: Path, branch_id: str) -> Path:
@@ -26,8 +27,7 @@ def _pending_path(marker: Path) -> Path:
     marker 长 38 字符 —— 项目名稍长就越过 Windows MAX_PATH(260)，write_text 抛出
     伪装成 FileNotFoundError 的错误，最终被升级成 MemoryError 让整个 fork 失败。
     """
-    digest = marker.name.split(".", 1)[0]
-    return marker.with_name(f".{digest[:16]}.{uuid4().hex[:8]}.tmp")
+    return temp_path_for(marker)
 
 
 def is_fork_initialized(db_dir: Path, branch_id: str) -> bool:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -51,9 +52,11 @@ def _crown(**kw) -> WorldObject:
 
 
 def test_clamp_keeps_a_valid_object_untouched():
+    # 与同一份副本比：再调一次 _crown() 会生成新的时间戳，跨过微秒刻度就不相等
     obj = _crown()
+    before = deepcopy(obj)
     assert clamp_object(obj, CHAR_NAMES) == []
-    assert obj == _crown()
+    assert obj == before
 
 
 def test_clamp_drops_bad_aliases():
@@ -196,6 +199,27 @@ async def test_bad_files_do_not_break_the_list():
     (d / "noname.json").write_text(json.dumps({"name": "  "}), encoding="utf-8")
     await repository.save_object(_crown(project_id=pid))
     assert [o.object_id for o in await repository.list_objects(pid)] == ["o-crown"]
+
+
+@pytest.mark.asyncio
+async def test_non_utf8_file_is_skipped_like_any_corrupted_file():
+    """记事本另存为 ANSI 就是 GBK：UnicodeDecodeError 不在 JSON / OS 错误之列，曾让整个列表五百。"""
+    pid = "p-obj-gbk"
+    (_objects_dir(pid) / "gbk.json").write_bytes('{"name": "王冠"}'.encode("gbk"))
+    await repository.save_object(_crown(project_id=pid))
+    assert [o.object_id for o in await repository.list_objects(pid)] == ["o-crown"]
+
+
+@pytest.mark.asyncio
+async def test_hand_written_naive_timestamp_sorts_with_system_ones():
+    """手写的 `2026-01-01T00:00:00` 不带时区，与系统写的带时区时间一比较就 TypeError。"""
+    pid = "p-obj-naive"
+    await repository.save_object(_crown(project_id=pid))
+    (_objects_dir(pid) / "hand.json").write_text(
+        json.dumps({"name": "手写物件", "created_at": "2026-01-01T00:00:00"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert [o.object_id for o in await repository.list_objects(pid)] == ["hand", "o-crown"]
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,15 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
+def as_aware(dt: datetime) -> datetime:
+    """不带时区的时间按 UTC 补上时区。
+
+    系统写下的时间恒带时区（`now()`），手工编辑的文件常写 `2026-01-01T00:00:00`。
+    两者混在一起比较会抛 TypeError —— 一个手写文件就能让整个列表五百。
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
 def new_id() -> str:
     """生成新的 UUID 字符串。"""
     return str(uuid.uuid4())
