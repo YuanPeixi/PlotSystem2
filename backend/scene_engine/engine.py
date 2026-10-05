@@ -44,9 +44,14 @@ PersistCallback = Callable[[], Awaitable[None]] | None
 # "从告知到快照可见之间没有任何调度间隙"。
 AfterSnapshotCallback = Callable[[str], None] | None
 
-# 解析格式：*动作*、[内心独白]、其余为对白
+# 解析格式：*动作*、[内心独白]、其余为对白。
+# 独白认半角与全角方括号：格式规范写的是半角，模型时常写成全角，认漏了独白就留在对白里公开。
+# 允许空括号 `[]`：不然它会被下面的未闭合规则误判，把后面整段吞成独白
 _ACTION_RE = re.compile(r"\*(.+?)\*", re.DOTALL)
-_THOUGHT_RE = re.compile(r"\[(.+?)\]", re.DOTALL)
+_THOUGHT_RE = re.compile(r"[\[［](.*?)[\]］]", re.DOTALL)
+# 没闭合的 `[`：从它到回复末尾都按独白处理。宁可把一截对白收进独白（只是少公开一点），
+# 不能把一句独白留在对白里（契约1）
+_UNCLOSED_THOUGHT_RE = re.compile(r"[\[［](.*)$", re.DOTALL)
 
 _KNOWN_SPEAKER_MODES = {m.value for m in SpeakerMode}
 
@@ -380,11 +385,17 @@ class SceneEngine:
 
     # ---- 解析 ----
     def _parse_turn(self, raw: str, agent: CharacterAgent, turn_number: int) -> DialogueTurn:
-        actions = _ACTION_RE.findall(raw)
+        # **先剥独白、再取动作**。反过来的话 `*戴上王冠[我怕]*` 整段被动作正则抓走，
+        # 独白就留在 `action` 里，随 transcript 进全场角色的 prompt 与他人记忆（契约1）。
         thoughts = _THOUGHT_RE.findall(raw)
+        rest = _THOUGHT_RE.sub("", raw)
+        unclosed = _UNCLOSED_THOUGHT_RE.search(rest)
+        if unclosed:
+            thoughts.append(unclosed.group(1))
+            rest = rest[: unclosed.start()]
+        actions = _ACTION_RE.findall(rest)
         # 去掉动作与独白后剩余即为对白
-        dialogue = _THOUGHT_RE.sub("", _ACTION_RE.sub("", raw)).strip()
-        dialogue = re.sub(r"\s+", " ", dialogue).strip()
+        dialogue = re.sub(r"\s+", " ", _ACTION_RE.sub("", rest)).strip()
 
         return DialogueTurn(
             turn_id=new_id(),
@@ -394,7 +405,7 @@ class SceneEngine:
             character_name=agent.name,
             dialogue=dialogue or None,
             action="；".join(a.strip() for a in actions) or None,
-            inner_thought="；".join(t.strip() for t in thoughts) or None,
+            inner_thought="；".join(t.strip() for t in thoughts if t.strip()) or None,
         )
 
     @staticmethod

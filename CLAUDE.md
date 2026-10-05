@@ -889,6 +889,10 @@ graph TD
   （`character:{id}`），隐藏的与判定失败的不进任何角色卡。种子里分属不同角色的秘密若以
   `global` 发下去，等于构建那一刻就向全员泄密，且角色卡是拷贝、不会自愈；
 - 一个角色的 `inner_thought` 不得进入其他角色的 prompt；
+  **解析时先剥独白、再取动作**（`SceneEngine._parse_turn`）：`*戴上王冠[我怕]*` 若先按动作正则
+  整段抓走，独白就留在公开的 `action` 里，随 transcript 进全场 prompt 与他人记忆。
+  独白认半角与全角方括号，没闭合的 `[` 到回复末尾都按独白处理（宁可少公开一点）。
+  2026-10-05 之前落盘的轮次可能已带着这种 `action`，不追溯清理；
 - **导演分镜稿（`Storyboard`）只进导演的规划/评估 prompt**（工单18）：它含导演对全部角色
   `unknown_facts` 的安排，进了任何角色或 selector 的上下文，角色就"知道剧本"了。
   `SceneEngine` 只拿它写快照副本，绝不并进 `scene_context`；
