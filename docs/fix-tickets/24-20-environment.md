@@ -63,7 +63,7 @@
 | 模型 | 要点 | 存放 | 可见性 |
 |---|---|---|---|
 | `WorldObject` | `object_id`、`name`、`aliases`、`public_description`、`hidden_rules`、`visibility`（`global` / `private` / `hidden`）+ `known_by`（角色 id 列表，仅 `private` 有意义） | 文件 `objects/{object_id}.json`，项目级，同角色卡 | 公开描述按可见性进角色 system；**隐藏规则只进导演与环境层** |
-| `ActionIntent` | `index`、`text`、`object_id`、`verb`、`detail`、`status` | 挂在 `DialogueTurn.actions` | 导演 / 用户 |
+| `ActionIntent` | `index`、`text`、`object_id`、`verb`、`detail`、`status`、`skip_reason`（A17） | 挂在 `DialogueTurn.actions` | 导演 / 用户；**不进任何角色记忆、transcript 或 prompt**（A20） |
 | `DialogueTurn` 扩展 | `kind`（character / environment）、`narration`、`private_detail`、`perceived_by`、`source_turn_id`、`source_action_index`、`revision` | 随 `dialogue_log` 存 `scenes.data_json` | `private_detail` 只给导演 / 用户 / `perceived_by` 的记忆 |
 | `Scene` / `SceneConfig` 扩展 | `objects_present`（PR-1）、`environment_script`（导演预制揭示）、`environment_state`（场景内物件公开状态）、`environment_delta_applied`（§5.6） | `scenes.data_json` | `environment_script` **绝不进 `initial_conditions` / `scene_context`**（陷阱 20） |
 
@@ -80,8 +80,23 @@
 | `recorded` | 已抽取、不裁决（`ENVIRONMENT_MODE=record`） | 不补裁决（开关打开后不追溯生成环境回合） |
 | `pending` | 已抽取、待裁决 | **补裁决** |
 | `resolved` | 已产生环境回合（含"未触发"的回合） | — |
-| `skipped` | 预过滤未命中 / 抽取判定不构成尝试 / 抽取失败 / 环境回合超上限 | — |
+| `skipped` | 见 `skip_reason` | — |
 | `failed` | 裁决调用失败 | 不重试（否则崩溃—续跑会无限循环） |
+
+`skip_reason`（A17）：record 档存在的意义就是区分"没提到物件 / 提到了但不是尝试 / 抽取失败"，
+只有一个 `skipped` 的话统计脚本算不出命中率。
+
+| skip_reason | 含义 |
+|---|---|
+| `no_object` | 预过滤未命中（绝大多数 *神态*） |
+| `over_limit` | 本轮命中段超过上限，按段落顺序取前 N 段，其余标此（A18） |
+| `not_attempt` | 抽取判定不构成尝试 |
+| `invalid_object` | 抽取返回的物件不在候选里 / 本段未被抽取结果覆盖 |
+| `extract_failed` | 抽取调用失败或输出无法解析 |
+| `quota` | 环境回合额度用尽（PR-2，§5.5） |
+
+**读取侧收紧**：未知 `status` 一律按 `skipped`。PR-2 会按 `pending` 补裁决，手改出的脏值
+必须落到"什么都不做"那一档，不能变成"待裁决"。
 
 **环境回合也是 `DialogueTurn`**：逐轮落盘、水位线（陷阱 9）、续跑重放、在场记忆都自动适用，
 不另开存储。走 5.4 checklist：`_deserialize_scene` 必须同步新字段；前端 `types/index.ts` 同步。
@@ -99,7 +114,7 @@
  ├─ [adjudicate] 额度预占（§5.5）：本场环境回合 + 已 pending 的动作 ≥ 上限 → 命中段直接
  │    skipped，**本轮不发起意图抽取**
  ├─ 意图抽取（selector 小模型，**一轮最多一次调用**，批量处理本轮命中段）
- │    输入：命中段 + 本轮对白 + 候选物件的 name 与**公开描述**（不给隐藏规则，免得预判结果）
+ │    输入：执行者名 + 命中段 + 候选物件的 name 与**公开描述**（A19：不给对白、不给隐藏规则）
  │    输出：object_id ∈ 候选 / verb / is_attempt / detail
  │    不构成尝试、object_id 越界、调用失败 → skipped
  │    构成尝试 → record 档置 recorded；adjudicate 档按剩余额度置 pending，超出的 skipped
@@ -125,6 +140,16 @@
 完全可能写着"王冠投出王后的记忆，因为伊莎贝尔非亲生"。同一次调用里"别用脚本里的秘密"
 只能靠提示词约束，恰是 R2 要排除的做法。拆开后生成调用**结构上**拿不到这些材料。
 代价是 ② 号来源多一次调用；① ③ 不受影响。
+
+**意图抽取的输入只有命中段**（A19）。对白本身是公开的，但角色会把 `[独白]` 格式写坏
+（漏掉右括号、写成全角），正则拆不出来，独白就混在 `dialogue` 里；断言"`inner_thought` 原文
+不出现"挡不住这种格式漂移。抽取判断的是"这段动作是不是在对 o1 做尝试"，对白贡献很小，故不传。
+同理，`*动作*` 段内嵌的 `[...]`（`*走向王冠[她想戴上]*`）会被动作正则一并捕获，生成
+`ActionIntent.text` 时先剥掉方括号内容 —— `text` 与 `detail` 在 PR-2 会交给裁决器，
+裁决器的输出是公开叙述，独白混进来就经由这条链公开了（契约 1）。
+
+**截断是确定性的**（A18）：命中段超过 `MAX_ACTION_EXTRACTS_PER_TURN`（6）时按段落顺序取前 N 段，
+其余标 `over_limit`。抽取结果按 `index` 回填，不依赖 dict 或模型返回的顺序。
 
 **抽取放在第一次落盘之前**（2026-10-03 细化）：抽取期间崩溃，这一轮还没落盘，等于没发生，
 续跑重新生成；落盘的轮次意图恒完整，续跑只需补"裁决"一种半截状态，不需要"待抽取"状态与补抽逻辑。
@@ -372,13 +397,27 @@ system prompt，别名决定预过滤的命中率（即成本）。
 | A15 | 环境回合上限放在裁决之后 | 调用前预占，pending 计入额度（§5.5） |
 | A16 | 评估期间重启，环境 delta 丢失 | `environment_delta_applied` + 启动对账补写；不在分叉时补（§5.6） |
 
+**2026-10-05 补充**（PR-1b 方案评审，owner 拍板）：
+
+| # | 问题 | 结论 |
+|---|---|---|
+| A17 | record 档只有 `skipped` 算不出命中率 | 新增 `skip_reason`（§4） |
+| A18 | 命中段过多时的截断 | 按段落顺序取前 6，其余 `over_limit`；结果按 `index` 回填（§5.1） |
+| A19 | 抽取 prompt 的独白泄露入口 | 不传对白，只传命中段；段内 `[...]` 先剥掉（§5.1） |
+| A20 | actions 不进记忆是现状不是保证 | 用例断言：record 档下 `add_experience` 收到的文本与 off 档逐字相同 |
+| A21 | `ENVIRONMENT_MODE` 冻结点 | 每次进 `run_scene` 读一次、整段不变；continue 重进会重读，同一场前后两段可处于不同档位，`actions` 为空不代表没有物件动作 |
+| A22 | 悬空物件 ID 静默跳过 | 跳过时 warning，否则删了物件后 record 档命中率静默归零 |
+| — | Workspace 物件编辑器 | 拆成 PR-1c（纯前端，与引擎无交集） |
+
 ## 10. PR 拆分
 
 | PR | 内容 | 合入后的行为变化 |
 |---|---|---|
 | **PR-0** | ① `render_turn` 收拢五处 transcript 式渲染；② `perceive` 收敛感知判定，去掉 `from_self` / `self_character_id`；③ `DialogueTurn.kind`（恒为 character）+ 反序列化 + 前端类型；④ 计数辅助函数，轮询选人 / 轮次上限 / 停滞检测 / continue 改数角色轮次 | 无（golden 字符串用例钉住渲染输出逐字不变） |
 | **25** | 场景级 token / 调用计数（独立成单，可与 PR-1 并行） | 只增观测 |
-| **PR-1 = 24** | `WorldObject` 模型 / 存储 / 三道预算闸门（可见性含 `known_by`）；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）+ Workspace 编辑器；`Scene.objects_present` 持久化 + SceneComposer 手动勾选 + 全部建场景路径搬运；`DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/extract_objects` | 默认 off 无变化；record 档可评估命中率与成本 |
+| **PR-1a** ✅ | `WorldObject` 模型 / 存储 / 三道预算闸门（可见性含 `known_by`）；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）；`Scene.objects_present` 持久化 + SceneComposer 手动勾选 + 全部建场景路径搬运；`scripts/extract_objects` | 构建多出物件抽取调用 |
+| **PR-1b** | `DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/action_stats` | 默认 off 无变化；record 档可评估命中率与成本 |
+| **PR-1c** | Workspace 物件编辑器 | — |
 | **PR-2 = 20a** | EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、计数口径的 `kind` 过滤）；`turn_update` + `revision`；【当前环境】块；格式规范"只写尝试"；`plan_scene` 产出 `objects_present` / `environment_script`；环境 delta 并入世界变量 + `environment_delta_applied` 启动对账；前端显示环境回合 | `adjudicate` 档可用 |
 | **PR-3 = 20b** | 揭示来源 ②（独立生成调用 + 现场当事人视图）；《玻璃王冠》整场验收；成本报告 | — |
 
