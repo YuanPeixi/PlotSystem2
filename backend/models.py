@@ -89,6 +89,35 @@ class SpeakerMode(str, Enum):
     RANDOM = "random"
 
 
+class EnvironmentMode(str, Enum):
+    """环境层开关（工单24/20）。off = 行为与工单24 之前逐字一致；record = 只抽取动作意图、
+    不裁决，用来在真实项目上量命中率与成本；adjudicate（PR-2）才产生环境回合。"""
+
+    OFF = "off"
+    RECORD = "record"
+
+
+class ActionStatus(str, Enum):
+    """`ActionIntent.status`。PR-2 加入 pending / resolved / failed。
+
+    读取侧未知取值一律按 skipped：PR-2 会按 pending 补裁决，手改出的脏值必须落到
+    "什么都不做"那一档（设计单 §4）。
+    """
+
+    RECORDED = "recorded"
+    SKIPPED = "skipped"
+
+
+class ActionSkipReason(str, Enum):
+    """为什么跳过（设计单 A17）。record 档靠它区分"没提到物件 / 不是尝试 / 抽取失败"。"""
+
+    NO_OBJECT = "no_object"
+    OVER_LIMIT = "over_limit"
+    NOT_ATTEMPT = "not_attempt"
+    INVALID_OBJECT = "invalid_object"
+    EXTRACT_FAILED = "extract_failed"
+
+
 class TurnKind(str, Enum):
     """轮次的种类（工单24/20）。环境回合由环境层裁决角色动作产生，不占发言顺序、
     不计入 max_turns；PR-0 只引入字段与计数口径，此时恒为 character。"""
@@ -472,6 +501,24 @@ class StoryboardView:
 
 
 @dataclass
+class ActionIntent:
+    """一轮里一个 `*动作*` 段的意图（工单24）。
+
+    只给导演 / 用户看：**不进任何角色记忆、transcript 或 prompt**（设计单 A20）。
+    `text` 已剥掉段内的 `[...]` —— PR-2 会把 `text` / `detail` 交给裁决器，而裁决器的
+    输出是公开叙述，独白混进来就经由这条链公开了（契约1）。
+    """
+
+    index: int = 0
+    text: str = ""
+    object_id: str = ""
+    verb: str = ""
+    detail: str = ""
+    status: str = ActionStatus.SKIPPED.value
+    skip_reason: str = ""
+
+
+@dataclass
 class DialogueTurn:
     """单个对话轮次，按格式分类记录。"""
 
@@ -489,6 +536,8 @@ class DialogueTurn:
     selector_notice: str = ""
     # 计数一律走 utils/turns 的 character_turns，不要直接 len(dialogue_log)
     kind: str = TurnKind.CHARACTER.value
+    #: 每个 *动作* 段一条（工单24）。off 档恒为空；`action` 拼接字段保持不变，渲染只读它
+    actions: list[ActionIntent] = field(default_factory=list)
 
 
 @dataclass

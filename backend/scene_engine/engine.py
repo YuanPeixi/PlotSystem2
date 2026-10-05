@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import random
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
 from backend.agents.character_agent import CharacterAgent
 from backend.config import settings
@@ -20,17 +20,22 @@ from backend.models import (
     RESERVED_SCENE_CONTEXT_KEYS,
     CharacterState,
     DialogueTurn,
+    EnvironmentMode,
     Scene,
     SceneConfig,
     SceneResult,
     SceneStatus,
     SpeakerMode,
     Storyboard,
+    WorldObject,
     new_id,
 )
+from backend.scene_engine.action_intents import ActionIntentExtractor
 from backend.scene_engine.speaker_selector import ScoringSpeakerSelector, SelectionTrace
 from backend.scene_engine.termination import check_termination
+from backend.services.objects import MAX_OBJECTS_PRESENT
 from backend.snapshot import SnapshotManager
+from backend.utils.llm import estimate_tokens
 from backend.utils.logger import get_logger
 from backend.utils.turns import count_character_turns, render_turn
 
@@ -54,6 +59,8 @@ _THOUGHT_RE = re.compile(r"[\[［](.*?)[\]］]", re.DOTALL)
 _UNCLOSED_THOUGHT_RE = re.compile(r"[\[［](.*)$", re.DOTALL)
 
 _KNOWN_SPEAKER_MODES = {m.value for m in SpeakerMode}
+#: 抽取 prompt 里候选物件（名称 + 公开描述）的总预算。单个物件在读取侧已压过，这里挡的是条数
+_OBJECTS_PROMPT_BUDGET = 2000
 
 
 def _selector_notice(trace: SelectionTrace) -> str:
@@ -76,6 +83,8 @@ class SceneEngine:
         snapshot_manager: SnapshotManager,
         world_variables: dict[str, str] | None = None,
         storyboard: Storyboard | None = None,
+        objects: Sequence[WorldObject] | None = None,
+        environment_mode: str = EnvironmentMode.OFF.value,
     ):
         self.scene = scene
         self.config = scene_config
@@ -95,6 +104,11 @@ class SceneEngine:
         self._history_transcript: list[str] = []  # continue 时注入的历史
         self._selector: ScoringSpeakerSelector | None = None
         self._unknown_mode_warned = False
+        # 环境层（工单24）。档位由编排层在进 run_scene 时读一次、整段不变（设计单 A21）；
+        # off 档不构造抽取器，`actions` 恒为空，行为与之前逐字一致
+        self._action_extractor: ActionIntentExtractor | None = None
+        if environment_mode == EnvironmentMode.RECORD.value:
+            self._action_extractor = ActionIntentExtractor(self._cap_objects(objects or []))
 
     def interrupt(self) -> None:
         """外部请求中断（如导演/暂停）。"""
@@ -124,6 +138,25 @@ class SceneEngine:
                 "、".join(shadowed),
             )
         return cleaned
+
+    def _cap_objects(self, objects: Sequence[WorldObject]) -> list[WorldObject]:
+        """在场物件的最后一道闸门（设计单 §6）：条数与抽取 prompt 的总预算。
+
+        写入侧与读取侧都已拦过条数，这里仍拦：`objects` 是构造参数，谁都能直接传进来。
+        """
+        kept: list[WorldObject] = []
+        used = 0
+        for obj in objects:
+            cost = estimate_tokens(f"{obj.name}：{obj.public_description}")
+            if len(kept) >= MAX_OBJECTS_PRESENT or used + cost > _OBJECTS_PROMPT_BUDGET:
+                logger.warning(
+                    "场景 %s 的在场物件超出上限，从「%s」起不参与动作识别",
+                    self.scene.scene_id, obj.name,
+                )
+                break
+            kept.append(obj)
+            used += cost
+        return kept
 
     def inject_history(self, history_log: list[DialogueTurn]) -> None:
         """将历史对话轮次注入引擎，供 continue 续跑时使用。"""
@@ -196,6 +229,11 @@ class SceneEngine:
             turn_number += 1
             turn = self._parse_turn(raw, agent, turn_number)
             turn.selector_notice = selector_notice
+            if self._action_extractor is not None:
+                # 必须早于下面的第一次落盘（设计单 A9）：落盘的轮次意图恒完整，续跑不重抽
+                turn.actions = await self._action_extractor.extract(
+                    _ACTION_RE.findall(raw), agent.name
+                )
             turns.append(turn)
             transcript.append(self._turn_line(turn))
             await self._remember(turn)

@@ -171,6 +171,7 @@ backend/
 ├── scene_engine/
 │   ├── engine.py           手写对话循环 + 三态解析 + 快照编排
 │   ├── speaker_selector.py selector 模式的独立评分选人（工单11）
+│   ├── action_intents.py   动作意图：本地预过滤 + 一轮至多一次的意图抽取（工单24）
 │   ├── termination.py      终止条件判定
 │   └── scene_config.py     仅从 models.py 再导出
 │
@@ -247,6 +248,7 @@ frontend/src/
 | `StoryboardPatch` | 导演随评估产出的分镜稿修改（相对导演读到的那一版） | 内嵌于 `SceneEvaluation` |
 | `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
 | `Scene` / `DialogueTurn` | 场景与对话轮次（`Scene.objects_present` 为本场在场物件；轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24） | SQLite `scenes`（轮次内嵌） |
+| `ActionIntent` | 一个 `*动作*` 段的意图（物件 / 动词 / 细节 / `status` + `skip_reason`），挂在 `DialogueTurn.actions`，**只给导演与用户看**（见陷阱 25） | 随轮次内嵌 |
 | `WorldObject` | **项目级**物件：公开描述 + 隐藏规则（**只进导演与环境层**）+ 可见性 `global` / `private`（配 `known_by` 名单）/ `hidden` | **文件** `objects/{object_id}.json` |
 | `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
@@ -635,6 +637,21 @@ frontend/src/
     - **`EpisodicMemory._snippet` 的条目格式冻结、不并入 `render_turn`**：它是序列化格式，
       老快照与重放去重都靠逐字相同。
 
+25. **`DialogueTurn.actions`（工单24 PR-1b）有五条语义**，`ENVIRONMENT_MODE=record` 时才产生：
+    - **不进任何角色记忆、transcript 或 prompt**：`render_turn` / `_turn_line` / 记忆文本只读
+      `action` 拼接字段。这是**设计保证不是现状**，`test_record_mode_leaves_memory_and_transcript_byte_identical`
+      逐字比对 off 与 record 两档。PR-2 想让环境结果进角色视野，走环境回合，**不要**把 `detail`
+      渲染进 `_turn_line`；
+    - **抽取 prompt 只有命中段**（不传对白、不传隐藏规则），段内 `[...]` 先剥掉
+      （`action_intents.strip_thoughts`，没闭合的 `[` 剥到段尾）：角色把独白格式写坏时，
+      独白会混进对白或动作段，而 `text` / `detail` 在 PR-2 会交给裁决器、产出公开叙述；
+    - **抽取先于第一次落盘**，落盘的轮次意图恒完整，续跑不重抽；命中段超过 6 段按段落顺序取前 6，
+      结果按 `index` 回填 —— 结果可复现是"续跑不重抽"的前提；
+    - **`ENVIRONMENT_MODE` 按段冻结**：每次进 `run_scene` 读一次。continue 重进会重读配置，
+      **同一场的前后两段可以处于不同档位，`actions` 为空不代表没有物件动作**；
+    - **读取侧收紧**：未知 `status` 一律按 `skipped`（PR-2 会按 `pending` 补裁决，脏值不能变成待裁决）。
+      在场物件的悬空 ID 跳过时 warning —— 静默跳过会让 record 档命中率无声归零。
+
 ---
 
 ## 5. 持久化契约 ★
@@ -696,7 +713,7 @@ build_status.json                 构建进度（供重启后对账）
 1. 改 `backend/models.py` 的 dataclass；
 2. **同步改 `services/repository.py` 里对应的 `_deserialize_*`**（`_deserialize_card` /
    `_deserialize_scene` / `deserialize_story_history` / `deserialize_storyboard` /
-   `_deserialize_object` / 快照的 `_deserialize_character_state`）——漏这步字段会静默丢失；
+   `_deserialize_object` / `_deserialize_actions` / 快照的 `_deserialize_character_state`）——漏这步字段会静默丢失；
 3. 评估是否需要新增 SQL 列（只有需要索引/过滤/CAS 时才加，普通字段靠 `data_json` 自动携带）。
 
 前端有对应类型时，同步改 `frontend/src/types/index.ts`。
@@ -750,7 +767,8 @@ graph TD
 4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
    （`selector` 模式下转交 `ScoringSpeakerSelector`：每个候选各一次并行打分调用，
    叠加被点名加分与重复发言惩罚；兜底必须 warning 可见，不得静默选 `agents[0]`）
-   → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 → 追加 transcript
+   → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 →（record 档）动作意图抽取
+   （`ActionIntentExtractor`，提到在场物件的轮次一次调用，必须早于落盘，见陷阱 25）→ 追加 transcript
    → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；每个角色能感知到
    什么由记忆层按 `utils/turns.perceive` 自行判定——他人轮次剥离 `inner_thought`，
    调用方不传判定，续跑重放走同一个函数）→ 每满 `MEMORY_CONSOLIDATE_EVERY_TURNS` 轮**或缓冲占用逼近容量**
@@ -1233,6 +1251,8 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
   确认严重时最干净的处理是删掉该项目的 `chroma_db/` 重跑（长期记忆可从 `dialogue_log` 重建）。
 - 世界设定可见性修复：`python -m scripts.reclassify_lore --project ID [--apply]`（工单29，
   工单29 之前构建的项目都需要跑一次；会调 LLM，预览与写入是两次独立判定）。
+- 动作意图统计：`python -m scripts.action_stats --project ID [--branch B]`（工单24，**只读**、
+  不调 LLM）：record 档下的命中率、抽取调用次数、跳过原因分布。
 
 ### 10.4 注释
 

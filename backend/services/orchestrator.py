@@ -36,6 +36,7 @@ from backend.models import (
     DecisionType,
     DialogueTurn,
     DirectorDecision,
+    EnvironmentMode,
     ForkOrigin,
     OutputFormat,
     ProjectStatus,
@@ -631,9 +632,18 @@ async def run_scene(scene_id: str) -> None:
         world = await repository.get_world_state(scene.project_id, scene.branch_id)
         # 分镜稿只进前/后置快照的时点副本，不进任何角色上下文（红线 R1）
         opening_board = await repository.get_storyboard(scene.project_id, scene.branch_id)
+        # 环境层档位每次进 run_scene 读一次、整段不变（设计单 A21）：continue 重进会重读，
+        # 同一场的前后两段可能处于不同档位
+        environment_mode = settings.ENVIRONMENT_MODE
+        present_objects = (
+            await _present_objects(scene)
+            if environment_mode != EnvironmentMode.OFF.value
+            else []
+        )
         engine = SceneEngine(
             scene, config, agents, sm,
             world_variables=world.variables, storyboard=opening_board,
+            objects=present_objects, environment_mode=environment_mode,
         )
         # continue 续跑：注入历史 transcript，让角色知道之前说了什么
         if scene.dialogue_log:
@@ -956,6 +966,23 @@ def _object_lock(project_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _object_locks[project_id] = lock
     return lock
+
+
+async def _present_objects(scene: Scene) -> list[WorldObject]:
+    """本场在场物件，按 `objects_present` 的顺序。
+
+    悬空 ID（物件建场景之后被删）跳过并 warning（设计单 A22）：静默跳过的话，
+    删了物件之后 record 档的命中率无声归零，而那正是这一档要量的东西。
+    """
+    if not scene.objects_present:
+        return []
+    by_id = {o.object_id: o for o in await repository.list_objects(scene.project_id)}
+    missing = [oid for oid in scene.objects_present if oid not in by_id]
+    if missing:
+        logger.warning(
+            "场景 %s 的在场物件已不存在，不参与动作识别：%s", scene.scene_id, "、".join(missing)
+        )
+    return [by_id[oid] for oid in scene.objects_present if oid in by_id]
 
 
 async def check_objects_present(project_id: str, object_ids: list[str]) -> list[str]:
