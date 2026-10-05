@@ -7,6 +7,7 @@ import GraphViewer from '@/components/GraphViewer.vue'
 import GraphViewer2 from '@/components/GraphViewer2.vue'
 import CharacterCardView from '@/components/CharacterCard.vue'
 import CharacterInspector from '@/components/CharacterInspector.vue'
+import ObjectsPanel from '@/components/ObjectsPanel.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import Icon from '@/components/ui/Icon.vue'
 
@@ -29,6 +30,8 @@ const savingGoal = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const building = ref(false)
 const graphViewerVersion = ref<'legacy' | 'focused'>('legacy')
+// 构建完成会抽出新物件：递增它让物件面板重新拉列表
+const objectsRefresh = ref(0)
 let pollTimer: number | undefined
 let lastCharDone = 0
 
@@ -130,6 +133,7 @@ function startPolling() {
       building.value = false
       window.clearInterval(pollTimer)
       await open(store.current!.project_id)
+      objectsRefresh.value++
     }
   }, 1500)
 }
@@ -304,6 +308,14 @@ async function build() {
             </div>
           </div>
           <p v-if="!charStore.characters.length && !building" class="dim">构建完成后会自动生成角色。</p>
+        </section>
+
+        <section class="panel">
+          <ObjectsPanel
+            :project-id="store.current.project_id"
+            :characters="charStore.characters"
+            :refresh-key="objectsRefresh"
+          />
         </section>
       </main>
       <main v-else class="detail empty">

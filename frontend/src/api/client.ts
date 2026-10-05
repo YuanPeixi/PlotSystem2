@@ -16,6 +16,8 @@ import type {
   Storyboard,
   StoryboardUpdate,
   WorldObject,
+  WorldObjectCreate,
+  WorldObjectUpdate,
 } from '@/types'
 
 const API_BASE = '/api/v1'
@@ -98,6 +100,13 @@ export const api = {
 
   // 物件（工单24）
   listObjects: (id: string) => unwrap<WorldObject[]>(http.get(`/projects/${id}/objects`)),
+  createObject: (id: string, payload: WorldObjectCreate) =>
+    unwrap<WorldObject>(http.post(`/projects/${id}/objects`, payload)),
+  updateObject: (id: string, oid: string, payload: WorldObjectUpdate) =>
+    unwrap<WorldObject>(http.patch(`/projects/${id}/objects/${oid}`, payload)),
+  /** 已不存在也成功，existed 区分。 */
+  deleteObject: (id: string, oid: string) =>
+    unwrap<{ deleted: string; existed: boolean }>(http.delete(`/projects/${id}/objects/${oid}`)),
 
   // 场景
   /** scene_intent 是本场意图；主线目标由后端固定读 project.narrative_goal。 */
