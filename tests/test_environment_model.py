@@ -27,8 +27,7 @@ from backend.services.environment import (
     MAX_ENVIRONMENT_STATE_KEYS,
     clamp_environment_state,
     describe_environment_state,
-    split_state_key,
-    state_key,
+    normalize_attribute,
 )
 from backend.services.repository import _deserialize_actions, _deserialize_scene
 
@@ -67,7 +66,8 @@ async def test_environment_turn_round_trips_through_the_repository():
         source_turn_id="t-src", source_action_index=0,
     )
     scene = Scene(scene_id="scene-env-rt", project_id="proj-env-rt", branch_id="b",
-                  dialogue_log=[source, env], environment_state={"王冠·佩戴者": "伊莎贝尔", "暗格·状态": None})
+                  dialogue_log=[source, env],
+                  environment_state={"o-crown": {"佩戴者": "伊莎贝尔"}, "o-niche": {"状态": None}})
     await repository.save_scene(scene)
 
     back = await repository.get_scene("scene-env-rt")
@@ -77,7 +77,7 @@ async def test_environment_turn_round_trips_through_the_repository():
     for name in ("kind", "narration", "private_detail", "perceived_by", "source_turn_id",
                  "source_action_index", "revision", "turn_id"):
         assert getattr(env_back, name) == getattr(env, name), name
-    assert back.environment_state == {"王冠·佩戴者": "伊莎贝尔", "暗格·状态": None}
+    assert back.environment_state == {"o-crown": {"佩戴者": "伊莎贝尔"}, "o-niche": {"状态": None}}
 
 
 def test_old_turns_without_environment_fields_take_defaults():
@@ -150,46 +150,45 @@ def test_quota_is_a_known_skip_reason():
 
 
 # ---------------------------------------------------------------------------
-# 场景物件状态：键的形状、预算、渲染
+# 场景物件状态：按 object_id 归属、预算、渲染
 # ---------------------------------------------------------------------------
 
 
-def test_state_key_shape():
-    assert state_key("王冠", "佩戴者") == "王冠·佩戴者"
-    assert state_key(" 王\n冠 ", " 佩戴\t者 ") == "王 冠·佩戴 者"
-    assert state_key("王冠", "") == ""
-    assert state_key("", "佩戴者") == ""
-    assert state_key("王冠", "甲·乙") == ""  # 属性里不许带分隔符，否则拆不回来
-    assert len(state_key("王冠", "很" * 40).split("·")[1]) == ENVIRONMENT_ATTR_CHARS
-    assert split_state_key("王冠·佩戴者") == ("王冠", "佩戴者")
-    assert split_state_key("玻璃·王冠·佩戴者") == ("玻璃·王冠", "佩戴者")
-    assert split_state_key("没有分隔符") is None
-    assert split_state_key("王冠·") is None
+def _flat(state: dict) -> list[tuple[str, str]]:
+    return [(oid, attr) for oid, attrs in state.items() for attr in attrs]
 
 
-def test_clamp_rejects_bad_keys_and_collapses_newlines():
+def test_attribute_shape():
+    assert normalize_attribute(" 佩戴\t者 ") == "佩戴 者"
+    assert normalize_attribute("") == ""
+    assert normalize_attribute("甲·乙") == ""  # 渲染成"物件名·甲·乙"会被读成别的东西
+    assert len(normalize_attribute("很" * 40)) == ENVIRONMENT_ATTR_CHARS
+
+
+def test_clamp_rejects_bad_shapes_and_collapses_newlines():
     state = clamp_environment_state(
-        {"王冠·佩戴者": "伊莎\n贝尔", "没有分隔符": "x", "·属性": "x", "暗格·状态": "", "镜子·裂痕": None,
-         "王冠\n·光": "微弱"},
+        {"o-crown": {"佩戴者": "伊莎\n贝尔", "": "x", "甲·乙": "x", "光芒": ""},
+         "o-niche": {"状态": None}, "": {"x": "y"}, "o-bad": "不是对象", " o-mirror\n": {"裂痕": "一道"}},
         "测试",
     )
-    assert state == {"王冠·佩戴者": "伊莎 贝尔", "暗格·状态": None, "镜子·裂痕": None, "王冠·光": "微弱"}
+    assert state == {"o-crown": {"佩戴者": "伊莎 贝尔", "光芒": None}, "o-niche": {"状态": None},
+                     "o-mirror": {"裂痕": "一道"}}
 
 
-@pytest.mark.parametrize("raw", ["坏", ["王冠·佩戴者"], 3])
+@pytest.mark.parametrize("raw", ["坏", ["o-crown"], 3])
 def test_clamp_non_dict_is_empty(raw):
     assert clamp_environment_state(raw, "测试") == {}
 
 
 def test_clamp_keeps_the_most_recent_entries_over_the_count_limit():
-    raw = {f"物件{i}·状态": f"值{i}" for i in range(MAX_ENVIRONMENT_STATE_KEYS + 3)}
+    raw = {f"o-{i}": {"状态": f"值{i}"} for i in range(MAX_ENVIRONMENT_STATE_KEYS + 3)}
     state = clamp_environment_state(raw, "测试")
-    assert len(state) == MAX_ENVIRONMENT_STATE_KEYS
+    assert len(_flat(state)) == MAX_ENVIRONMENT_STATE_KEYS
     assert list(state) == list(raw)[3:]  # 淘汰最早的，顺序保持
 
 
 def test_clamp_enforces_the_token_budget():
-    raw = {f"物件{i}·状态": "很长的描述" * 40 for i in range(MAX_ENVIRONMENT_STATE_KEYS)}
+    raw = {f"o-{i}": {"状态": "很长的描述" * 40} for i in range(MAX_ENVIRONMENT_STATE_KEYS)}
     state = clamp_environment_state(raw, "测试")
     assert 0 < len(state) < MAX_ENVIRONMENT_STATE_KEYS
     assert list(state)[-1] == list(raw)[-1]
@@ -197,17 +196,19 @@ def test_clamp_enforces_the_token_budget():
 
 def test_reading_a_scene_applies_the_clamp():
     """场景 JSON 可被人工编辑：读出来那一刻就要压回，不能等到渲染时才发现。"""
-    raw = {f"物件{i}·状态": f"值{i}" for i in range(MAX_ENVIRONMENT_STATE_KEYS + 2)}
-    raw["没有分隔符"] = "x"
-    raw["王冠·佩戴者"] = "伊莎\n贝尔"
+    raw = {f"o-{i}": {"状态": f"值{i}"} for i in range(MAX_ENVIRONMENT_STATE_KEYS + 2)}
+    raw["o-bad"] = "不是对象"
+    raw["o-crown"] = {"佩戴者": "伊莎\n贝尔"}
     scene = _deserialize_scene(_scene_dict([], environment_state=raw))
-    assert len(scene.environment_state) == MAX_ENVIRONMENT_STATE_KEYS
-    assert "没有分隔符" not in scene.environment_state
-    assert scene.environment_state["王冠·佩戴者"] == "伊莎 贝尔"
+    assert len(_flat(scene.environment_state)) == MAX_ENVIRONMENT_STATE_KEYS
+    assert "o-bad" not in scene.environment_state
+    assert scene.environment_state["o-crown"] == {"佩戴者": "伊莎 贝尔"}
     assert _deserialize_scene(_scene_dict([], environment_state="坏")).environment_state == {}
 
 
-def test_describe_skips_cleared_attributes():
-    assert describe_environment_state({"王冠·佩戴者": "伊莎贝尔", "暗格·状态": None}) == "- 王冠·佩戴者：伊莎贝尔"
-    assert describe_environment_state({"暗格·状态": None}) == ""
-    assert describe_environment_state(None) == ""
+def test_describe_renders_current_names_and_skips_cleared_or_absent():
+    state = {"o-crown": {"佩戴者": "伊莎贝尔", "光芒": None}, "o-niche": {"状态": None}, "o-gone": {"x": "y"}}
+    names = {"o-crown": "水晶冠", "o-niche": "暗格"}  # 王冠改过名：按 ID 归属，照样读得到
+    assert describe_environment_state(state, names) == "- 水晶冠·佩戴者：伊莎贝尔"
+    assert describe_environment_state({"o-niche": {"状态": None}}, names) == ""
+    assert describe_environment_state(None, names) == ""

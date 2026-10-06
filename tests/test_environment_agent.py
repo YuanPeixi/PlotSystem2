@@ -19,7 +19,6 @@ from backend.agents.environment_agent import EnvironmentAgent, build_adjudicatio
 from backend.exceptions import LLMError
 from backend.models import ActionIntent, ActionStatus, LLMPurpose, RevealEntry, WorldObject
 from backend.services.environment import (
-    ENVIRONMENT_STATE_BUDGET_TOKENS,
     MAX_ENVIRONMENT_STATE_KEYS,
     MAX_REVEAL_ENTRIES,
     MAX_STATE_CHANGES,
@@ -220,50 +219,68 @@ def test_narration_is_one_line_and_bounded():
 
 
 # ---------------------------------------------------------------------------
-# 物件状态：视图与写入侧闸门
+# 物件状态：按 object_id 归属的视图与写入侧闸门
 # ---------------------------------------------------------------------------
 
 
-def test_object_state_view_overlays_scene_state_on_world_variables():
-    world = {"王冠·佩戴者": "王后", "王冠·光芒": "黯淡", "王冠碎片·数量": "三片", "季节": "冬"}
-    env = {"王冠·光芒": "明亮", "王冠·佩戴者": None, "镜子·裂痕": "一道"}
-    # 本场清除的属性从视图里消失；"王冠碎片"不是"王冠"
-    assert object_state_view("王冠", world, env) == {"光芒": "明亮"}
+def test_same_named_objects_do_not_share_state():
+    """评审 P2（复现）：两个都叫"王冠"的物件，按名称拼键会写进同一个键、读给两者。按 ID 各是各的。"""
+    state, _ = apply_state_changes({}, "o-crown-a", {"光芒": "明亮"})
+    state, _ = apply_state_changes(state, "o-crown-b", {"光芒": "黯淡"})
+    assert object_state_view("o-crown-a", state) == {"光芒": "明亮"}
+    assert object_state_view("o-crown-b", state) == {"光芒": "黯淡"}
 
 
-def test_apply_state_changes_builds_keys_for_this_object_only():
-    state, rejected = apply_state_changes({}, "王冠", {"光芒": "微弱", "佩戴者": None})
-    assert state == {"王冠·光芒": "微弱", "王冠·佩戴者": None}
-    assert rejected == []
+def test_state_survives_a_rename():
+    """评审 P2：改名后旧状态按新名称读不回来。按 ID 存，名字只在渲染时拼上。"""
+    from backend.services.environment import describe_environment_state
+
+    state, _ = apply_state_changes({}, "o-crown", {"佩戴者": "伊莎贝尔"})
+    assert object_state_view("o-crown", state) == {"佩戴者": "伊莎贝尔"}
+    assert describe_environment_state(state, {"o-crown": "水晶冠"}) == "- 水晶冠·佩戴者：伊莎贝尔"
+
+
+def test_object_state_view_skips_cleared_attributes_and_other_objects():
+    state = {"o-crown": {"光芒": "明亮", "佩戴者": None}, "o-mirror": {"裂痕": "一道"}}
+    assert object_state_view("o-crown", state) == {"光芒": "明亮"}
+    assert object_state_view("o-missing", state) == {}
+
+
+def test_apply_state_changes_writes_this_object_only():
+    state, rejected = apply_state_changes({}, "o-crown", {"光芒": "微弱", "佩戴者": None, "甲·乙": "x"})
+    assert state == {"o-crown": {"光芒": "微弱", "佩戴者": None}}
+    assert rejected == ["甲·乙"]
 
 
 def test_apply_state_changes_does_not_mutate_its_input():
-    before = {"王冠·光芒": "黯淡"}
-    apply_state_changes(before, "王冠", {"光芒": "明亮"})
-    assert before == {"王冠·光芒": "黯淡"}
+    before = {"o-crown": {"光芒": "黯淡"}}
+    apply_state_changes(before, "o-crown", {"光芒": "明亮"})
+    assert before == {"o-crown": {"光芒": "黯淡"}}
 
 
-def test_updating_an_existing_key_moves_it_to_the_end():
-    state, _ = apply_state_changes({"王冠·光芒": "黯淡", "镜子·裂痕": "一道"}, "王冠", {"光芒": "明亮"})
-    assert list(state) == ["镜子·裂痕", "王冠·光芒"]
+def test_updating_moves_the_object_and_attribute_to_the_end():
+    state, _ = apply_state_changes(
+        {"o-crown": {"光芒": "黯淡", "佩戴者": "王后"}, "o-mirror": {"裂痕": "一道"}}, "o-crown", {"光芒": "明亮"}
+    )
+    assert list(state) == ["o-mirror", "o-crown"]
+    assert list(state["o-crown"]) == ["佩戴者", "光芒"]
 
 
 def test_over_the_count_limit_the_new_change_is_rejected_not_the_old():
-    full = {f"物件{i}·状态": "值" for i in range(MAX_ENVIRONMENT_STATE_KEYS)}
-    state, rejected = apply_state_changes(full, "王冠", {"光芒": "微弱"})
+    full = {f"o-{i}": {"状态": "值"} for i in range(MAX_ENVIRONMENT_STATE_KEYS)}
+    state, rejected = apply_state_changes(full, "o-crown", {"光芒": "微弱"})
     assert state == full
-    assert rejected == ["王冠·光芒"]
-    # 改已有的键不增加条数，照常生效
-    state, rejected = apply_state_changes(full, "物件0", {"状态": "新值"})
-    assert state["物件0·状态"] == "新值" and rejected == []
+    assert rejected == ["光芒"]
+    # 改已有的属性不增加条数，照常生效
+    state, rejected = apply_state_changes(full, "o-0", {"状态": "新值"})
+    assert state["o-0"] == {"状态": "新值"} and rejected == []
 
 
 def test_over_the_token_budget_the_new_change_is_rejected():
-    big = {f"物件{i}·状态": "很长的描述" * 10 for i in range(5)}
-    assert sum(estimate_tokens(f"- {k}：{v}") for k, v in big.items()) < ENVIRONMENT_STATE_BUDGET_TOKENS
-    state, rejected = apply_state_changes(big, "王冠", {"光芒": "很长的描述" * 30})
+    big = {f"o-{i}": {"状态": "很长的描述" * 10} for i in range(5)}
+    state, rejected = apply_state_changes(big, "o-crown", {"光芒": "很长的描述" * 30})
     assert state == big
-    assert rejected == ["王冠·光芒"]
+    assert rejected == ["光芒"]
 
 
 # ---------------------------------------------------------------------------

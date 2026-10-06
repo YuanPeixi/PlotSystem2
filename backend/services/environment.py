@@ -3,11 +3,12 @@
 一层纯函数：无状态、不碰 IO、不调 LLM（同 `world_state.py` / `storyboard.py` / `objects.py`，
 拆出来是为了让 `repository` 在读取那一刻就能压回预算，而不引入 import 环）。
 
-`Scene.environment_state` 是场景内的物件公开状态，键为 `物件名·属性`：
-- 进每个在场角色 **user** 消息里的【当前环境】块（契约3 补充条款），按轮次计费，所以有预算；
-- 场景结束时并入分支世界变量（PR-2b），所以键的形状必须同时是合法的世界变量名
-  （`world_state.WORLD_KEY_CHARS` 以内、单行）；
-- 值为 None 表示本场清除了该属性，渲染时跳过，并入世界变量时据此删除。
+`Scene.environment_state` 是场景内的物件公开状态，形如 `{object_id: {属性: 值}}`：
+- **按 object_id 而不是物件名归属**（PR-2a 评审）：名称可改、旧数据里还可能重名，按名称拼键
+  的话，改名后读不回旧状态，两个同名物件会共用一份状态，裁决基于错误的状态；
+- 进每个在场角色 **user** 消息里的【当前环境】块（契约3 补充条款），渲染时才按物件**当前**的
+  名字拼成 `物件名·属性`；按轮次计费，所以有预算；
+- 值为 None 表示本场清除了该属性，渲染时跳过（PR-2b 跨场延续时据此删除）。
 
 两道闸门：写入侧（裁决产出的状态变化，超预算**拒掉这一条**、叙述照常保留）；
 读取侧 `clamp_environment_state`（场景 JSON 可被人工编辑或是旧数据，**只压不写回**）。
@@ -17,97 +18,113 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from backend.models import RevealEntry
-from backend.services.world_state import WORLD_KEY_CHARS, normalize_world_value
+from backend.services.world_state import normalize_world_value
 from backend.utils.context import ContextBudget, fit_lines
 from backend.utils.llm import estimate_tokens
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.environment")
 
-#: 物件名与属性名之间的分隔符（设计单 A5：`物件名·属性`）
+#: 渲染【当前环境】时物件名与属性名之间的分隔符（`物件名·属性`）
 STATE_KEY_SEPARATOR = "·"
-#: 属性名上限。物件名最长 24 字（`objects.OBJECT_NAME_CHARS`），加分隔符与属性仍在
-#: 世界变量键长上限之内，并入世界变量时不会被截断
+#: 属性名上限。属性名会原样进 prompt，长了说明模型在拿它当句子用
 ENVIRONMENT_ATTR_CHARS = 12
-#: 场景内物件状态的条数与总预算。它进每个角色、每一轮的 user 消息
+#: 场景内物件状态的总条数（所有物件的属性加起来）与总预算。它进每个角色、每一轮的 user 消息
 MAX_ENVIRONMENT_STATE_KEYS = 12
 ENVIRONMENT_STATE_BUDGET_TOKENS = 400
+#: 预算估算时给物件名留的份额：名字渲染时才拼上，规整阶段只知道 ID
+_NAME_COST_TOKENS = 8
+
+EnvironmentState = dict[str, dict[str, str | None]]
 
 
 def _one_line(text: object) -> str:
     return " ".join(str(text).split())
 
 
-def state_key(object_name: str, attribute: str) -> str:
-    """拼出 `物件名·属性`。任一部分规整后为空、或属性里带分隔符时返回空串（不可用）。"""
-    name = _one_line(object_name)
-    attr = _one_line(attribute)[:ENVIRONMENT_ATTR_CHARS]
-    if not name or not attr or STATE_KEY_SEPARATOR in attr:
-        return ""
-    key = f"{name}{STATE_KEY_SEPARATOR}{attr}"
-    return key if len(key) <= WORLD_KEY_CHARS else ""
+def normalize_attribute(raw: object) -> str:
+    """属性名：塌单行、截到上限、不许带分隔符（渲染出来会被读成另一个物件的属性）。空串 = 不可用。"""
+    attr = _one_line(raw)[:ENVIRONMENT_ATTR_CHARS]
+    return "" if STATE_KEY_SEPARATOR in attr else attr
 
 
-def split_state_key(key: str) -> tuple[str, str] | None:
-    """`物件名·属性` → (物件名, 属性)；形状不对返回 None。物件名本身可以含分隔符，按最后一个切。"""
-    name, sep, attr = str(key).rpartition(STATE_KEY_SEPARATOR)
-    if not sep or not name.strip() or not attr.strip():
-        return None
-    return name, attr
+def _cost(attr: str, value: str | None) -> int:
+    # 清除标记不渲染，但要占一条：跨场延续时它是一次删除
+    return estimate_tokens(f"- {attr}：{value or ''}") + _NAME_COST_TOKENS
 
 
-def _normalize_key(raw_key: object) -> str:
-    parts = split_state_key(_one_line(raw_key))
-    return state_key(*parts) if parts else ""
+def _flatten(state: Mapping[str, Mapping[str, str | None]]) -> list[tuple[str, str, str | None]]:
+    return [(oid, attr, value) for oid, attrs in state.items() for attr, value in attrs.items()]
 
 
-def _cost(key: str, value: str | None) -> int:
-    # 清除标记不渲染，但要占一条：并入世界变量时它是一次删除
-    return estimate_tokens(f"- {key}：{value or ''}")
+def _nest(entries: list[tuple[str, str, str | None]]) -> EnvironmentState:
+    out: EnvironmentState = {}
+    for oid, attr, value in entries:
+        out.setdefault(oid, {})[attr] = value
+    return out
 
 
-def clamp_environment_state(raw: object, label: str = "") -> dict[str, str | None]:
+def _within_budget(entries: list[tuple[str, str, str | None]]) -> bool:
+    return (
+        len(entries) <= MAX_ENVIRONMENT_STATE_KEYS
+        and sum(_cost(attr, value) for _, attr, value in entries) <= ENVIRONMENT_STATE_BUDGET_TOKENS
+    )
+
+
+def clamp_environment_state(raw: object, label: str = "") -> EnvironmentState:
     """把一份**来历不明**的场景物件状态压回形状与预算。读取侧闸门，只压不写回。
 
-    键必须是 `物件名·属性`、塌单行；值塌单行并限单值预算，None 与空串都按"已清除"。
-    超出条数或总预算时保留**最近写入**的（dict 保持插入序，裁决每次写入都先 pop 再插入）。
+    外层键是物件 ID（塌单行、非空），内层是属性 → 值；值塌单行并限单值预算，None 与空串都按
+    "已清除"。超出条数或总预算时保留**最近写入**的（写入侧每次都把改动的物件与属性挪到最后）。
     """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         logger.warning("%s的场景物件状态不是对象，按空处理：%r", label, raw)
         return {}
-    normalized: dict[str, str | None] = {}
+    entries: list[tuple[str, str, str | None]] = []
     dropped: list[str] = []
-    for raw_key, raw_value in raw.items():
-        key = _normalize_key(raw_key)
-        if not key:
-            dropped.append(str(raw_key))
+    for raw_oid, raw_attrs in raw.items():
+        oid = _one_line(raw_oid)
+        if not oid or not isinstance(raw_attrs, dict):
+            dropped.append(str(raw_oid))
             continue
-        normalized.pop(key, None)
-        normalized[key] = normalize_world_value(raw_value) or None
-    kept: list[tuple[str, str | None]] = []
-    used = 0
-    for key, value in reversed(list(normalized.items())):
-        cost = _cost(key, value)
-        if len(kept) >= MAX_ENVIRONMENT_STATE_KEYS or (kept and used + cost > ENVIRONMENT_STATE_BUDGET_TOKENS):
-            dropped.append(key)
-            continue
-        kept.append((key, value))
-        used += cost
+        for raw_attr, raw_value in raw_attrs.items():
+            attr = normalize_attribute(raw_attr)
+            if not attr:
+                dropped.append(f"{oid}.{raw_attr}")
+                continue
+            entries = [e for e in entries if e[:2] != (oid, attr)]
+            entries.append((oid, attr, normalize_world_value(raw_value) or None))
+    kept: list[tuple[str, str, str | None]] = []
+    for entry in reversed(entries):
+        if _within_budget([entry, *kept]) or not kept:
+            kept.insert(0, entry)
+        else:
+            dropped.append(f"{entry[0]}.{entry[1]}")
     if dropped:
         logger.warning("%s的场景物件状态有 %d 项形状非法或超出预算，已忽略：%s",
                        label, len(dropped), "、".join(dropped))
-    return dict(reversed(kept))
+    return _nest(kept)
 
 
-def describe_environment_state(state: dict[str, str | None] | None) -> str:
-    """【当前环境】块的正文，一行一条；已清除的属性不渲染。没有可渲染的内容时返回空串。"""
-    lines = [f"- {k}：{v}" for k, v in (state or {}).items() if v]
+def describe_environment_state(state: EnvironmentState | None, names: Mapping[str, str]) -> str:
+    """【当前环境】块的正文：按物件**当前**的名字渲染 `- 物件名·属性：值`，一行一条。
+
+    `names` 是本场在场物件的 ID → 名称；不在其中的（已删除、已不在场）不渲染，已清除的属性
+    也不渲染。没有可渲染的内容时返回空串。
+    """
+    lines = [
+        f"- {names[oid]}{STATE_KEY_SEPARATOR}{attr}：{value}"
+        for oid, attrs in (state or {}).items()
+        if oid in names
+        for attr, value in attrs.items()
+        if value
+    ]
     return "\n".join(lines)
 
 
@@ -267,65 +284,50 @@ def parse_adjudication(raw: str, *, reveals: Sequence[RevealEntry]) -> Adjudicat
         if len(result.state_changes) >= MAX_STATE_CHANGES:
             result.rejected.append(f"一次裁决最多改 {MAX_STATE_CHANGES} 个属性，其余丢弃")
             break
-        attr_text = _one_line(attr)[:ENVIRONMENT_ATTR_CHARS]
-        if not attr_text or STATE_KEY_SEPARATOR in attr_text:
+        attr_text = normalize_attribute(attr)
+        if not attr_text:
             result.rejected.append(f"属性名非法：{attr!r}")
             continue
         result.state_changes[attr_text] = normalize_world_value(value) or None
     return result
 
 
-def object_state_view(
-    object_name: str,
-    world_variables: dict[str, str] | None,
-    environment_state: dict[str, str | None] | None,
-) -> dict[str, str]:
-    """裁决器看到的某个物件的当前状态：属性 → 值（A26）。
+def object_state_view(object_id: str, environment_state: EnvironmentState | None) -> dict[str, str]:
+    """裁决器看到的某个物件在本场的当前状态：属性 → 值（已清除的不含）。
 
-    先取分支世界变量里属于这个物件的（跨场延续下来的），再叠本场的 `environment_state`
-    （本场写下的更新，None = 本场清除）。按拆出来的物件名**相等**判定归属，不按前缀 ——
-    "王冠"不能把"王冠碎片·状态"认成自己的。
+    按 object_id 取，改名、重名都不影响（PR-2a 评审）。跨场延续下来的状态归 PR-2b：
+    原定从世界变量里按物件名前缀读（A26），但名称不是稳定身份，那条路要随 A5 一起重议。
     """
-    name = _one_line(object_name)
-    view: dict[str, str] = {}
-    for source in (world_variables or {}, environment_state or {}):
-        for key, value in source.items():
-            parts = split_state_key(key)
-            if not parts or _one_line(parts[0]) != name:
-                continue
-            attr = _one_line(parts[1])
-            if value:
-                view[attr] = str(value)
-            else:
-                view.pop(attr, None)
-    return view
+    attrs = (environment_state or {}).get(object_id, {})
+    return {attr: value for attr, value in attrs.items() if value}
 
 
 def apply_state_changes(
-    state: dict[str, str | None],
-    object_name: str,
-    changes: dict[str, str | None],
-) -> tuple[dict[str, str | None], list[str]]:
-    """把一次裁决的状态变化并进场景物件状态，返回 (新状态, 被拒的键)。不改入参。
+    state: EnvironmentState,
+    object_id: str,
+    changes: Mapping[str, str | None],
+) -> tuple[EnvironmentState, list[str]]:
+    """把一次裁决的状态变化并进场景物件状态，返回 (新状态, 被拒的属性)。不改入参。
 
+    只写 `object_id` 这一个物件：物件由调用方决定，裁决器在结构上改不了别的物件。
     写入侧闸门：超出条数或总预算时**拒掉这一条变化**，不淘汰已有的 —— 已有的是本场
     更早裁决出的事实，被一条新变化挤掉的话，角色【当前环境】里会无声少一行。
     被拒的变化由调用方 warning；叙述照常保留（它是已经裁决出的事实）。
-    改写已有的键先 pop 再插入：dict 保持插入序，"最近写入"排在最后，读取侧淘汰时据此保留新的。
+    改写过的物件与属性挪到最后："最近写入"排在最后，读取侧淘汰时据此保留新的。
     """
-    merged = dict(state)
+    entries = _flatten(state)
     rejected: list[str] = []
-    for attr, value in changes.items():
-        key = state_key(object_name, attr)
-        if not key:
-            rejected.append(f"{object_name}·{attr}")
+    for raw_attr, value in changes.items():
+        attr = normalize_attribute(raw_attr)
+        if not attr:
+            rejected.append(str(raw_attr))
             continue
-        candidate = dict(merged)
-        candidate.pop(key, None)
-        candidate[key] = value
-        used = sum(_cost(k, v) for k, v in candidate.items())
-        if len(candidate) > MAX_ENVIRONMENT_STATE_KEYS or used > ENVIRONMENT_STATE_BUDGET_TOKENS:
-            rejected.append(key)
+        # 改动的物件整块挪到最后、改动的属性排在块尾：嵌套之后展平，顺序仍是"最近写入在最后"
+        others = [e for e in entries if e[0] != object_id]
+        mine = [e for e in entries if e[0] == object_id and e[1] != attr]
+        candidate = [*others, *mine, (object_id, attr, value)]
+        if not _within_budget(candidate):
+            rejected.append(attr)
             continue
-        merged = candidate
-    return merged, rejected
+        entries = candidate
+    return _nest(entries), rejected

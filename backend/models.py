@@ -663,11 +663,12 @@ class Scene:
     #: 本场运行期间的 LLM 调用计数，按用途分（工单25）。continue 的多段累加；
     #: 评估的调用记在 SceneEvaluation 上，不在这里（推送评估之后不得再 save_scene）
     llm_usage: dict[str, LLMUsageStat] = field(default_factory=dict)
-    #: 场景内的物件公开状态（工单20），键为 `物件名·属性`。由环境裁决改写，进角色 **user**
-    #: 消息的【当前环境】块（契约3 补充条款），绝不进 system / scene_context。
-    #: 值为 None = 本场清除了该属性（场景结束并入世界变量时据此删除，PR-2b）。
+    #: 场景内的物件公开状态（工单20），形如 {object_id: {属性: 值}}。按 ID 而不是名称归属：
+    #: 名称可改、可能重名（PR-2a 评审）。由环境裁决改写，进角色 **user** 消息的【当前环境】块
+    #: （契约3 补充条款），渲染时才按物件当前的名字显示；绝不进 system / scene_context。
+    #: 值为 None = 本场清除了该属性（跨场延续时据此删除，PR-2b）。
     #: 只许放所有在场角色都能感知的公开状态（契约1），私密结果只进 private_detail
-    environment_state: dict[str, str | None] = field(default_factory=dict)
+    environment_state: dict[str, dict[str, str | None]] = field(default_factory=dict)
 
 
 @dataclass
