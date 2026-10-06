@@ -456,7 +456,7 @@ selector 的重复发言惩罚与点名检测没跳过环境回合；世界变�
 | **PR-1a** ✅ | `WorldObject` 模型 / 存储 / 三道预算闸门（可见性含 `known_by`）；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）；`Scene.objects_present` 持久化 + SceneComposer 手动勾选 + 全部建场景路径搬运；`scripts/extract_objects` | 构建多出物件抽取调用 |
 | **PR-1b** ✅ | `DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/action_stats` | 默认 off 无变化；record 档可评估命中率与成本 |
 | **PR-1c** ✅ | Workspace 物件编辑器（`ObjectsPanel.vue`） | 用户可在工作台增删改物件 |
-| **PR-2a = 20a 引擎** | 环境回合字段与 `revision`、动作的 pending / resolved / failed 与 `quota`；EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、selector 与渲染 / 感知的 `kind` 分支）；`turn_update`；【当前环境】块；格式规范"只写尝试"；物件公开描述进角色 system（A24）；前端显示环境回合与动作状态、轮次进度只数角色轮次 | `adjudicate` 档可用，物件状态只在本场有效（A30） |
+| **PR-2a = 20a 引擎**（C1–C3 ✅ `76b4907`到`075d656`；C4–C8 进行中） | 环境回合字段与 `revision`、动作的 pending / resolved / failed 与 `quota`；EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、selector 与渲染 / 感知的 `kind` 分支）；`turn_update`；【当前环境】块；格式规范"只写尝试"；物件公开描述进角色 system（A24）；前端显示环境回合与动作状态、轮次进度只数角色轮次 | `adjudicate` 档可用，物件状态只在本场有效（A30） |
 | **PR-2b = 20a 跨场** | `plan_scene` 产出 `objects_present` / `environment_script`（规划与评估 prompt 看得到物件），全部建场景路径搬运，SceneComposer 可编辑（A29）；环境 delta 并入世界变量（与评估 delta 各自独立的 `try`）+ `environment_delta_applied` 启动对账（A28） | 物件状态跨场延续 |
 | **PR-3 = 20b** | 揭示来源 ②（独立生成调用 + 现场当事人视图）；《玻璃王冠》整场验收；成本报告 | — |
 
