@@ -33,6 +33,21 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+#: 环境回合 turn_id 的命名空间。固定值，改了就认不出已落盘的环境回合
+_ENVIRONMENT_TURN_NAMESPACE = uuid.UUID("6f1c0b5e-3a51-4d0e-9b3c-2c7e1f0a9d24")
+
+#: 环境回合的 character_name。展示用；判定一律看 kind
+ENVIRONMENT_SPEAKER = "环境"
+
+
+def environment_turn_id(source_turn_id: str, action_index: int) -> str:
+    """环境回合的 turn_id 由来源轮次与动作序号确定性生成（设计单 §5.4）。
+
+    续跑补裁决前按它查日志里是否已有这个回合；与 new_id() 同为带横线的 UUID 形态。
+    """
+    return str(uuid.uuid5(_ENVIRONMENT_TURN_NAMESPACE, f"{source_turn_id}#{action_index}"))
+
+
 #: 主线推进度的"不可用"哨兵。0-1 的正常值域里没有负数，
 #: 因此它不会被误当成"进度为 0"参与钳制、停滞判定与前端展示。
 PROGRESS_UNAVAILABLE = -1.0
@@ -98,13 +113,22 @@ class EnvironmentMode(str, Enum):
 
 
 class ActionStatus(str, Enum):
-    """`ActionIntent.status`。PR-2 加入 pending / resolved / failed。
+    """`ActionIntent.status`（设计单 §4）。
 
-    读取侧未知取值一律按 skipped：PR-2 会按 pending 补裁决，手改出的脏值必须落到
-    "什么都不做"那一档（设计单 §4）。
+    - recorded：record 档，已抽取、不裁决；档位换成 adjudicate 后**不追溯**补裁决；
+    - pending：adjudicate 档，已抽取、待裁决 —— 续跑时**补裁决**，并占环境回合额度（A15 / A27）；
+    - resolved：已产生环境回合（含"未触发"的回合）；
+    - failed：裁决调用失败。不重试，否则崩溃—续跑会无限循环；不占额度；
+    - skipped：见 `skip_reason`。
+
+    读取侧未知取值一律按 skipped：续跑会按 pending 补裁决，手改出的脏值必须落到
+    "什么都不做"那一档。
     """
 
     RECORDED = "recorded"
+    PENDING = "pending"
+    RESOLVED = "resolved"
+    FAILED = "failed"
     SKIPPED = "skipped"
 
 
@@ -116,6 +140,8 @@ class ActionSkipReason(str, Enum):
     NOT_ATTEMPT = "not_attempt"
     INVALID_OBJECT = "invalid_object"
     EXTRACT_FAILED = "extract_failed"
+    #: 本场环境回合额度已满（含仍 pending 的），预占时就跳过、不发起抽取（A15）
+    QUOTA = "quota"
 
 
 class TurnKind(str, Enum):
@@ -573,6 +599,19 @@ class DialogueTurn:
     kind: str = TurnKind.CHARACTER.value
     #: 每个 *动作* 段一条（工单24）。off 档恒为空；`action` 拼接字段保持不变，渲染只读它
     actions: list[ActionIntent] = field(default_factory=list)
+    # ---- 环境回合（工单20，kind=environment 时才有值）----
+    # character_id 为空、character_name 固定为 ENVIRONMENT_SPEAKER；按 kind 区分，不靠名字
+    #: 公开叙述：进"目前对话"与全体在场角色的记忆（R3）
+    narration: str | None = None
+    #: 私密细节：只给导演 / 用户 / perceived_by 的记忆，**不进 transcript**（A2、契约1）
+    private_detail: str | None = None
+    #: 能感知 private_detail 的角色 id。PR-2 固定为执行者本人（A25）
+    perceived_by: list[str] = field(default_factory=list)
+    #: 来源：哪个角色轮次的第几个动作段。turn_id 由二者确定性生成（environment_turn_id）
+    source_turn_id: str = ""
+    source_action_index: int = -1
+    #: 服务端每改写一次**已落盘**的轮次就 +1。SSE `turn_update` 靠它判新旧（设计单 §5.2）
+    revision: int = 0
 
 
 @dataclass
@@ -611,6 +650,11 @@ class Scene:
     #: 本场运行期间的 LLM 调用计数，按用途分（工单25）。continue 的多段累加；
     #: 评估的调用记在 SceneEvaluation 上，不在这里（推送评估之后不得再 save_scene）
     llm_usage: dict[str, LLMUsageStat] = field(default_factory=dict)
+    #: 场景内的物件公开状态（工单20），键为 `物件名·属性`。由环境裁决改写，进角色 **user**
+    #: 消息的【当前环境】块（契约3 补充条款），绝不进 system / scene_context。
+    #: 值为 None = 本场清除了该属性（场景结束并入世界变量时据此删除，PR-2b）。
+    #: 只许放所有在场角色都能感知的公开状态（契约1），私密结果只进 private_detail
+    environment_state: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass

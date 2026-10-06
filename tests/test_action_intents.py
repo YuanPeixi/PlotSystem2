@@ -316,7 +316,8 @@ def test_deserialize_tightens_unknown_status_and_skips_bad_entries():
     scene = repository._deserialize_scene(_scene_with_actions("s-de", [
         {"index": 0, "text": "拿起王冠", "object_id": "o-crown", "status": "recorded",
          "skip_reason": "no_object"},
-        # PR-2 的 pending 会被补裁决；手改出来的必须落到什么都不做
+        # pending 会被补裁决；手改出来的、没指向物件的必须落到什么都不做（PR-2a 起 pending
+        # 是合法取值，没有 object_id 才收紧，原因记 invalid_object）
         {"index": 1, "text": "x", "status": "pending"},
         {"index": 2, "text": "x", "status": "乱写", "skip_reason": "no_object"},
         {"index": 3, "status": "skipped", "skip_reason": "瞎编"},
@@ -325,7 +326,7 @@ def test_deserialize_tightens_unknown_status_and_skips_bad_entries():
     ]))
     actions = scene.dialogue_log[0].actions
     assert [(a.index, a.status, a.skip_reason) for a in actions] == [
-        (0, "recorded", ""), (1, "skipped", ""), (2, "skipped", ""), (3, "skipped", ""),
+        (0, "recorded", ""), (1, "skipped", "invalid_object"), (2, "skipped", ""), (3, "skipped", ""),
     ]
 
 
