@@ -181,8 +181,13 @@ def parse_adjudication(raw: str, *, has_script: bool) -> Adjudication | None:
     """把裁决器的输出收进可控形状。返回 None = 裁决失败（动作记 failed，**不生成环境回合**）。
 
     失败不伪造结果（设计单 §5.7）：没有公开叙述的裁决等于没裁决，绝不能补一句"毫无反应"。
+    `executable` / `triggered` 同理是必填：缺失或不是布尔就是输出不可用，整次裁决按失败处理。
+    不能替模型补缺省 —— 补成"可执行"会让残缺的输出也改写物件状态，补成"不可执行"又会让
+    写着"王冠亮起"的叙述与没动过的状态对不上。
     `has_script` 是这个物件有没有导演预制揭示：没有的话，声称来源 ① 的私密细节只能是
     裁决器编的 —— 它同时看着隐藏规则，编出来的东西可能夹带秘密，按 ③ 降级并丢弃。
+    预制揭示也只在**规则真正触发**时才给执行者：没触发（含不可执行）还留着它，等于把导演
+    安排的秘密白送给一个没满足条件的角色（契约1）。
     """
     data = _extract_object(raw)
     if data is None:
@@ -190,12 +195,15 @@ def parse_adjudication(raw: str, *, has_script: bool) -> Adjudication | None:
     narration = _fit_one_line(data.get("narration"), NARRATION_TOKENS)
     if not narration:
         return None
-    result = Adjudication(narration=narration)
     executable = _strict_bool(data.get("executable"))
     triggered = _strict_bool(data.get("triggered"))
-    # 拿不准就往"什么都没发生"那边收：误判成触发会凭空改写物件状态
-    result.executable = True if executable is None else executable
-    result.triggered = bool(triggered) and result.executable
+    if executable is None or triggered is None:
+        logger.warning("环境裁决缺少或给错了 executable / triggered，按失败处理：%r / %r",
+                       data.get("executable"), data.get("triggered"))
+        return None
+    result = Adjudication(narration=narration, executable=executable)
+    # 做不到的动作谈不上触发
+    result.triggered = triggered and executable
     source = data.get("reveal_source")
     if not isinstance(source, str) or source not in _REVEAL_SOURCES:
         if source not in (None, ""):
@@ -209,8 +217,11 @@ def parse_adjudication(raw: str, *, has_script: bool) -> Adjudication | None:
     if source == REVEAL_SCRIPT and not has_script:
         result.rejected.append("本物件没有导演预制揭示，script 来源不成立，按 observable 处理")
         source = REVEAL_OBSERVABLE
+    if source == REVEAL_SCRIPT and not result.triggered:
+        result.rejected.append("规则未触发，不揭示导演预制内容，按 observable 处理")
+        source = REVEAL_OBSERVABLE
     result.reveal_source = source
-    # 只有导演预制的揭示才有私密细节；③ 只给可观察现象
+    # 只有已触发的导演预制揭示才有私密细节；③ 只给可观察现象
     if source == REVEAL_SCRIPT:
         result.private_detail = _fit_one_line(data.get("private_detail"), PRIVATE_DETAIL_TOKENS)
     elif data.get("private_detail"):

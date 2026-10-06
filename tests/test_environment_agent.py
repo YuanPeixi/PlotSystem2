@@ -97,11 +97,40 @@ def test_unknown_reveal_source_falls_back_to_observable(source):
     assert result.private_detail == ""
 
 
-@pytest.mark.parametrize(("value", "expected"), [(True, True), ("true", True), ("false", False),
-                                                 ("是", False), (1, False), (None, False)])
-def test_triggered_is_strict(value, expected):
-    """拿不准就往"什么都没发生"那边收："false" 不能变成 True，误判触发会凭空改写物件状态。"""
+@pytest.mark.parametrize(("value", "expected"), [(True, True), ("true", True), (False, False), ("false", False)])
+def test_triggered_accepts_only_booleans(value, expected):
+    """"false" 不能变成 True：误判触发会凭空改写物件状态。"""
     assert parse_adjudication(_raw(triggered=value), has_script=True).triggered is expected
+
+
+@pytest.mark.parametrize("field", ["executable", "triggered"])
+@pytest.mark.parametrize("value", ["是", "maybe", 1, None, ["true"], "MISSING"])
+def test_unknown_executable_or_triggered_fails_the_adjudication(field, value):
+    """评审 P1：缺失或非法时不能替模型补缺省。补成"可执行"会让残缺的输出也改写物件状态
+    （进每个角色的【当前环境】，2b 起还进世界变量）；补成"不可执行"又会让写着触发的叙述
+    与没动过的状态对不上。整次按失败处理（设计单 §5.7）。"""
+    payload = json.loads(_raw(executable=True, triggered=True, state_changes={"光芒": "明亮"}))
+    if value == "MISSING":
+        del payload[field]
+    else:
+        payload[field] = value
+    assert parse_adjudication(json.dumps(payload, ensure_ascii=False), has_script=True) is None
+
+
+def test_untriggered_rule_never_reveals_the_script():
+    """评审 P1：规则没触发（不是王室血脉的人戴上王冠），导演预制的揭示不能进执行者记忆（契约1）。"""
+    result = parse_adjudication(_raw(triggered=False), has_script=True)
+    assert result.reveal_source == REVEAL_OBSERVABLE
+    assert result.private_detail == ""
+    assert result.rejected
+
+
+def test_unexecutable_action_never_reveals_the_script():
+    """同一个洞的第二个入口：不可执行时 triggered 被强制为 false，预制揭示同样不能留下。"""
+    result = parse_adjudication(_raw(executable=False, triggered=True), has_script=True)
+    assert result.triggered is False
+    assert result.reveal_source == REVEAL_OBSERVABLE
+    assert result.private_detail == ""
 
 
 def test_not_executable_cannot_trigger_or_change_state():
