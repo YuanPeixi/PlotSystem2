@@ -50,6 +50,7 @@ from backend.models import (
     goal_revision,
     now,
 )
+from backend.services.environment import clamp_environment_state
 from backend.services.objects import MAX_PROJECT_OBJECTS, clamp_object, clamp_objects_present
 from backend.services.storyboard import clamp_storyboard
 from backend.services.world_state import clamp_world_variables
@@ -351,13 +352,21 @@ def _parse_created_at(raw: object, label: str = "场景创建时间") -> datetim
 
 _ACTION_STATUSES = {s.value for s in ActionStatus}
 _SKIP_REASONS = {r.value for r in ActionSkipReason}
+#: 这几档都指向一个具体物件：object_id 为空的话续跑补裁决无物可裁
+_STATUSES_WITH_OBJECT = {
+    ActionStatus.RECORDED.value,
+    ActionStatus.PENDING.value,
+    ActionStatus.RESOLVED.value,
+    ActionStatus.FAILED.value,
+}
 
 
 def _deserialize_actions(raw: object) -> list[ActionIntent]:
     """还原一轮的动作意图。坏条目跳过，一条坏记录不能让 list_scenes 五百。
 
-    **未知 status 一律收紧为 skipped**（设计单 §4）：PR-2 会按 pending 补裁决，
-    手改出的脏值必须落到"什么都不做"那一档，不能变成"待裁决"。
+    **未知 status 一律收紧为 skipped**（设计单 §4）：续跑会按 pending 补裁决，
+    手改出的脏值必须落到"什么都不做"那一档，不能变成"待裁决"。指向物件的几档却没有
+    object_id 的，同样收紧为 skipped。
     """
     if not isinstance(raw, list):
         return []
@@ -370,18 +379,24 @@ def _deserialize_actions(raw: object) -> list[ActionIntent]:
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
             logger.warning("动作意图的 index 非法，已跳过：%r", index)
             continue
+        # 先判类型再查集合：[] / {} 不可哈希，`in` 会抛 TypeError（同 _turn_kind）
         status = item.get("status")
         reason = item.get("skip_reason")
-        if status not in _ACTION_STATUSES:
+        reason = reason if isinstance(reason, str) else ""
+        object_id = str(item.get("object_id") or "")
+        if not isinstance(status, str) or status not in _ACTION_STATUSES:
             logger.warning("动作意图的 status 非法，按 skipped 处理：%r", status)
             status, reason = ActionStatus.SKIPPED.value, ""
-        if status == ActionStatus.RECORDED.value or reason not in _SKIP_REASONS:
+        elif status in _STATUSES_WITH_OBJECT and not object_id:
+            logger.warning("动作意图为 %s 却没有物件，按 skipped 处理", status)
+            status, reason = ActionStatus.SKIPPED.value, ActionSkipReason.INVALID_OBJECT.value
+        if status != ActionStatus.SKIPPED.value or reason not in _SKIP_REASONS:
             reason = ""
         out.append(
             ActionIntent(
                 index=index,
                 text=str(item.get("text") or ""),
-                object_id=str(item.get("object_id") or ""),
+                object_id=object_id,
                 verb=str(item.get("verb") or ""),
                 detail=str(item.get("detail") or ""),
                 status=status,
@@ -404,24 +419,44 @@ def _turn_kind(raw: object) -> str:
     return TurnKind.CHARACTER.value
 
 
+def _str_or_none(raw: object) -> str | None:
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _non_negative_int(raw: object, default: int) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        return default
+    return raw
+
+
+def _deserialize_turn(t: dict) -> DialogueTurn:
+    kind = _turn_kind(t.get("kind"))
+    perceived = t.get("perceived_by")
+    return DialogueTurn(
+        turn_id=t.get("turn_id", ""),
+        scene_id=t.get("scene_id", ""),
+        turn_number=t.get("turn_number", 0),
+        character_id=t.get("character_id", ""),
+        character_name=t.get("character_name", ""),
+        dialogue=t.get("dialogue"),
+        action=t.get("action"),
+        inner_thought=t.get("inner_thought"),
+        memory_context_used=list(t.get("memory_context_used", []) or []),
+        selector_notice=t.get("selector_notice", ""),
+        kind=kind,
+        actions=_deserialize_actions(t.get("actions")),
+        narration=_str_or_none(t.get("narration")),
+        private_detail=_str_or_none(t.get("private_detail")),
+        # 名单只认字符串 id：它决定谁的记忆里有私密细节，脏值不能扩大可见范围
+        perceived_by=[p for p in perceived if isinstance(p, str) and p] if isinstance(perceived, list) else [],
+        source_turn_id=str(t.get("source_turn_id") or ""),
+        source_action_index=_non_negative_int(t.get("source_action_index"), -1),
+        revision=_non_negative_int(t.get("revision"), 0),
+    )
+
+
 def _deserialize_scene(data: dict) -> Scene:
-    log = [
-        DialogueTurn(
-            turn_id=t.get("turn_id", ""),
-            scene_id=t.get("scene_id", ""),
-            turn_number=t.get("turn_number", 0),
-            character_id=t.get("character_id", ""),
-            character_name=t.get("character_name", ""),
-            dialogue=t.get("dialogue"),
-            action=t.get("action"),
-            inner_thought=t.get("inner_thought"),
-            memory_context_used=list(t.get("memory_context_used", []) or []),
-            selector_notice=t.get("selector_notice", ""),
-            kind=_turn_kind(t.get("kind")),
-            actions=_deserialize_actions(t.get("actions")),
-        )
-        for t in (data.get("dialogue_log") or [])
-    ]
+    log = [_deserialize_turn(t) for t in (data.get("dialogue_log") or [])]
     return Scene(
         scene_id=data["scene_id"],
         project_id=data["project_id"],
@@ -447,6 +482,9 @@ def _deserialize_scene(data: dict) -> Scene:
         speaker_mode=data.get("speaker_mode", SpeakerMode.ROUND_ROBIN.value),
         dialogue_log=log,
         llm_usage=deserialize_usage(data.get("llm_usage"), f"场景 {data['scene_id']} "),
+        environment_state=clamp_environment_state(
+            data.get("environment_state"), f"场景 {data['scene_id']} "
+        ),
     )
 
 

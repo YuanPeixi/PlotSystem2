@@ -88,8 +88,18 @@ export interface DialogueTurn {
   selector_notice?: string
   // 环境回合（工单24/20）不占发言顺序、不计入 max_turns；旧数据缺省即 character
   kind?: 'character' | 'environment'
-  /** 每个 *动作* 段的意图（工单24，record 档才有）。只给导演/用户看，不进角色上下文 */
+  /** 每个 *动作* 段的意图（工单24，record / adjudicate 档才有）。只给导演/用户看，不进角色上下文 */
   actions?: ActionIntent[]
+  /** 环境回合的公开叙述（进"目前对话"） */
+  narration?: string | null
+  /** 环境回合的私密细节：只给导演/用户与 perceived_by 的记忆，不进"目前对话" */
+  private_detail?: string | null
+  perceived_by?: string[]
+  /** 环境回合的来源：哪个角色轮次的第几个动作段 */
+  source_turn_id?: string
+  source_action_index?: number
+  /** 服务端每改写一次已落盘的轮次就 +1；SSE turn_update 按它判新旧 */
+  revision?: number
 }
 
 export interface ActionIntent {
@@ -98,8 +108,8 @@ export interface ActionIntent {
   object_id: string
   verb: string
   detail: string
-  status: 'recorded' | 'skipped'
-  skip_reason: '' | 'no_object' | 'over_limit' | 'not_attempt' | 'invalid_object' | 'extract_failed'
+  status: 'recorded' | 'pending' | 'resolved' | 'failed' | 'skipped'
+  skip_reason: '' | 'no_object' | 'over_limit' | 'not_attempt' | 'invalid_object' | 'extract_failed' | 'quota'
 }
 
 export interface Scene {
@@ -126,6 +136,8 @@ export interface Scene {
   created_at?: string
   /** 本场运行期间的 LLM 调用计数，按用途分（工单25）；评估的调用在 SceneEvaluation 上 */
   llm_usage?: Record<string, LLMUsageStat>
+  /** 场景内的物件公开状态（工单20），键为「物件名·属性」；null = 本场清除了该属性 */
+  environment_state?: Record<string, string | null>
 }
 
 /** 某一用途的 LLM 调用计数（工单25）。只增观测。 */
