@@ -136,8 +136,8 @@ export interface Scene {
   created_at?: string
   /** 本场运行期间的 LLM 调用计数，按用途分（工单25）；评估的调用在 SceneEvaluation 上 */
   llm_usage?: Record<string, LLMUsageStat>
-  /** 场景内的物件公开状态（工单20），键为「物件名·属性」；null = 本场清除了该属性 */
-  environment_state?: Record<string, string | null>
+  /** 场景内的物件公开状态（工单20）：物件 ID → { 属性: 值 }；null = 本场清除了该属性 */
+  environment_state?: Record<string, Record<string, string | null>>
 }
 
 /** 某一用途的 LLM 调用计数（工单25）。只增观测。 */
