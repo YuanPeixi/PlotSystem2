@@ -8,7 +8,8 @@
   **不含任何角色的视图**（已知事实、未知事实、记忆、关系）—— 裁决器不需要知道谁知道什么，
   给了反而可能把别人的秘密写进叙述；
 - 输出的 `narration` 是公开的，进全场 transcript 与每个在场角色的记忆。提示词要求它只写
-  可观察现象；`private_detail` 只在导演预制了揭示（①）时才有，且只进执行者本人的记忆。
+  可观察现象；`private_detail` 只在导演预制了揭示（①）且规则触发时才有，必须是预制揭示的
+  原文摘录（解析时校验），且只进执行者本人的记忆。
   ② 现场生成要拆成独立调用（A13），归 20b，这里不产出。
 
 调用走 `chat_safe`（契约7），用导演模型、温度 0.3（要一致，不要创意）。
@@ -51,9 +52,10 @@ _PROMPT = """你是剧情推演里的环境裁决者。物件不会说话、没�
    方法不对、不是规则要求的人）就是没触发 —— 没触发也要写叙述，说明物件的实际反应（例如"冰凉，毫无动静"）；
 3. narration：在场所有人都能看见、听见的现象，一两句，第三人称。**不得写出隐藏规则本身，
    不得写任何人的内心、身世或秘密**，只写可观察到的事；
-4. reveal_source 与 private_detail：触发后若要揭示只有执行者本人能感知的内容（例如看见的幻象），
-   **只能取自上面的导演预制揭示**，此时 reveal_source 为 "script"、private_detail 写执行者独自感知到的内容；
-   没有预制揭示或用不上时，reveal_source 为 "observable"、private_detail 留空，只在 narration 里写可观察现象；
+4. reveal_source 与 private_detail：规则触发后若要揭示只有执行者本人能感知的内容（例如看见的幻象），
+   **只能从上面的导演预制揭示里原样摘录与本次动作对应的那一段，一字不改**（不要换人称、不要概括、
+   不要补充），此时 reveal_source 为 "script"。不是原文摘录的私密细节会被丢弃。
+   没触发、没有预制揭示或用不上时，reveal_source 为 "observable"、private_detail 留空，只在 narration 里写可观察现象；
 5. state_changes：这个物件在场所有人都看得出的状态变化，键为属性名（如"佩戴者""光芒""暗格"），
    不超过 {attr_chars} 字；某属性不再成立时值为 null。没有变化给 {{}}。只能改这个物件。
 
@@ -117,7 +119,7 @@ class EnvironmentAgent:
         except LLMError as exc:
             logger.warning("环境裁决调用失败（物件 %s、执行者 %s）：%s", obj.name, actor_name, exc)
             return None
-        result = parse_adjudication(raw, has_script=bool(_one_line(script)))
+        result = parse_adjudication(raw, script=script)
         if result is None:
             logger.warning("环境裁决的输出不可用（物件 %s、执行者 %s）：%s", obj.name, actor_name, raw[:300])
             return None

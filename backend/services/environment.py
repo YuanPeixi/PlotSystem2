@@ -177,17 +177,43 @@ def _extract_object(raw: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def parse_adjudication(raw: str, *, has_script: bool) -> Adjudication | None:
+#: 摘录两端允许剥掉的引号与标点：模型常把原文包在引号里、或在句末补个句号返回，不是改写
+_EXCERPT_STRIP = "\"'“”‘’「」『』《》。，、；：！？…,.;:!? "
+
+
+def _script_excerpt(raw_detail: object, script: str) -> str | None:
+    """私密细节必须是导演预制揭示里**连续的一段原文**（规整空白、剥掉两端引号与标点后比对）。
+
+    返回规整后的摘录；空串表示没给细节；None 表示不是原文摘录（可能夹带隐藏规则里的内容）。
+    允许摘录而不是只许整段照抄：预制揭示可能按条件分支写（"她戴上投出 X；王后戴上投出 Y"），
+    整段给执行者会连另一个分支一起泄露。代价是模型改了措辞的揭示会作废 —— 宁可少揭示，
+    不可多泄露。
+    """
+    if raw_detail is None:
+        return ""
+    detail = _one_line(raw_detail).strip(_EXCERPT_STRIP)
+    if not detail:
+        return ""
+    # 比对时忽略全部空白：中文里换行被塌成空格后，"看见了 母亲"就不再是"看见了母亲"的子串，
+    # 而空白承载不了任何内容
+    compact = "".join(detail.split())
+    return detail if compact in "".join(str(script).split()) else None
+
+
+def parse_adjudication(raw: str, *, script: str) -> Adjudication | None:
     """把裁决器的输出收进可控形状。返回 None = 裁决失败（动作记 failed，**不生成环境回合**）。
 
     失败不伪造结果（设计单 §5.7）：没有公开叙述的裁决等于没裁决，绝不能补一句"毫无反应"。
     `executable` / `triggered` 同理是必填：缺失或不是布尔就是输出不可用，整次裁决按失败处理。
     不能替模型补缺省 —— 补成"可执行"会让残缺的输出也改写物件状态，补成"不可执行"又会让
     写着"王冠亮起"的叙述与没动过的状态对不上。
-    `has_script` 是这个物件有没有导演预制揭示：没有的话，声称来源 ① 的私密细节只能是
-    裁决器编的 —— 它同时看着隐藏规则，编出来的东西可能夹带秘密，按 ③ 降级并丢弃。
-    预制揭示也只在**规则真正触发**时才给执行者：没触发（含不可执行）还留着它，等于把导演
-    安排的秘密白送给一个没满足条件的角色（契约1）。
+
+    私密细节有三道关，都是因为裁决器同时看着隐藏规则，它写出来的东西可能夹带秘密：
+    - `script` 是这个物件的导演预制揭示原文。没有的话，声称来源 ① 的细节只能是编的，按 ③ 降级；
+    - 预制揭示只在**规则真正触发**时才给执行者：没触发（含不可执行）还留着它，等于把导演
+      安排的秘密白送给一个没满足条件的角色（契约1）；
+    - 细节必须是预制揭示的原文摘录（`_script_excerpt`）：只检查"有没有预制揭示"的话，
+      裁决器可以借来源 ① 把隐藏规则里的秘密写进执行者记忆（设计单 R1）。
     """
     data = _extract_object(raw)
     if data is None:
@@ -214,18 +240,24 @@ def parse_adjudication(raw: str, *, has_script: bool) -> Adjudication | None:
         # 它写出来的"私密细节"可能夹带别人的秘密。PR-2a 没有生成调用，按 ③ 降级
         result.rejected.append("揭示来源 generate 未启用（20b），按 observable 处理")
         source = REVEAL_OBSERVABLE
-    if source == REVEAL_SCRIPT and not has_script:
+    if source == REVEAL_SCRIPT and not _one_line(script):
         result.rejected.append("本物件没有导演预制揭示，script 来源不成立，按 observable 处理")
         source = REVEAL_OBSERVABLE
     if source == REVEAL_SCRIPT and not result.triggered:
         result.rejected.append("规则未触发，不揭示导演预制内容，按 observable 处理")
         source = REVEAL_OBSERVABLE
-    result.reveal_source = source
-    # 只有已触发的导演预制揭示才有私密细节；③ 只给可观察现象
     if source == REVEAL_SCRIPT:
-        result.private_detail = _fit_one_line(data.get("private_detail"), PRIVATE_DETAIL_TOKENS)
+        # 先校验、后截断：截断可能插入省略标记，截断后的文本就不再是原文子串了
+        excerpt = _script_excerpt(data.get("private_detail"), script)
+        if excerpt is None:
+            result.rejected.append("私密细节不是导演预制揭示的原文摘录，已丢弃，按 observable 处理")
+            source = REVEAL_OBSERVABLE
+        else:
+            result.private_detail = _fit_one_line(excerpt, PRIVATE_DETAIL_TOKENS)
     elif data.get("private_detail"):
+        # 只有已触发的导演预制揭示才有私密细节；③ 只给可观察现象
         result.rejected.append("observable 来源不应有私密细节，已丢弃")
+    result.reveal_source = source
     changes = data.get("state_changes")
     if changes is None:
         changes = {}
