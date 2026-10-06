@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from backend.models import LLMPurpose
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
@@ -240,6 +241,7 @@ async def compact_lines(
             temperature=temperature,
             model=model,
             max_tokens=512,
+            purpose=LLMPurpose.COMPACTION,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("中段摘要失败，降级为 head_tail 裁剪：%s", exc)

@@ -11,6 +11,7 @@ from backend.models import (
     OBJECT_VISIBILITY_HIDDEN,
     OBJECT_VISIBILITY_PRIVATE,
     CharacterCard,
+    LLMPurpose,
     LoreEntry,
     WorldObject,
 )
@@ -106,7 +107,9 @@ class WorldRulesExtractor:
         for text in texts:
             prompt = _LORE_PROMPT.format(text=text[:6000])
             try:
-                raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.3)
+                raw = await chat_safe(
+                    [{"role": "user", "content": prompt}], temperature=0.3, purpose=LLMPurpose.BUILD
+                )
             except Exception as exc:  # noqa: BLE001
                 # 单段世界规则提取失败不应中断整个构建，跳过该段。
                 logger.warning("世界规则提取失败，已跳过一段：%s", exc)
@@ -277,7 +280,9 @@ class LoreVisibilityClassifier:
             entries="\n".join(lines),
         )
         try:
-            raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.2)
+            raw = await chat_safe(
+                [{"role": "user", "content": prompt}], temperature=0.2, purpose=LLMPurpose.BUILD
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("世界设定可见性判定失败，本批 %d 条不发给任何角色：%s", len(batch), exc)
             return [LoreVerdict(e, note=CALL_FAILED) for e in batch]
@@ -399,7 +404,9 @@ class ObjectExtractor:
         for text in texts:
             prompt = _OBJECT_PROMPT.format(text=text[:6000])
             try:
-                raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.3)
+                raw = await chat_safe(
+                    [{"role": "user", "content": prompt}], temperature=0.3, purpose=LLMPurpose.BUILD
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("物件抽取失败，已跳过一段：%s", exc)
                 result.failed_chunks += 1

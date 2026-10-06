@@ -16,7 +16,7 @@ from __future__ import annotations
 from backend.agents.base_agent import autogen_available, make_model_client
 from backend.config import settings
 from backend.memory import MemoryManager
-from backend.models import RESERVED_SCENE_CONTEXT_KEYS, CharacterCard, LoreEntry
+from backend.models import RESERVED_SCENE_CONTEXT_KEYS, CharacterCard, LLMPurpose, LoreEntry
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
@@ -249,6 +249,7 @@ class CharacterAgent:
             ],
             temperature=self.temperature,
             model=self.model,
+            purpose=LLMPurpose.CHARACTER,
         )
 
     # ---- AutoGen 集成 ----

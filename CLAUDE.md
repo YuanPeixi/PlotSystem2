@@ -200,7 +200,8 @@ backend/
 │
 └── utils/
     ├── fileio.py      ★ 原子写文件的唯一实现（临时名唯一且不长于目标名）
-    ├── llm.py         ★ LLM 唯一出口（chat / chat_safe / estimate_tokens）
+    ├── llm.py         ★ LLM 唯一出口（chat / chat_safe / estimate_tokens），也是调用计数的唯一计数点
+    ├── usage.py       LLM 调用计数器与按上下文归属（工单25，见 4.2 陷阱 26）
     ├── context.py     ★ 统一上下文压缩管线（fit_lines / compact_lines，4 种策略）
     ├── turns.py       ★ 轮次的统一渲染 / 感知判定 / 计数口径（render_turn / perceive / character_turns）
     ├── db.py          SQLite DDL + 连接
@@ -250,6 +251,7 @@ frontend/src/
 | `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
 | `Scene` / `DialogueTurn` | 场景与对话轮次（`Scene.objects_present` 为本场在场物件；轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24） | SQLite `scenes`（轮次内嵌） |
 | `ActionIntent` | 一个 `*动作*` 段的意图（物件 / 动词 / 细节 / `status` + `skip_reason`），挂在 `DialogueTurn.actions`，**只给导演与用户看**（见陷阱 25） | 随轮次内嵌 |
+| `LLMUsageStat` | 某一用途的 LLM 调用计数（次数 / 失败 / 重试 / token / 估算次数 / 耗时）。`Scene.llm_usage` 记运行期间的、`SceneEvaluation.llm_usage` 记评估的（见陷阱 26） | 随场景 / 评估内嵌 |
 | `WorldObject` | **项目级**物件：公开描述 + 隐藏规则（**只进导演与环境层**）+ 可见性 `global` / `private`（配 `known_by` 名单）/ `hidden` | **文件** `objects/{object_id}.json` |
 | `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
 | `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
@@ -653,6 +655,20 @@ frontend/src/
     - **读取侧收紧**：未知 `status` 一律按 `skipped`（PR-2 会按 `pending` 补裁决，脏值不能变成待裁决）。
       在场物件的悬空 ID 跳过时 warning —— 静默跳过会让 record 档命中率无声归零。
 
+26. **LLM 调用计数（工单25）的四条语义**，只增观测，但两条红线动了就是数据损坏：
+    - **计数点只在 `utils/llm.py`**（外加 `memory/embeddings.py` 这个契约7 例外）。调用方只传
+      `purpose=LLMPurpose.xxx`，漏标的归 `untagged`；`tests/test_llm_usage.py` 用 AST 扫描钉住
+      "每个 `chat` / `chat_safe` 调用点都标了用途"。计数本身出错只记日志，不得让调用失败；
+    - **归属靠 ContextVar**（`utils/usage.py`），不靠参数传递：`create_task` / `gather` 的子任务与
+      `asyncio.to_thread` 都会复制上下文，selector 的并发打分、线程里的 embedding 自然归到同一场；
+    - **推送 evaluation 事件之后不得再 `save_scene`**：用户收到评估就能决策，continue 会改写这一场，
+      再整份覆盖 `data_json` 就把决策的改动抹掉了。所以评估的调用装在**内层计数器**里、记在
+      `SceneEvaluation.llm_usage` 上，场景的计数随既有的逐轮落盘带走，最后一次是评估之前那次；
+    - **`run_scene` 必须自己装计数器、在外层 `finally` 撤下**：AutoPilot 的自动 continue 是在上一轮
+      `run_scene` 里起的任务，复制了它的上下文；不重新装两轮就混在一起，不撤下则收尾阶段
+      （AutoPilot 决策、下一场规划）的调用会记到已经落库的那场上。continue 的多段在场景已有
+      计数上累加（`UsageMeter.seed`）。导演历史副本里清掉评估的计数（同 `storyboard_patch` 的理由）。
+
 ---
 
 ## 5. 持久化契约 ★
@@ -714,7 +730,8 @@ build_status.json                 构建进度（供重启后对账）
 1. 改 `backend/models.py` 的 dataclass；
 2. **同步改 `services/repository.py` 里对应的 `_deserialize_*`**（`_deserialize_card` /
    `_deserialize_scene` / `deserialize_story_history` / `deserialize_storyboard` /
-   `_deserialize_object` / `_deserialize_actions` / 快照的 `_deserialize_character_state`）——漏这步字段会静默丢失；
+   `_deserialize_object` / `_deserialize_actions` / 快照的 `_deserialize_character_state`，
+   以及场景与评估共用的 `usage.deserialize_usage`）——漏这步字段会静默丢失；
 3. 评估是否需要新增 SQL 列（只有需要索引/过滤/CAS 时才加，普通字段靠 `data_json` 自动携带）。
 
 前端有对应类型时，同步改 `frontend/src/types/index.ts`。
@@ -1001,6 +1018,7 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 （tenacity 3 次指数退避、180s 超时、失败转 `LLMError`）。
 **禁止**在其他模块直接实例化 OpenAI 客户端——唯一例外是 `memory/embeddings.py`
 （Chroma 要求同步接口）。模型名一律走 `settings`，禁止硬编码。
+调用点要用 `purpose` 标明用途：调用计数（工单25）只在这一个出口发生，见 4.2 陷阱 26。
 
 ### 契约 8 — 分层边界
 
@@ -1269,6 +1287,8 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
   工单29 之前构建的项目都需要跑一次；会调 LLM，预览与写入是两次独立判定）。
 - 动作意图统计：`python -m scripts.action_stats --project ID [--branch B]`（工单24，**只读**、
   不调 LLM）：record 档下的命中率、抽取调用次数、跳过原因分布。
+- LLM 用量报表：`python -m scripts.usage_report --project ID [--branch B]`（工单25，**只读**、
+  不调 LLM）：按场景与用途列出调用次数、token（"≈"表示含估算）、耗时，运行与评估分开计。
 
 ### 10.4 注释
 

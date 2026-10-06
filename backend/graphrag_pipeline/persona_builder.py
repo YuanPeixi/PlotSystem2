@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 
-from backend.models import CharacterCard, Entity
+from backend.models import CharacterCard, Entity, LLMPurpose
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -62,7 +62,9 @@ class PersonaBuilder:
             description=entity.description or "（无）",
             context=context[:3000] or "（无额外上下文）",
         )
-        raw = await chat_safe([{"role": "user", "content": prompt}], temperature=0.6)
+        raw = await chat_safe(
+            [{"role": "user", "content": prompt}], temperature=0.6, purpose=LLMPurpose.BUILD
+        )
         data = _extract_json(raw)
 
         return CharacterCard(

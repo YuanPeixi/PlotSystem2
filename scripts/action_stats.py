@@ -11,7 +11,7 @@
 
 `ENVIRONMENT_MODE` 按段冻结（设计单 A21）：同一场的前后两段可能处于不同档位，off 档跑出来的
 轮次 `actions` 为空，不计入任何分母 —— "段数"只统计 record 档下产生的轮次。
-token 用量要等工单25 的计数；这里给的调用次数可以先乘单次长度估算。
+token 用量见 `python -m scripts.usage_report`（工单25，按用途计 `action_extract`）。
 """
 
 from __future__ import annotations

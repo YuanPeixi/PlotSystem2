@@ -26,7 +26,7 @@ from statistics import median
 
 from backend.agents.character_agent import CharacterAgent
 from backend.config import settings
-from backend.models import DialogueTurn
+from backend.models import DialogueTurn, LLMPurpose
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
 
@@ -222,6 +222,7 @@ class ScoringSpeakerSelector:
                 max_tokens=_SCORE_MAX_TOKENS,
                 base_url=settings.selector_base_url,
                 api_key=settings.selector_api_key,
+                purpose=LLMPurpose.SELECTOR,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[selector] %s 打分调用失败：%s", agent.name, exc)

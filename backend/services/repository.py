@@ -57,6 +57,7 @@ from backend.utils import db
 from backend.utils.fileio import atomic_write_text
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_json
+from backend.utils.usage import deserialize_usage
 
 logger = get_logger("services.repository")
 
@@ -445,6 +446,7 @@ def _deserialize_scene(data: dict) -> Scene:
         turns_consolidated=data.get("turns_consolidated", 0),
         speaker_mode=data.get("speaker_mode", SpeakerMode.ROUND_ROBIN.value),
         dialogue_log=log,
+        llm_usage=deserialize_usage(data.get("llm_usage"), f"场景 {data['scene_id']} "),
     )
 
 
@@ -609,6 +611,7 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         world_state_delta=dict(data.get("world_state_delta") or {}),
         evaluated_snapshot_id=data.get("evaluated_snapshot_id", ""),
         storyboard_patch=_deserialize_storyboard_patch(data.get("storyboard_patch")),
+        llm_usage=deserialize_usage(data.get("llm_usage"), f"场景 {scene_id} 的评估"),
     )
 
 
