@@ -416,8 +416,8 @@ system prompt，别名决定预过滤的命中率（即成本）。
 | **PR-0** | ① `render_turn` 收拢五处 transcript 式渲染；② `perceive` 收敛感知判定，去掉 `from_self` / `self_character_id`；③ `DialogueTurn.kind`（恒为 character）+ 反序列化 + 前端类型；④ 计数辅助函数，轮询选人 / 轮次上限 / 停滞检测 / continue 改数角色轮次 | 无（golden 字符串用例钉住渲染输出逐字不变） |
 | **25** | 场景级 token / 调用计数（独立成单，可与 PR-1 并行） | 只增观测 |
 | **PR-1a** ✅ | `WorldObject` 模型 / 存储 / 三道预算闸门（可见性含 `known_by`）；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）；`Scene.objects_present` 持久化 + SceneComposer 手动勾选 + 全部建场景路径搬运；`scripts/extract_objects` | 构建多出物件抽取调用 |
-| **PR-1b** | `DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/action_stats` | 默认 off 无变化；record 档可评估命中率与成本 |
-| **PR-1c** | Workspace 物件编辑器（`ObjectsPanel.vue`） | 用户可在工作台增删改物件 |
+| **PR-1b** ✅ | `DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/action_stats` | 默认 off 无变化；record 档可评估命中率与成本 |
+| **PR-1c** ✅ | Workspace 物件编辑器（`ObjectsPanel.vue`） | 用户可在工作台增删改物件 |
 | **PR-2 = 20a** | EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、计数口径的 `kind` 过滤）；`turn_update` + `revision`；【当前环境】块；格式规范"只写尝试"；`plan_scene` 产出 `objects_present` / `environment_script`；环境 delta 并入世界变量 + `environment_delta_applied` 启动对账；前端显示环境回合 | `adjudicate` 档可用 |
 | **PR-3 = 20b** | 揭示来源 ②（独立生成调用 + 现场当事人视图）；《玻璃王冠》整场验收；成本报告 | — |
 
