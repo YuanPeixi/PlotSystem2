@@ -1,8 +1,9 @@
 """工单20 PR-2a C3：环境裁决器与裁决的纯函数。
 
-钉住：失败不伪造结果（没有叙述就是没裁决）；"触发"往保守方向收；没有导演预制揭示就不许
-有私密细节（裁决器看着隐藏规则，编出来的细节可能夹带秘密）；② 现场生成在 2a 不启用；
-状态变化只能改本物件、超预算拒掉新的不挤掉旧的；裁决器的输入里没有任何角色视图。
+钉住：失败不伪造结果（没有叙述就是没裁决）；执行性与触发必须明确；私密细节不由裁决器书写，
+只能是它按编号选中的**一条**导演预制揭示（A31：跨分支泄露在结构上不可能），且只在规则真正
+触发时给；预制揭示的内容不进裁决 prompt；状态变化只能改本物件、超预算拒掉新的不挤掉旧的；
+裁决器的输入里没有任何角色视图。
 """
 
 from __future__ import annotations
@@ -16,15 +17,17 @@ import pytest
 from backend.agents import environment_agent
 from backend.agents.environment_agent import EnvironmentAgent, build_adjudication_prompt
 from backend.exceptions import LLMError
-from backend.models import ActionIntent, ActionStatus, LLMPurpose, WorldObject
+from backend.models import ActionIntent, ActionStatus, LLMPurpose, RevealEntry, WorldObject
 from backend.services.environment import (
     ENVIRONMENT_STATE_BUDGET_TOKENS,
     MAX_ENVIRONMENT_STATE_KEYS,
+    MAX_REVEAL_ENTRIES,
     MAX_STATE_CHANGES,
     NARRATION_TOKENS,
     REVEAL_OBSERVABLE,
     REVEAL_SCRIPT,
     apply_state_changes,
+    normalize_reveals,
     object_state_view,
     parse_adjudication,
 )
@@ -36,73 +39,49 @@ CROWN = WorldObject(
 )
 WEAR = ActionIntent(index=0, text="把王冠戴到头上", object_id="o-crown", verb="戴上",
                     detail="戴到自己头上", status=ActionStatus.PENDING.value)
-#: 导演预制揭示。按条件分支写：伊莎贝尔与王后戴上各投出一段
-SCRIPT = "伊莎贝尔戴上：投出她六岁那年的冬天，她看见了母亲的脸。王后戴上：投出加冕夜的大火。"
+#: 导演预制揭示，按条存：一条只对应一种触发情形
+REVEALS = [
+    RevealEntry(condition="伊莎贝尔戴上", content="投出她六岁那年的冬天，她看见了母亲的脸"),
+    RevealEntry(condition="王后戴上", content="投出加冕夜的大火"),
+]
 
 
 def _raw(**kw) -> str:
-    base = {"executable": True, "triggered": True, "reveal_source": "script",
-            "narration": "王冠亮起微光", "private_detail": "她看见了母亲的脸", "state_changes": {"光芒": "微弱"}}
+    base = {"executable": True, "triggered": True, "reveal_index": 1,
+            "narration": "王冠亮起微光", "state_changes": {"光芒": "微弱"}}
     base.update(kw)
     return json.dumps(base, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
-# 解析
+# 解析：叙述与执行性
 # ---------------------------------------------------------------------------
 
 
-def test_parse_happy_path_with_a_script():
-    result = parse_adjudication(_raw(), script=SCRIPT)
+def test_parse_happy_path_with_a_reveal():
+    result = parse_adjudication(_raw(), reveals=REVEALS)
     assert (result.executable, result.triggered, result.reveal_source) == (True, True, REVEAL_SCRIPT)
     assert result.narration == "王冠亮起微光"
-    assert result.private_detail == "她看见了母亲的脸"
+    assert result.private_detail == "投出她六岁那年的冬天，她看见了母亲的脸"
     assert result.state_changes == {"光芒": "微弱"}
     assert result.rejected == []
 
 
 def test_parse_accepts_a_fenced_block():
-    assert parse_adjudication(f"好的：\n```json\n{_raw()}\n```", script=SCRIPT).narration == "王冠亮起微光"
+    assert parse_adjudication(f"好的：\n```json\n{_raw()}\n```", reveals=REVEALS).narration == "王冠亮起微光"
 
 
 @pytest.mark.parametrize("raw", ["不是 JSON", "[]", '{"narration": ""}', '{"narration": "   "}',
                                  '{"triggered": true}', '{"narration": null}'])
 def test_no_narration_means_no_adjudication(raw):
     """失败不伪造结果：没有叙述的裁决就是失败，绝不能补一句"毫无反应"（设计单 §5.7）。"""
-    assert parse_adjudication(raw, script=SCRIPT) is None
-
-
-def test_script_claim_without_a_script_is_downgraded():
-    """裁决器看着隐藏规则；没有预制揭示时它写的"私密细节"只能是编的，可能夹带秘密。"""
-    result = parse_adjudication(_raw(), script="")
-    assert result.reveal_source == REVEAL_OBSERVABLE
-    assert result.private_detail == ""
-    assert result.rejected
-
-
-def test_generate_is_not_enabled_in_2a():
-    result = parse_adjudication(_raw(reveal_source="generate"), script=SCRIPT)
-    assert result.reveal_source == REVEAL_OBSERVABLE
-    assert result.private_detail == ""
-
-
-def test_observable_drops_any_private_detail():
-    result = parse_adjudication(_raw(reveal_source="observable"), script=SCRIPT)
-    assert result.private_detail == ""
-    assert result.rejected
-
-
-@pytest.mark.parametrize("source", ["SCRIPT", 3, ["script"], "幻象"])
-def test_unknown_reveal_source_falls_back_to_observable(source):
-    result = parse_adjudication(_raw(reveal_source=source), script=SCRIPT)
-    assert result.reveal_source == REVEAL_OBSERVABLE
-    assert result.private_detail == ""
+    assert parse_adjudication(raw, reveals=REVEALS) is None
 
 
 @pytest.mark.parametrize(("value", "expected"), [(True, True), ("true", True), (False, False), ("false", False)])
 def test_triggered_accepts_only_booleans(value, expected):
     """"false" 不能变成 True：误判触发会凭空改写物件状态。"""
-    assert parse_adjudication(_raw(triggered=value), script=SCRIPT).triggered is expected
+    assert parse_adjudication(_raw(triggered=value), reveals=REVEALS).triggered is expected
 
 
 @pytest.mark.parametrize("field", ["executable", "triggered"])
@@ -116,72 +95,95 @@ def test_unknown_executable_or_triggered_fails_the_adjudication(field, value):
         del payload[field]
     else:
         payload[field] = value
-    assert parse_adjudication(json.dumps(payload, ensure_ascii=False), script=SCRIPT) is None
+    assert parse_adjudication(json.dumps(payload, ensure_ascii=False), reveals=REVEALS) is None
 
 
-def test_untriggered_rule_never_reveals_the_script():
-    """评审 P1：规则没触发（不是王室血脉的人戴上王冠），导演预制的揭示不能进执行者记忆（契约1）。"""
-    result = parse_adjudication(_raw(triggered=False), script=SCRIPT)
+# ---------------------------------------------------------------------------
+# 解析：私密细节只能是选中的那一条预制揭示（A31）
+# ---------------------------------------------------------------------------
+
+
+def test_one_branch_only_never_the_whole_script():
+    """评审 P1（复现）：整段自由文本的子串校验挡不住"把整段原样返回"，两个分支一起进了伊莎贝尔
+    的记忆。按条选之后，每次只能给一条，王后那一条结构上就到不了她手里。"""
+    result = parse_adjudication(_raw(reveal_index=1), reveals=REVEALS)
+    assert result.private_detail == REVEALS[0].content
+    assert "加冕夜" not in result.private_detail
+
+
+def test_adjudicator_written_detail_is_never_used():
+    """评审 P2（复现）：裁决器看着隐藏规则，它自己写的细节可能是"伊莎贝尔并非王后亲生"。
+    私密细节只从选中的条目里取，模型写什么都不采纳。"""
+    result = parse_adjudication(_raw(private_detail="她终于明白王后不是她的亲生母亲"), reveals=REVEALS)
+    assert result.private_detail == REVEALS[0].content
+    assert any("不采纳" in r for r in result.rejected)
+
+    result = parse_adjudication(
+        _raw(reveal_index=0, private_detail="她终于明白王后不是她的亲生母亲"), reveals=REVEALS
+    )
+    assert result.private_detail == ""
+    assert result.reveal_source == REVEAL_OBSERVABLE
+
+
+@pytest.mark.parametrize("index", [0, None, "MISSING"])
+def test_no_index_means_observable(index):
+    payload = json.loads(_raw())
+    if index == "MISSING":
+        del payload["reveal_index"]
+    else:
+        payload["reveal_index"] = index
+    result = parse_adjudication(json.dumps(payload, ensure_ascii=False), reveals=REVEALS)
+    assert result.reveal_source == REVEAL_OBSERVABLE
+    assert result.private_detail == ""
+    assert result.rejected == []
+
+
+@pytest.mark.parametrize("index", [3, -1, 99, True, "1", 1.0, [1]])
+def test_out_of_range_or_malformed_index_reveals_nothing(index):
+    result = parse_adjudication(_raw(reveal_index=index), reveals=REVEALS)
     assert result.reveal_source == REVEAL_OBSERVABLE
     assert result.private_detail == ""
     assert result.rejected
 
 
-def test_unexecutable_action_never_reveals_the_script():
-    """同一个洞的第二个入口：不可执行时 triggered 被强制为 false，预制揭示同样不能留下。"""
-    result = parse_adjudication(_raw(executable=False, triggered=True), script=SCRIPT)
+def test_no_reveals_means_any_index_is_out_of_range():
+    """没有预制揭示时，声称命中只能是编的。"""
+    result = parse_adjudication(_raw(reveal_index=1), reveals=[])
+    assert result.private_detail == ""
+    assert result.reveal_source == REVEAL_OBSERVABLE
+
+
+def test_untriggered_rule_never_reveals():
+    """评审 P1：规则没触发（不是王室血脉的人戴上王冠），预制揭示不能进执行者记忆（契约1）。"""
+    result = parse_adjudication(_raw(triggered=False), reveals=REVEALS)
+    assert result.reveal_source == REVEAL_OBSERVABLE
+    assert result.private_detail == ""
+    assert result.rejected
+
+
+def test_unexecutable_action_never_reveals():
+    """同一个洞的第二个入口：不可执行时 triggered 被强制为 false，预制揭示同样不能给。"""
+    result = parse_adjudication(_raw(executable=False, triggered=True), reveals=REVEALS)
     assert result.triggered is False
     assert result.reveal_source == REVEAL_OBSERVABLE
     assert result.private_detail == ""
 
 
-def test_private_detail_must_be_an_excerpt_of_the_script():
-    """评审 P2（复现）：有预制揭示、来源写 script，就接受了任意细节 —— 裁决器看着隐藏规则，
-    可以借来源 ① 把"伊莎贝尔并非王后亲生"写进她的记忆（设计单 R1）。"""
-    result = parse_adjudication(_raw(private_detail="她终于明白王后不是她的亲生母亲"), script=SCRIPT)
-    assert result.reveal_source == REVEAL_OBSERVABLE
-    assert result.private_detail == ""
-    assert any("原文摘录" in r for r in result.rejected)
+def test_normalize_reveals_drops_empty_entries_and_caps_the_count():
+    entries = [RevealEntry("", "无条件"), RevealEntry("有条件", "  "),
+               *[RevealEntry(f"情形\n{i}", f"内容{i}") for i in range(MAX_REVEAL_ENTRIES + 2)]]
+    kept = normalize_reveals(entries)
+    assert len(kept) == MAX_REVEAL_ENTRIES
+    assert kept[0] == RevealEntry("情形 0", "内容0")
 
 
-def test_rewording_the_script_voids_the_reveal():
-    """宁可少揭示，不可多泄露：换了人称的揭示作废，只剩公开叙述。"""
-    result = parse_adjudication(_raw(private_detail="你看见了自己六岁时的冬天"), script=SCRIPT)
-    assert result.private_detail == ""
-    assert result.narration == "王冠亮起微光"
-
-
-def test_an_excerpt_of_one_branch_is_accepted():
-    """允许摘录而不是只许整段照抄：整段会把王后那个分支一起给伊莎贝尔。"""
-    result = parse_adjudication(_raw(private_detail="投出她六岁那年的冬天，她看见了母亲的脸"), script=SCRIPT)
-    assert result.reveal_source == REVEAL_SCRIPT
-    assert result.private_detail == "投出她六岁那年的冬天，她看见了母亲的脸"
-    assert "加冕夜" not in result.private_detail
-
-
-@pytest.mark.parametrize("detail", ["「她看见了母亲的脸」", "“她看见了母亲的脸。”", "她看见了母亲的脸。",
-                                    "  她看见了\n母亲的脸  "])
-def test_quotes_punctuation_and_whitespace_are_not_rewording(detail):
-    result = parse_adjudication(_raw(private_detail=detail), script=SCRIPT)
-    assert result.reveal_source == REVEAL_SCRIPT
-    assert "".join(result.private_detail.split()) == "她看见了母亲的脸"
-
-
-def test_script_whitespace_is_normalized_before_matching():
-    script = "伊莎贝尔戴上：\n投出她六岁那年的冬天，\n她看见了母亲的脸。"
-    result = parse_adjudication(_raw(private_detail="冬天， 她看见了母亲的脸"), script=script)
-    assert result.private_detail == "冬天， 她看见了母亲的脸"
-
-
-def test_script_source_without_detail_is_fine():
-    result = parse_adjudication(_raw(private_detail=""), script=SCRIPT)
-    assert result.reveal_source == REVEAL_SCRIPT
-    assert result.private_detail == ""
-    assert result.rejected == []
+# ---------------------------------------------------------------------------
+# 解析：状态变化
+# ---------------------------------------------------------------------------
 
 
 def test_not_executable_cannot_trigger_or_change_state():
-    result = parse_adjudication(_raw(executable=False), script=SCRIPT)
+    result = parse_adjudication(_raw(executable=False), reveals=REVEALS)
     assert result.executable is False
     assert result.triggered is False
     assert result.state_changes == {}
@@ -189,7 +191,7 @@ def test_not_executable_cannot_trigger_or_change_state():
 
 def test_state_changes_are_shaped():
     changes = {"光芒": "微\n弱", "佩戴者": None, "甲·乙": "x", "": "x", "很" * 30: "长属性名", "暗格": ""}
-    result = parse_adjudication(_raw(state_changes=changes), script=SCRIPT)
+    result = parse_adjudication(_raw(state_changes=changes), reveals=REVEALS)
     assert result.state_changes["光芒"] == "微 弱"
     assert result.state_changes["佩戴者"] is None
     assert result.state_changes["暗格"] is None  # 空串与 null 同义：清除
@@ -199,20 +201,20 @@ def test_state_changes_are_shaped():
 
 def test_too_many_state_changes_are_capped():
     changes = {f"属性{i}": "值" for i in range(MAX_STATE_CHANGES + 3)}
-    result = parse_adjudication(_raw(state_changes=changes), script=SCRIPT)
+    result = parse_adjudication(_raw(state_changes=changes), reveals=REVEALS)
     assert len(result.state_changes) == MAX_STATE_CHANGES
     assert result.rejected
 
 
 @pytest.mark.parametrize("changes", ["光芒=微弱", ["光芒"], 3])
 def test_non_dict_state_changes_are_rejected(changes):
-    result = parse_adjudication(_raw(state_changes=changes), script=SCRIPT)
+    result = parse_adjudication(_raw(state_changes=changes), reveals=REVEALS)
     assert result.state_changes == {}
     assert result.rejected
 
 
 def test_narration_is_one_line_and_bounded():
-    result = parse_adjudication(_raw(narration="王冠\n亮起" + "很长的光" * 200), script=SCRIPT)
+    result = parse_adjudication(_raw(narration="王冠\n亮起" + "很长的光" * 200), reveals=REVEALS)
     assert "\n" not in result.narration
     assert estimate_tokens(result.narration) <= NARRATION_TOKENS + 10
 
@@ -269,22 +271,29 @@ def test_over_the_token_budget_the_new_change_is_rejected():
 # ---------------------------------------------------------------------------
 
 
-def test_prompt_contains_the_object_rules_state_script_and_action():
-    prompt = build_adjudication_prompt(CROWN, "伊莎贝尔", WEAR, {"光芒": "黯淡"}, "投出她六岁那年的冬天")
-    for text in ("王冠", "一顶水晶王冠", "王室血脉戴上才会投影", "光芒：黯淡", "投出她六岁那年的冬天",
+def test_prompt_contains_the_object_rules_state_conditions_and_action():
+    prompt = build_adjudication_prompt(CROWN, "伊莎贝尔", WEAR, {"光芒": "黯淡"}, REVEALS)
+    for text in ("王冠", "一顶水晶王冠", "王室血脉戴上才会投影", "光芒：黯淡", "1. 伊莎贝尔戴上", "2. 王后戴上",
                  "伊莎贝尔", "把王冠戴到头上", "戴上"):
         assert text in prompt
+
+
+def test_reveal_contents_never_enter_the_adjudication_prompt():
+    """A31：裁决器只看触发情形。内容不进 prompt，公开叙述就无从转述它。"""
+    prompt = build_adjudication_prompt(CROWN, "伊莎贝尔", WEAR, {}, REVEALS)
+    for entry in REVEALS:
+        assert entry.content not in prompt
 
 
 def test_prompt_builder_has_no_character_view_input():
     """R1 / R2：裁决器的输入里没有任何角色视图 —— 结构上就递不进去，而不是靠提示词约束。"""
     params = set(inspect.signature(build_adjudication_prompt).parameters)
-    assert params == {"obj", "actor_name", "intent", "state", "script"}
+    assert params == {"obj", "actor_name", "intent", "state", "reveals"}
 
 
 @pytest.mark.asyncio
 async def test_adjudicate_tags_its_purpose_and_parses(monkeypatch):
-    fake = AsyncMock(return_value=_raw(reveal_source="observable", private_detail=""))
+    fake = AsyncMock(return_value=_raw(reveal_index=0))
     monkeypatch.setattr(environment_agent, "chat_safe", fake)
     result = await EnvironmentAgent(model="m").adjudicate(CROWN, "伊莎贝尔", WEAR, {})
     assert result.narration == "王冠亮起微光"
@@ -293,11 +302,15 @@ async def test_adjudicate_tags_its_purpose_and_parses(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_script_flag_follows_whether_a_script_was_given(monkeypatch):
-    monkeypatch.setattr(environment_agent, "chat_safe", AsyncMock(return_value=_raw()))
-    agent = EnvironmentAgent(model="m")
-    assert (await agent.adjudicate(CROWN, "伊莎贝尔", WEAR, {}, script="")).private_detail == ""
-    assert (await agent.adjudicate(CROWN, "伊莎贝尔", WEAR, {}, script=SCRIPT)).private_detail == "她看见了母亲的脸"
+async def test_prompt_and_parse_share_the_same_numbering(monkeypatch):
+    """编号必须指向同一条：prompt 与解析用的是同一份规整结果，前面的空条目被丢掉也不错位。"""
+    fake = AsyncMock(return_value=_raw(reveal_index=2))
+    monkeypatch.setattr(environment_agent, "chat_safe", fake)
+    reveals = [RevealEntry("", "被丢掉的空条件"), *REVEALS]
+    result = await EnvironmentAgent(model="m").adjudicate(CROWN, "王后", WEAR, {}, reveals)
+    prompt = fake.await_args.args[0][0]["content"]
+    assert "2. 王后戴上" in prompt
+    assert result.private_detail == "投出加冕夜的大火"
 
 
 @pytest.mark.asyncio
