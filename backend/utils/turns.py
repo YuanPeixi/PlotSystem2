@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from backend.models import DialogueTurn, TurnKind
+from backend.models import ENVIRONMENT_SPEAKER, DialogueTurn, TurnKind
 
 
 @dataclass(frozen=True)
@@ -27,21 +27,35 @@ class Perception:
     is_self: bool
     # 内心独白只有本人可见（契约1）：他人既不能读到，也不能拿它参与重要性判定
     inner_thought: bool
+    # 环境回合的私密细节只有 perceived_by 里的人可见（A2 / A25），与"是不是我说的"无关
+    private_detail: bool = False
 
 
 def perceive(turn: DialogueTurn, viewer_id: str) -> Perception:
     """`viewer_id` 这个角色对 `turn` 能感知到什么。"""
     is_self = bool(viewer_id) and turn.character_id == viewer_id
-    return Perception(is_self=is_self, inner_thought=is_self)
+    return Perception(
+        is_self=is_self,
+        inner_thought=is_self,
+        private_detail=bool(viewer_id) and viewer_id in turn.perceived_by,
+    )
 
 
-def render_turn(turn: DialogueTurn, *, inner_thought: bool = False) -> str:
-    """把一轮渲染成 `角色名: *动作* 对白 [独白]` 的单行。
+def render_turn(turn: DialogueTurn, *, inner_thought: bool = False, private_detail: bool = False) -> str:
+    """把一轮渲染成单行：角色轮次 `角色名: *动作* 对白 [独白]`，环境回合 `【环境】叙述（私密：细节）`。
 
     不去首尾空白：记忆文本是长期记忆的寻址键（`long_term.memory_id`），改一个字符就是
     一条新记录，续跑重放会与已入库的旧文本对不上。需要去空白的调用方（角色看到的
     "目前对话"）自己 strip。
+
+    两个开关各管一种只给特定观察者的内容：`inner_thought` 是本人独白，`private_detail`
+    是环境回合的私密细节。角色看到的"目前对话"两者都不开（R3）。
     """
+    if not is_character_turn(turn):
+        text = f"【{ENVIRONMENT_SPEAKER}】{turn.narration or ''}"
+        if private_detail and turn.private_detail:
+            text += f"（私密：{turn.private_detail}）"
+        return text
     parts = []
     if turn.action:
         parts.append(f"*{turn.action}*")

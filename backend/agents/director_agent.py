@@ -785,5 +785,5 @@ class DirectorAgent:
 
     @staticmethod
     def _transcript_lines(log: list[DialogueTurn]) -> list[str]:
-        """导演有全知权，故保留 inner_thought。"""
-        return [render_turn(t, inner_thought=True) for t in log]
+        """导演有全知权，故保留 inner_thought 与环境回合的私密细节。"""
+        return [render_turn(t, inner_thought=True, private_detail=True) for t in log]

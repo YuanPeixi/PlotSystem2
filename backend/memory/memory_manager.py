@@ -23,9 +23,12 @@ def _turn_to_text(turn: DialogueTurn, perception: Perception) -> str:
     """将一轮对话渲染为记忆文本。
 
     他人轮次（在场感知）必须剥离内心独白，否则会把该角色的私有内心泄露进旁观者的
-    记忆库（CLAUDE.md 第7节“契约1”，工单15）。
+    记忆库（CLAUDE.md 第7节“契约1”，工单15）。环境回合的私密细节同理，只有
+    perceived_by 里的人记得（设计单 A6：当事人 = 公开叙述 + 私密细节，拼成一条）。
     """
-    return render_turn(turn, inner_thought=perception.inner_thought)
+    return render_turn(
+        turn, inner_thought=perception.inner_thought, private_detail=perception.private_detail
+    )
 
 
 class MemoryManager:
