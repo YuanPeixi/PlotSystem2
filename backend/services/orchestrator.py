@@ -62,7 +62,9 @@ from backend.services.objects import (
     MAX_PROJECT_OBJECTS,
     ObjectFields,
     apply_object_edit,
+    duplicate_terms,
     object_id_for_request,
+    object_terms,
     select_new_objects,
 )
 from backend.services.storyboard import (
@@ -1008,7 +1010,14 @@ async def _present_objects(scene: Scene) -> list[WorldObject]:
         logger.warning(
             "场景 %s 的在场物件已不存在，不参与动作识别：%s", scene.scene_id, "、".join(missing)
         )
-    return [by_id[oid] for oid in scene.objects_present if oid in by_id]
+    present = [by_id[oid] for oid in scene.objects_present if oid in by_id]
+    clashes = duplicate_terms(present)
+    if clashes:
+        # 写入侧已拦，这里只会是人工编辑的文件：不改数据，但预过滤会把同一句话归给两个物件
+        logger.warning(
+            "场景 %s 的在场物件名称或别名重复，动作识别会混淆：%s", scene.scene_id, "、".join(clashes)
+        )
+    return present
 
 
 async def check_objects_present(project_id: str, object_ids: list[str]) -> list[str]:
@@ -1038,7 +1047,8 @@ async def create_object(project_id: str, fields: ObjectFields, *, request_id: st
         current = await repository.find_object(project_id, object_id)
         if current is not None and current.request_id != request_id:
             return current
-        if current is None and len(await repository.list_objects(project_id)) >= MAX_PROJECT_OBJECTS:
+        existing = await repository.list_objects(project_id)
+        if current is None and len(existing) >= MAX_PROJECT_OBJECTS:
             raise InvalidRequestError(f"每个项目最多 {MAX_PROJECT_OBJECTS} 个物件")
         obj, changed = apply_object_edit(
             current,
@@ -1049,6 +1059,8 @@ async def create_object(project_id: str, fields: ObjectFields, *, request_id: st
             request_id=request_id,
             character_names=names,
             character_ids=ids,
+            # 在锁内读：两个并发的新建各自查"没人用过这个名字"，会一起通过
+            taken_terms=object_terms([o for o in existing if o.object_id != object_id]),
         )
         if changed:
             await repository.save_object(obj)
@@ -1067,6 +1079,7 @@ async def update_object(
     names, ids = await repository.character_index(project_id)
     async with _object_lock(project_id):
         current = await repository.get_object(project_id, object_id)
+        others = [o for o in await repository.list_objects(project_id) if o.object_id != object_id]
         obj, changed = apply_object_edit(
             current,
             fields,
@@ -1076,6 +1089,7 @@ async def update_object(
             request_id=request_id,
             character_names=names,
             character_ids=ids,
+            taken_terms=object_terms(others),
         )
         if changed:
             await repository.save_object(obj)

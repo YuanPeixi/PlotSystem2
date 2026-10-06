@@ -55,6 +55,30 @@ def object_id_for_request(project_id: str, request_id: str) -> str:
     return str(uuid.uuid5(_OBJECT_ID_NAMESPACE, f"{project_id}\n{request_id}"))
 
 
+def object_terms(objects: list[WorldObject]) -> dict[str, str]:
+    """这些物件的名称与别名（按 casefold，与动作预过滤同一口径）→ 所属物件名。
+
+    物件之间名称、别名都不得相同（PR-2a 评审）：角色说"戴上王冠"时两个"王冠"都会被预过滤
+    命中、意图抽取只能随便挑一个；环境状态虽已按 object_id 归属，界面与 prompt 里仍按名称显示，
+    两个同名物件的状态会被读混。
+    """
+    terms: dict[str, str] = {}
+    for obj in objects:
+        for term in (obj.name, *obj.aliases):
+            if term:
+                terms.setdefault(term.casefold(), obj.name)
+    return terms
+
+
+def duplicate_terms(objects: list[WorldObject]) -> list[str]:
+    """一批物件里被不止一个物件用到的名称或别名（人工编辑的文件可能绕过写入侧校验）。"""
+    owners: dict[str, set[str]] = {}
+    for obj in objects:
+        for term in {t.casefold() for t in (obj.name, *obj.aliases) if t}:
+            owners.setdefault(term, set()).add(obj.object_id)
+    return sorted(term for term, ids in owners.items() if len(ids) > 1)
+
+
 def select_new_objects(
     existing: list[WorldObject], extracted: list[WorldObject]
 ) -> tuple[list[WorldObject], list[str]]:
@@ -62,17 +86,18 @@ def select_new_objects(
 
     重新构建与迁移脚本共用：已有物件可能被用户手改过，按名称撞上就不覆盖。
     名称、别名任一相同都算同一件东西 —— 抽取模型这次把"王冠"当名称、上次当别名很常见。
+    比较按 casefold，与写入侧校验（`object_terms`）同一口径。
     """
-    taken = {o.name for o in existing} | {a for o in existing for a in o.aliases}
+    taken = set(object_terms(existing))
     fresh: list[WorldObject] = []
     skipped: list[str] = []
     for obj in extracted:
-        if obj.name in taken or any(a in taken for a in obj.aliases):
+        terms = {t.casefold() for t in (obj.name, *obj.aliases) if t}
+        if terms & taken:
             skipped.append(obj.name)
             continue
         fresh.append(obj)
-        taken.add(obj.name)
-        taken.update(obj.aliases)
+        taken.update(terms)
     return fresh, skipped
 
 
@@ -235,9 +260,16 @@ class ObjectFields:
 
 
 def _validated(
-    obj: WorldObject, character_names: set[str], character_ids: set[str]
+    obj: WorldObject,
+    character_names: set[str],
+    character_ids: set[str],
+    taken_terms: dict[str, str] | None = None,
 ) -> WorldObject:
-    """校验一份待写入的物件；任何超限都 422，不截断。返回规整过空白的副本。"""
+    """校验一份待写入的物件；任何超限都 422，不截断。返回规整过空白的副本。
+
+    `taken_terms` 是**其他**物件的名称与别名（`object_terms`），撞上即 422。
+    """
+    taken = taken_terms or {}
     out = deepcopy(obj)
     out.name = single_line(out.name)
     if not out.name:
@@ -247,6 +279,8 @@ def _validated(
     if out.name in character_names:
         # 动作里提到角色名是常态，与角色同名的物件会让预过滤每轮都命中
         raise InvalidRequestError(f"物件名称「{out.name}」与角色同名")
+    if out.name.casefold() in taken:
+        raise InvalidRequestError(f"物件名称「{out.name}」与物件「{taken[out.name.casefold()]}」的名称或别名重复")
 
     aliases: list[str] = []
     for alias in (single_line(a) for a in out.aliases):
@@ -258,6 +292,8 @@ def _validated(
             raise InvalidRequestError(f"别名「{alias[:OBJECT_ALIAS_CHARS]}…」超过 {OBJECT_ALIAS_CHARS} 字")
         if alias in character_names:
             raise InvalidRequestError(f"别名「{alias}」与角色同名")
+        if alias.casefold() in taken:
+            raise InvalidRequestError(f"别名「{alias}」与物件「{taken[alias.casefold()]}」的名称或别名重复")
         aliases.append(alias)
     if len(aliases) > MAX_OBJECT_ALIASES:
         raise InvalidRequestError(f"别名最多 {MAX_OBJECT_ALIASES} 条，收到 {len(aliases)} 条")
@@ -305,8 +341,10 @@ def apply_object_edit(
     request_id: str,
     character_names: set[str],
     character_ids: set[str],
+    taken_terms: dict[str, str] | None = None,
 ) -> tuple[WorldObject, bool]:
-    """用户创建或修改物件。返回 (结果, 是否真的写了)。调用方须在项目物件锁内重读 `current`。
+    """用户创建或修改物件。返回 (结果, 是否真的写了)。调用方须在项目物件锁内重读 `current`
+    与 `taken_terms`（其他物件的名称与别名，`object_terms`）。
 
     判定顺序同分镜稿 PUT（`storyboard.apply_user_edit`）：
 
@@ -348,7 +386,7 @@ def apply_object_edit(
                 f"物件已被修改（当前修订号 {current.revision}，请求基于 {base_revision}），请重新加载后再编辑"
             )
 
-    result = _validated(base, character_names, character_ids)
+    result = _validated(base, character_names, character_ids, taken_terms)
     if current is not None:
         result.revision = current.revision + 1
     result.request_id = request_id
