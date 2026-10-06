@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from backend.models import DialogueTurn
+from backend.models import ENVIRONMENT_SPEAKER, DialogueTurn
 from backend.utils.logger import get_logger
-from backend.utils.turns import Perception, perceive
+from backend.utils.turns import Perception, is_character_turn, perceive
 
 logger = get_logger("memory.episodic")
 
@@ -49,10 +49,13 @@ class EpisodicMemory:
         """启发式判断一轮对话是否构成重要事件。
 
         他人轮次的私有内心独白不得参与判定或被写入摘要（CLAUDE.md 第7节“契约1”）。
+        环境回合的私密细节同理：非当事人的判定不得读它。
         """
-        texts = [turn.dialogue, turn.action]
+        texts = [turn.dialogue, turn.action, turn.narration]
         if perception.inner_thought:
             texts.append(turn.inner_thought)
+        if perception.private_detail:
+            texts.append(turn.private_detail)
         text = " ".join(t for t in texts if t)
         return any(kw in text for kw in _IMPORTANT_KEYWORDS)
 
@@ -104,6 +107,10 @@ class EpisodicMemory:
         """
         if not self.is_important(turn, perception):
             return None
+        if not is_character_turn(turn):
+            # 环境回合是新增分支，角色轮次的冻结格式（R9）不受影响：老快照里没有环境回合。
+            # 私密细节不进正文，与内心独白同一口径
+            return _normalize_entry(f"{_ENTRY_PREFIX}{ENVIRONMENT_SPEAKER}: {turn.narration or ''}")
         parts = []
         if turn.action:
             parts.append(f"（{turn.action}）")

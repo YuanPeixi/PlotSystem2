@@ -188,3 +188,121 @@ async def test_corrupt_turn_kind_does_not_break_scene_list(raw):
     assert [t.kind for t in scenes[0].dialogue_log] == [TurnKind.CHARACTER.value] * 2
     loaded = await repository.get_scene(scene.scene_id)
     assert loaded.dialogue_log[0].kind == TurnKind.CHARACTER.value
+
+
+# ---------------------------------------------------------------------------
+# 环境回合（工单20 PR-2a C2）：渲染、感知、事件摘要
+# ---------------------------------------------------------------------------
+
+
+def _env_turn(narration="王冠亮起微光", detail="她看见了母亲的脸", perceived=("c1",)) -> DialogueTurn:
+    return DialogueTurn(
+        turn_number=2, character_id="", character_name="环境", kind=TurnKind.ENVIRONMENT.value,
+        narration=narration, private_detail=detail, perceived_by=list(perceived),
+        source_turn_id="t1", source_action_index=0,
+    )
+
+
+ENV = _env_turn()
+ENV_PUBLIC = "【环境】王冠亮起微光"
+ENV_FULL = "【环境】王冠亮起微光（私密：她看见了母亲的脸）"
+
+
+def test_environment_turn_in_the_transcript_is_narration_only():
+    """R3："目前对话"只写公开叙述，私密细节不进 transcript（它会进全场每个角色的 prompt）。"""
+    assert SceneEngine._turn_line(ENV) == ENV_PUBLIC
+
+
+def test_director_sees_the_private_detail():
+    assert DirectorAgent._transcript_lines([ENV]) == [ENV_FULL]
+
+
+def test_summary_private_detail_follows_the_thoughts_flag():
+    assert summary_lines([ENV]) == [ENV_PUBLIC]
+    assert summary_lines([ENV], include_thoughts=True) == [ENV_FULL]
+
+
+def test_environment_turn_without_detail_renders_narration_only():
+    bare = _env_turn(detail=None, perceived=())
+    assert DirectorAgent._transcript_lines([bare]) == [ENV_PUBLIC]
+
+
+@pytest.mark.asyncio
+async def test_only_the_perceiver_remembers_the_private_detail():
+    """A6：当事人 = 公开叙述 + 私密细节拼成一条；其他在场角色只记公开叙述。"""
+    actor = MemoryManager("c1", "p1")
+    await actor.add_experience(ENV)
+    assert actor.short_term.dump() == [ENV_FULL]
+    text, meta = actor.short_term.dump_with_meta()[0]
+    assert meta["is_self"] is False and meta["speaker"] == "环境"
+
+    bystander = MemoryManager("c2", "p1")
+    await bystander.add_experience(ENV)
+    assert bystander.short_term.dump() == [ENV_PUBLIC]
+
+
+def test_perception_of_character_turns_never_grants_private_detail():
+    from backend.utils.turns import perceive
+
+    assert perceive(FULL, "c1").private_detail is False
+    assert perceive(ENV, "c1").private_detail is True
+    assert perceive(ENV, "c2").private_detail is False
+    assert perceive(ENV, "").private_detail is False
+    assert perceive(ENV, "c1").is_self is False  # 环境回合没有说话人
+
+
+def test_episodic_environment_entry_never_carries_the_private_detail():
+    turn = _env_turn(narration="暗格开启，露出一封信", detail="信上写着王后的秘密")
+    actor = EpisodicMemory("c1")
+    assert actor.record(turn) is True
+    assert actor._events == ["[重要] 环境: 暗格开启，露出一封信"]
+
+
+def test_bystander_importance_does_not_read_the_private_detail():
+    """与"他人独白不参与判定"同理：关键词只在私密细节里时，只有当事人把它记成重要事件。"""
+    turn = _env_turn(narration="王冠亮起微光", detail="她明白了真相")
+    assert EpisodicMemory("c1").record(turn) is True
+    assert EpisodicMemory("c2").record(turn) is False
+
+
+@pytest.mark.parametrize(
+    ("turn", "viewer"),
+    [
+        (_env_turn(narration="暗格开启", detail="她明白了真相"), "c1"),
+        (_env_turn(narration="暗格开启", detail="她明白了真相"), "c2"),
+        (_env_turn(narration="王冠映出一场战争"), "c2"),
+        (_env_turn(narration="王冠\n毫无动静"), "c1"),
+    ],
+)
+def test_live_and_replay_agree_on_environment_turns(turn, viewer):
+    live = EpisodicMemory(viewer)
+    live.record(turn)
+    replayed = EpisodicMemory(viewer)
+    replayed.replay([turn])
+    assert replayed._events == live._events
+
+
+@pytest.mark.asyncio
+async def test_selector_local_signals_skip_environment_turns(monkeypatch):
+    """点名检测与重复发言惩罚只看角色轮次：环境回合没有发言者，叙述里提到谁也不算点名。"""
+    from unittest.mock import AsyncMock
+
+    from backend.agents.character_agent import CharacterAgent
+    from backend.models import CharacterCard
+    from backend.scene_engine import speaker_selector
+    from backend.scene_engine.speaker_selector import ScoringSpeakerSelector
+
+    agents = [
+        CharacterAgent(CharacterCard(character_id=cid, project_id="p", name=name), MemoryManager(cid, "p"))
+        for cid, name in (("c1", "甲"), ("c2", "乙"))
+    ]
+    sel = ScoringSpeakerSelector(agents)
+    seen: dict[str, list] = {}
+    monkeypatch.setattr(sel, "_detect_addressed_ids", lambda turns: seen.setdefault("addressed", turns) and set())
+    monkeypatch.setattr(sel, "_repeat_penalties", lambda turns: seen.setdefault("penalties", turns) and {})
+    monkeypatch.setattr(speaker_selector, "chat_safe", AsyncMock(side_effect=Exception("不打分")))
+
+    spoken = _turn(dialogue="乙，你来")
+    await sel.select(["甲: 乙，你来", ENV_PUBLIC], [spoken, _env_turn(narration="乙的身影映在王冠上")])
+    assert seen["addressed"] == [spoken]
+    assert seen["penalties"] == [spoken]

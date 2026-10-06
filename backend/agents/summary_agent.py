@@ -42,7 +42,10 @@ _FORMAT_INSTRUCTIONS = {
 
 
 def _transcript_lines(log: list[DialogueTurn], include_thoughts: bool = False) -> list[str]:
-    return [render_turn(t, inner_thought=include_thoughts) for t in log]
+    # 环境回合的私密细节与独白共用一个开关（目前所有输出格式都不开）
+    return [
+        render_turn(t, inner_thought=include_thoughts, private_detail=include_thoughts) for t in log
+    ]
 
 
 def _format_transcript(log: list[DialogueTurn], include_thoughts: bool = False) -> str:

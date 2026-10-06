@@ -29,6 +29,7 @@ from backend.config import settings
 from backend.models import DialogueTurn, LLMPurpose
 from backend.utils.llm import chat_safe, estimate_tokens
 from backend.utils.logger import get_logger
+from backend.utils.turns import character_turns
 
 logger = get_logger("scene_engine.selector")
 
@@ -144,8 +145,11 @@ class ScoringSpeakerSelector:
         self, transcript: list[str], turns: list[DialogueTurn]
     ) -> tuple[CharacterAgent, SelectionTrace]:
         """选出下一个发言者，并返回可观测的评分轨迹。"""
-        addressed = self._detect_addressed_ids(turns)
-        penalties = self._repeat_penalties(turns)
+        # 两个本地信号只看角色轮次（设计单 §5.5）：环境回合没有发言者，不该摊薄重复发言
+        # 的衰减，叙述里提到谁也不算被点名。打分用的 transcript 照常含环境回合（公开内容）
+        spoken = character_turns(turns)
+        addressed = self._detect_addressed_ids(spoken)
+        penalties = self._repeat_penalties(spoken)
         user_msg = self._build_user(transcript)
 
         raw_scores = await asyncio.gather(
