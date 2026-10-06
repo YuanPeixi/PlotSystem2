@@ -409,6 +409,23 @@ system prompt，别名决定预过滤的命中率（即成本）。
 | A22 | 悬空物件 ID 静默跳过 | 跳过时 warning，否则删了物件后 record 档命中率静默归零 |
 | — | Workspace 物件编辑器 | 拆成 PR-1c（纯前端，与引擎无交集） |
 
+**2026-10-06 补充**（PR-2 方案评审，owner 拍板）。对照代码发现的缺口：角色 system 里没有任何物件
+（§4 写了"公开描述按可见性进角色 system"，但没分给任何 PR）；导演规划与评估 prompt 里没有物件；
+`StageView` 的轮次进度仍数全部轮次；`EpisodicMemory._snippet` 只读 `action` / `dialogue`；
+selector 的重复发言惩罚与点名检测没跳过环境回合；世界变量更新包在评估的 `try` 里；
+`stores/scenes.ts` 没有测试。下表的决定据此而来：
+
+| # | 问题 | 结论 |
+|---|---|---|
+| A23 | PR-2 体量 | 拆成 PR-2a（引擎）与 PR-2b（跨场），见 §10 |
+| A24 | 物件公开描述进角色 system 的档位 | 只在 adjudicate 档：global 全员、private 只给 `known_by`、hidden 不给；另设总 token 上限。off / record 的 prompt 逐字不变 |
+| A25 | `perceived_by` 由谁定 | PR-2 固定为执行者本人，裁决器不得指定他人 |
+| A26 | 跨场的物件状态怎么给裁决器 | 裁决器读世界变量里 `物件名·` 前缀的键，叠加本场 `environment_state`；角色【当前环境】块只显示本场的变化，不与 system 里的世界状态重复 |
+| A27 | continue 时档位已不是 adjudicate，日志里的 `pending` | 原样保留、仍占额度，回到 adjudicate 档再补裁决。不改成 `skipped`（改了就不可恢复） |
+| A28 | 旧数据缺 `environment_delta_applied`；对账时同分支已有更晚的场景 | 缺字段按"已写入"处理（否则每次启动都扫全部旧场景）；同分支已有更晚的已完成场景时不补写，标为已写入并 warning，免得旧值盖掉新值 |
+| A29 | `environment_script` 在 SceneComposer 里能否编辑 | 能，按 `--private` 显示（仅导演可见） |
+| A30 | PR-2a 合入后能否配 `ENVIRONMENT_MODE=adjudicate` | 能，默认仍是 off。缺的只是"物件状态带到下一场"，不损坏数据 |
+
 ## 10. PR 拆分
 
 | PR | 内容 | 合入后的行为变化 |
@@ -418,7 +435,8 @@ system prompt，别名决定预过滤的命中率（即成本）。
 | **PR-1a** ✅ | `WorldObject` 模型 / 存储 / 三道预算闸门（可见性含 `known_by`）；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）；`Scene.objects_present` 持久化 + SceneComposer 手动勾选 + 全部建场景路径搬运；`scripts/extract_objects` | 构建多出物件抽取调用 |
 | **PR-1b** ✅ | `DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/action_stats` | 默认 off 无变化；record 档可评估命中率与成本 |
 | **PR-1c** ✅ | Workspace 物件编辑器（`ObjectsPanel.vue`） | 用户可在工作台增删改物件 |
-| **PR-2 = 20a** | EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、计数口径的 `kind` 过滤）；`turn_update` + `revision`；【当前环境】块；格式规范"只写尝试"；`plan_scene` 产出 `objects_present` / `environment_script`；环境 delta 并入世界变量 + `environment_delta_applied` 启动对账；前端显示环境回合 | `adjudicate` 档可用 |
+| **PR-2a = 20a 引擎** | 环境回合字段与 `revision`、动作的 pending / resolved / failed 与 `quota`；EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、selector 与渲染 / 感知的 `kind` 分支）；`turn_update`；【当前环境】块；格式规范"只写尝试"；物件公开描述进角色 system（A24）；前端显示环境回合与动作状态、轮次进度只数角色轮次 | `adjudicate` 档可用，物件状态只在本场有效（A30） |
+| **PR-2b = 20a 跨场** | `plan_scene` 产出 `objects_present` / `environment_script`（规划与评估 prompt 看得到物件），全部建场景路径搬运，SceneComposer 可编辑（A29）；环境 delta 并入世界变量（与评估 delta 各自独立的 `try`）+ `environment_delta_applied` 启动对账（A28） | 物件状态跨场延续 |
 | **PR-3 = 20b** | 揭示来源 ②（独立生成调用 + 现场当事人视图）；《玻璃王冠》整场验收；成本报告 | — |
 
 收尾：CLAUDE.md 第 13 节"环境智能体"移入正文（【设想】→【实况】），新增陷阱条目；
