@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from backend.models import RevealEntry
 from backend.services.world_state import WORLD_KEY_CHARS, normalize_world_value
 from backend.utils.context import ContextBudget, fit_lines
 from backend.utils.llm import estimate_tokens
@@ -113,11 +115,11 @@ def describe_environment_state(state: dict[str, str | None] | None) -> str:
 # 裁决（工单20 PR-2a）：输入组装、输出解析、状态变化校验
 # ---------------------------------------------------------------------------
 
-#: 揭示来源（设计单 §3）。② 现场生成归 20b：PR-2a 的裁决器不得产出它
+#: 揭示来源（设计单 §3），由解析结果决定、不由裁决器声明：命中了预制揭示就是 ①，否则 ③。
+#: ② 现场生成要拆成独立调用（A13），归 20b
 REVEAL_SCRIPT = "script"  # ① 导演预制
 REVEAL_GENERATE = "generate"  # ② 现场生成（20b）
 REVEAL_OBSERVABLE = "observable"  # ③ 信息不足，只给可观察现象
-_REVEAL_SOURCES = {REVEAL_SCRIPT, REVEAL_GENERATE, REVEAL_OBSERVABLE}
 
 #: 公开叙述进全场 transcript 与每个在场角色的记忆，私密细节进当事人记忆：都要有上限
 NARRATION_TOKENS = 120
@@ -177,30 +179,40 @@ def _extract_object(raw: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-#: 摘录两端允许剥掉的引号与标点：模型常把原文包在引号里、或在句末补个句号返回，不是改写
-_EXCERPT_STRIP = "\"'“”‘’「」『』《》。，、；：！？…,.;:!? "
+#: 一个物件最多几条预制揭示，以及每条的上限。条件进裁决 prompt，内容进执行者记忆
+MAX_REVEAL_ENTRIES = 6
+REVEAL_CONDITION_TOKENS = 60
 
 
-def _script_excerpt(raw_detail: object, script: str) -> str | None:
-    """私密细节必须是导演预制揭示里**连续的一段原文**（规整空白、剥掉两端引号与标点后比对）。
+def normalize_reveals(entries: Sequence[RevealEntry] | None) -> list[RevealEntry]:
+    """规整预制揭示：塌单行、限长度，丢掉条件或内容为空的条目，超出条数的截掉并 warning。
 
-    返回规整后的摘录；空串表示没给细节；None 表示不是原文摘录（可能夹带隐藏规则里的内容）。
-    允许摘录而不是只许整段照抄：预制揭示可能按条件分支写（"她戴上投出 X；王后戴上投出 Y"），
-    整段给执行者会连另一个分支一起泄露。代价是模型改了措辞的揭示会作废 —— 宁可少揭示，
-    不可多泄露。
+    **裁决 prompt 与解析必须用同一份规整结果**：裁决器回答的是"第几条"，两边列表不一致，
+    编号就指向了另一条揭示。
     """
-    if raw_detail is None:
-        return ""
-    detail = _one_line(raw_detail).strip(_EXCERPT_STRIP)
-    if not detail:
-        return ""
-    # 比对时忽略全部空白：中文里换行被塌成空格后，"看见了 母亲"就不再是"看见了母亲"的子串，
-    # 而空白承载不了任何内容
-    compact = "".join(detail.split())
-    return detail if compact in "".join(str(script).split()) else None
+    kept: list[RevealEntry] = []
+    for entry in entries or []:
+        condition = _fit_one_line(entry.condition, REVEAL_CONDITION_TOKENS)
+        content = _fit_one_line(entry.content, PRIVATE_DETAIL_TOKENS)
+        if not condition or not content:
+            continue
+        if len(kept) >= MAX_REVEAL_ENTRIES:
+            logger.warning("预制揭示超过 %d 条，其余不参与裁决", MAX_REVEAL_ENTRIES)
+            break
+        kept.append(RevealEntry(condition=condition, content=content))
+    return kept
 
 
-def parse_adjudication(raw: str, *, script: str) -> Adjudication | None:
+def _reveal_index(value: object) -> int | None:
+    """裁决器给的条目编号（从 1 起）；0 / null = 不揭示。其余取值返回 -1 表示非法。"""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return -1
+    return value or None
+
+
+def parse_adjudication(raw: str, *, reveals: Sequence[RevealEntry]) -> Adjudication | None:
     """把裁决器的输出收进可控形状。返回 None = 裁决失败（动作记 failed，**不生成环境回合**）。
 
     失败不伪造结果（设计单 §5.7）：没有公开叙述的裁决等于没裁决，绝不能补一句"毫无反应"。
@@ -208,12 +220,14 @@ def parse_adjudication(raw: str, *, script: str) -> Adjudication | None:
     不能替模型补缺省 —— 补成"可执行"会让残缺的输出也改写物件状态，补成"不可执行"又会让
     写着"王冠亮起"的叙述与没动过的状态对不上。
 
-    私密细节有三道关，都是因为裁决器同时看着隐藏规则，它写出来的东西可能夹带秘密：
-    - `script` 是这个物件的导演预制揭示原文。没有的话，声称来源 ① 的细节只能是编的，按 ③ 降级；
-    - 预制揭示只在**规则真正触发**时才给执行者：没触发（含不可执行）还留着它，等于把导演
-      安排的秘密白送给一个没满足条件的角色（契约1）；
-    - 细节必须是预制揭示的原文摘录（`_script_excerpt`）：只检查"有没有预制揭示"的话，
-      裁决器可以借来源 ① 把隐藏规则里的秘密写进执行者记忆（设计单 R1）。
+    私密细节**不由裁决器书写**（设计单 A31）：它只回答命中第几条预制揭示（`reveal_index`），
+    细节由这里原样取那一条的 content。裁决器同时看着隐藏规则，让它写细节就可能夹带秘密；
+    让它从一整段自由文本里摘录，又可能把所有分支整段交出去。按条选之后：
+    - 每次最多给一条，跨分支泄露在结构上不可能；
+    - 只在规则**真正触发**时给（没触发、含不可执行，都不给 —— 否则导演安排的秘密会进一个
+      没满足条件的角色的记忆，契约1）；
+    - 编号越界、类型不对一律不给；裁决器自己写了 `private_detail` 也不采纳。
+    `reveals` 必须是裁决 prompt 用的那一份规整结果（`normalize_reveals`）。
     """
     data = _extract_object(raw)
     if data is None:
@@ -230,34 +244,16 @@ def parse_adjudication(raw: str, *, script: str) -> Adjudication | None:
     result = Adjudication(narration=narration, executable=executable)
     # 做不到的动作谈不上触发
     result.triggered = triggered and executable
-    source = data.get("reveal_source")
-    if not isinstance(source, str) or source not in _REVEAL_SOURCES:
-        if source not in (None, ""):
-            result.rejected.append(f"揭示来源非法：{source!r}")
-        source = REVEAL_OBSERVABLE
-    if source == REVEAL_GENERATE:
-        # ② 必须走独立的生成调用（A13 / R2）：裁决调用同时看着隐藏规则与导演脚本，
-        # 它写出来的"私密细节"可能夹带别人的秘密。PR-2a 没有生成调用，按 ③ 降级
-        result.rejected.append("揭示来源 generate 未启用（20b），按 observable 处理")
-        source = REVEAL_OBSERVABLE
-    if source == REVEAL_SCRIPT and not _one_line(script):
-        result.rejected.append("本物件没有导演预制揭示，script 来源不成立，按 observable 处理")
-        source = REVEAL_OBSERVABLE
-    if source == REVEAL_SCRIPT and not result.triggered:
-        result.rejected.append("规则未触发，不揭示导演预制内容，按 observable 处理")
-        source = REVEAL_OBSERVABLE
-    if source == REVEAL_SCRIPT:
-        # 先校验、后截断：截断可能插入省略标记，截断后的文本就不再是原文子串了
-        excerpt = _script_excerpt(data.get("private_detail"), script)
-        if excerpt is None:
-            result.rejected.append("私密细节不是导演预制揭示的原文摘录，已丢弃，按 observable 处理")
-            source = REVEAL_OBSERVABLE
-        else:
-            result.private_detail = _fit_one_line(excerpt, PRIVATE_DETAIL_TOKENS)
-    elif data.get("private_detail"):
-        # 只有已触发的导演预制揭示才有私密细节；③ 只给可观察现象
-        result.rejected.append("observable 来源不应有私密细节，已丢弃")
-    result.reveal_source = source
+    if data.get("private_detail"):
+        result.rejected.append("裁决器自己写的私密细节不采纳（只认预制揭示的编号）")
+    index = _reveal_index(data.get("reveal_index"))
+    if index == -1 or (index is not None and not 1 <= index <= len(reveals)):
+        result.rejected.append(f"预制揭示编号非法：{data.get('reveal_index')!r}")
+    elif index is not None and not result.triggered:
+        result.rejected.append("规则未触发，不揭示导演预制内容")
+    elif index is not None:
+        result.reveal_source = REVEAL_SCRIPT
+        result.private_detail = reveals[index - 1].content
     changes = data.get("state_changes")
     if changes is None:
         changes = {}

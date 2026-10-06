@@ -562,6 +562,19 @@ class LLMUsageStat:
 
 
 @dataclass
+class RevealEntry:
+    """导演为某个物件预制的一条揭示（工单20，设计单 A31）。
+
+    按条存而不是一整段自由文本：一条只对应一种触发情形。裁决器只看 `condition`、只回答
+    命中第几条，`content` 由代码原样交给执行者 —— 每次最多给一条，跨分支泄露在结构上不可能；
+    content 也不进裁决 prompt，公开叙述就无从转述它。
+    """
+
+    condition: str = ""  # 触发情形，只给裁决器看，例如"伊莎贝尔戴上"
+    content: str = ""  # 揭示内容，触发时进执行者记忆，例如"投出她六岁那年的冬天"
+
+
+@dataclass
 class ActionIntent:
     """一轮里一个 `*动作*` 段的意图（工单24）。
 
