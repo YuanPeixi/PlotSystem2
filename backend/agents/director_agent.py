@@ -22,6 +22,7 @@ from backend.models import (
     DecisionType,
     DialogueTurn,
     DirectorDecision,
+    LLMPurpose,
     Scene,
     SceneConfig,
     SceneEvaluation,
@@ -435,6 +436,7 @@ class DirectorAgent:
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_PLAN_TEMPERATURE),
             model=self.model,
+            purpose=LLMPurpose.PLAN,
         )
         data, ok = _extract_json(raw)
         if not ok:
@@ -507,6 +509,7 @@ class DirectorAgent:
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_EVAL_TEMPERATURE),
             model=self.model,
+            purpose=LLMPurpose.EVALUATE,
         )
         data, ok = _extract_json(raw)
         if not ok:

@@ -21,7 +21,13 @@ from collections.abc import Sequence
 
 from backend.config import settings
 from backend.exceptions import LLMError
-from backend.models import ActionIntent, ActionSkipReason, ActionStatus, WorldObject
+from backend.models import (
+    ActionIntent,
+    ActionSkipReason,
+    ActionStatus,
+    LLMPurpose,
+    WorldObject,
+)
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -200,6 +206,7 @@ class ActionIntentExtractor:
                 max_tokens=_EXTRACT_MAX_TOKENS,
                 base_url=settings.selector_base_url,
                 api_key=settings.selector_api_key,
+                purpose=LLMPurpose.ACTION_EXTRACT,
             )
         except LLMError as exc:
             # 失败不伪造结果：等价于"没识别出尝试"，场景照常往下演

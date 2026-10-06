@@ -76,6 +76,9 @@ from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
 from backend.utils.serializer import to_dict
 from backend.utils.turns import count_character_turns
+from backend.utils.usage import UsageMeter, usage_scope
+from backend.utils.usage import activate as usage_activate
+from backend.utils.usage import deactivate as usage_deactivate
 
 logger = get_logger("orchestrator")
 
@@ -460,9 +463,11 @@ async def _story_context(
 def _story_record(scene: Scene | SceneLineage, evaluation: SceneEvaluation) -> StoryRecord:
     # 拷一份：记录是时点副本，调用方之后再改这份评估不该追溯改写历史。
     # 分镜稿 patch 不进副本：副本只供回溯梗概/进度/线索，而它随谱系逐场复制进
-    # 每个快照，带着 patch（可能含整段备忘）等于把每场的改稿都复制 N 遍
+    # 每个快照，带着 patch（可能含整段备忘）等于把每场的改稿都复制 N 遍。
+    # 调用计数（工单25）同理：观测数据，评估表里那份就是它的唯一出处
     copy = deepcopy(evaluation)
     copy.storyboard_patch = StoryboardPatch()
+    copy.llm_usage = {}
     return StoryRecord(scene_id=scene.scene_id, name=scene.name, evaluation=copy)
 
 
@@ -595,6 +600,11 @@ async def run_scene(scene_id: str) -> None:
         logger.warning("场景 %s 已在运行中，忽略重复启动请求", scene_id)
         return
     _active_scenes.add(scene_id)
+    # 本场的 LLM 调用计数（工单25）。必须自己装、不沿用继承来的：AutoPilot 的自动
+    # continue 是在上一轮的 run_scene 里 create_task 起来的，复制了它的上下文。
+    # 在外层 finally 里撤下 —— 早于 AutoPilot 决策，那之后的规划调用不属于这一场
+    meter = UsageMeter()
+    usage_token = usage_activate(meter)
 
     # 初始化（读场景/加载快照/建智能体）必须一并纳入 try：这些步骤抛异常时若不释放
     # 运行锁，该场景在进程重启前都无法再启动。
@@ -605,6 +615,13 @@ async def run_scene(scene_id: str) -> None:
     evaluated: SceneEvaluation | None = None
     try:
         scene = await repository.get_scene(scene_id)
+        # continue 的多段累加在场景已有的计数上
+        meter.seed(scene.llm_usage)
+
+        def _sync_usage() -> None:
+            # 每次落盘前取一份快照写回：随既有的逐轮落盘带走，不为计数多存一次（R4）
+            scene.llm_usage = meter.snapshot()
+
         sm = SnapshotManager(scene.project_id)
         # 续跑/回滚/下一场：把上一次快照里的角色状态与运行时记忆回填给新建的智能体
         inherited = await _load_inherited_states(scene, sm)
@@ -653,10 +670,12 @@ async def run_scene(scene_id: str) -> None:
         # 先把"运行中"落库：否则数据库里始终是 pending，刷新后的前端无从判断
         # 这一场是不是还在跑，只能要么空等要么误触发第二次模拟（工单23）。
         scene.status = SceneStatus.RUNNING.value
+        _sync_usage()
         await repository.save_scene(scene)
         await events.publish(scene_id, "status", {"status": "running"})
 
         async def _persist_scene() -> None:
+            _sync_usage()
             await repository.save_scene(scene)
 
         async def _on_turn(turn: DialogueTurn) -> None:
@@ -685,7 +704,9 @@ async def run_scene(scene_id: str) -> None:
             )
             # 持久化角色状态变更（情绪/目标/位置）
             await _persist_character_states(agents)
-            await repository.save_scene(scene)
+            # 这是本场计数的最后一次落盘：之后只剩评估，而推送评估之后不得再 save_scene
+            # （用户收到评估就能决策，continue 会改写这一场，再整份覆盖就抹掉了它）
+            await _persist_scene()
             await events.publish(scene_id, "snapshot", {"snapshot_id": result.snapshot_id_after})
 
             # 自动评估独占一个 try：这一场已经跑完并打了后置快照，评估用的 LLM 失败
@@ -703,18 +724,21 @@ async def run_scene(scene_id: str) -> None:
                 # 合并时逐条校验前提；goal_revision 只能写回这里看到的版本（工单18 §3.3）
                 board_seen = await repository.get_storyboard(scene.project_id, scene.branch_id)
                 seen_revision = goal_revision(project.narrative_goal)
-                evaluation = await director.evaluate_scene(
-                    scene,
-                    result.dialogue_log,
-                    [a.card for a in agents],
-                    narrative_goal=project.narrative_goal,
-                    ending_criteria=project.ending_criteria,
-                    prior_progress=prior_progress,
-                    prior_threads=prior_threads,
-                    prior_synopses=prior_synopses,
-                    world_state=world.variables,
-                    storyboard=board_seen,
-                )
+                # 评估的调用记在评估上、不记在场景上（工单25 R1）：内层计数器独占
+                with usage_scope() as eval_meter:
+                    evaluation = await director.evaluate_scene(
+                        scene,
+                        result.dialogue_log,
+                        [a.card for a in agents],
+                        narrative_goal=project.narrative_goal,
+                        ending_criteria=project.ending_criteria,
+                        prior_progress=prior_progress,
+                        prior_threads=prior_threads,
+                        prior_synopses=prior_synopses,
+                        world_state=world.variables,
+                        storyboard=board_seen,
+                    )
+                evaluation.llm_usage = eval_meter.snapshot()
                 # 保留 9fe7e99 的快照归属戳；副本中同样留存，供追溯与审查。
                 evaluation.evaluated_snapshot_id = result.snapshot_id_after
                 await repository.save_evaluation(evaluation)
@@ -758,6 +782,7 @@ async def run_scene(scene_id: str) -> None:
         if scene is not None:
             try:
                 scene.status = SceneStatus.PAUSED.value
+                scene.llm_usage = meter.snapshot()
                 await repository.save_scene(scene)
             except Exception:  # noqa: BLE001
                 logger.warning("场景失败状态落库失败：%s", scene_id, exc_info=True)
@@ -768,6 +793,7 @@ async def run_scene(scene_id: str) -> None:
     finally:
         _running_engines.pop(scene_id, None)
         _active_scenes.discard(scene_id)
+        usage_deactivate(usage_token)
 
     if final_status is None:
         return

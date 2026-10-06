@@ -10,7 +10,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 
-from backend.models import Entity, Relation, new_id
+from backend.models import Entity, LLMPurpose, Relation, new_id
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -62,7 +62,7 @@ class EntityExtractor:
         """从单段文本抽取实体与关系。"""
         prompt = _EXTRACTION_PROMPT.format(text=text[:6000])
         raw = await chat_safe(
-            [{"role": "user", "content": prompt}], temperature=0.2
+            [{"role": "user", "content": prompt}], temperature=0.2, purpose=LLMPurpose.BUILD
         )
         data = _extract_json(raw)
 

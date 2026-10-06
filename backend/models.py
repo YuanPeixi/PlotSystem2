@@ -126,6 +126,27 @@ class TurnKind(str, Enum):
     ENVIRONMENT = "environment"
 
 
+class LLMPurpose(str, Enum):
+    """一次 LLM 调用的用途（工单25），只用于计数归类，不参与任何判断。
+
+    新增调用点必须标用途；漏标的归入 UNTAGGED，在统计里可见而不是静默丢失。
+    """
+
+    CHARACTER = "character"
+    SELECTOR = "selector"
+    ACTION_EXTRACT = "action_extract"
+    COMPACTION = "compaction"
+    EVALUATE = "evaluate"
+    PLAN = "plan"
+    SUMMARY = "summary"
+    BUILD = "build"
+    EMBEDDING = "embedding"
+    # 工单20 预留：环境裁决 / 揭示生成
+    ADJUDICATE = "adjudicate"
+    GENERATE = "generate"
+    UNTAGGED = "untagged"
+
+
 class DecisionType(str, Enum):
     CONTINUE = "continue"
     NEXT_SCENE = "next_scene"
@@ -501,6 +522,20 @@ class StoryboardView:
 
 
 @dataclass
+class LLMUsageStat:
+    """某一用途的 LLM 调用计数（工单25）。只增观测，不进任何 prompt、不参与任何判断。"""
+
+    calls: int = 0  # 成功返回的调用
+    failures: int = 0  # 重试耗尽、最终失败的调用
+    retries: int = 0  # 失败后又重试的次数（不含首次尝试）
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    # token 为估算值的调用数：服务商没返回 usage（或结构不对）时按 estimate_tokens 估
+    estimated_calls: int = 0
+    seconds: float = 0.0  # 累计耗时，含重试等待
+
+
+@dataclass
 class ActionIntent:
     """一轮里一个 `*动作*` 段的意图（工单24）。
 
@@ -573,6 +608,9 @@ class Scene:
     speaker_mode: str = SpeakerMode.ROUND_ROBIN.value
     dialogue_log: list[DialogueTurn] = field(default_factory=list)
     created_at: datetime = field(default_factory=now)
+    #: 本场运行期间的 LLM 调用计数，按用途分（工单25）。continue 的多段累加；
+    #: 评估的调用记在 SceneEvaluation 上，不在这里（推送评估之后不得再 save_scene）
+    llm_usage: dict[str, LLMUsageStat] = field(default_factory=dict)
 
 
 @dataclass
@@ -658,6 +696,8 @@ class SceneEvaluation:
     # 本场对分镜稿的修改（工单18）。解析失败时必须为空，与 world_state_delta 同理。
     # 导演历史副本（StoryRecord）里会清掉它：副本只供回溯梗概/进度/线索
     storyboard_patch: StoryboardPatch = field(default_factory=StoryboardPatch)
+    # 产出这份评估花掉的 LLM 调用（工单25）。导演历史副本里同样清掉，理由同上
+    llm_usage: dict[str, LLMUsageStat] = field(default_factory=dict)
 
 @dataclass
 class StoryRecord:

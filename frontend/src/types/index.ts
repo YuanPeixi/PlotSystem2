@@ -124,6 +124,20 @@ export interface Scene {
   speaker_mode: string
   dialogue_log: DialogueTurn[]
   created_at?: string
+  /** 本场运行期间的 LLM 调用计数，按用途分（工单25）；评估的调用在 SceneEvaluation 上 */
+  llm_usage?: Record<string, LLMUsageStat>
+}
+
+/** 某一用途的 LLM 调用计数（工单25）。只增观测。 */
+export interface LLMUsageStat {
+  calls: number
+  failures: number
+  retries: number
+  prompt_tokens: number
+  completion_tokens: number
+  /** token 为估算值的调用数（服务商没返回 usage） */
+  estimated_calls: number
+  seconds: number
 }
 
 /** 导演历史的一条记录（仅导演可见，不进入角色上下文）。 */
@@ -216,6 +230,8 @@ export interface SceneEvaluation {
   evaluated_snapshot_id: string
   /** 本场导演对分镜稿的修改（已由后端逐条校验后合并；这里仅供追溯） */
   storyboard_patch?: StoryboardPatch
+  /** 产出这份评估花掉的 LLM 调用（工单25） */
+  llm_usage?: Record<string, LLMUsageStat>
 }
 
 export type BeatStatus = 'planned' | 'done' | 'dropped'

@@ -12,15 +12,39 @@ settings.GRAPHRAG_EMBEDDING_MODEL），彻底绕开本地 onnxruntime 推理路�
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from openai import OpenAI
 
 from backend.config import settings
+from backend.models import LLMPurpose
+from backend.utils.llm import estimate_tokens
 from backend.utils.logger import get_logger
+from backend.utils.usage import current_meter, token_count
 
 logger = get_logger("memory.embeddings")
+
+_PURPOSE = LLMPurpose.EMBEDDING.value
+
+
+def _record(resp: object, texts: list[str], seconds: float) -> None:
+    """计一次 embedding 调用（工单25）。它在 `asyncio.to_thread` 的线程里执行，
+    ContextVar 随线程复制过来，所以照样归到发起它的那场戏。计数出错只记日志。"""
+    meter = current_meter()
+    if meter is None:
+        return
+    try:
+        prompt = token_count(getattr(getattr(resp, "usage", None), "prompt_tokens", None))
+        estimated = prompt is None
+        if estimated:
+            prompt = sum(estimate_tokens(t) for t in texts)
+        meter.record_call(
+            _PURPOSE, prompt_tokens=prompt, completion_tokens=0, estimated=estimated, seconds=seconds
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("embedding 调用计数失败（不影响调用结果）", exc_info=True)
 
 
 class RemoteEmbeddingFunction(EmbeddingFunction[Documents]):
@@ -40,7 +64,16 @@ class RemoteEmbeddingFunction(EmbeddingFunction[Documents]):
         )
 
     def __call__(self, input: Documents) -> Embeddings:
-        resp = self._client.embeddings.create(model=self._model, input=list(input))
+        texts = list(input)
+        started = time.monotonic()
+        try:
+            resp = self._client.embeddings.create(model=self._model, input=texts)
+        except Exception:
+            meter = current_meter()
+            if meter is not None:
+                meter.record_failure(_PURPOSE, seconds=time.monotonic() - started)
+            raise
+        _record(resp, texts, time.monotonic() - started)
         return [d.embedding for d in resp.data]
 
     @staticmethod
