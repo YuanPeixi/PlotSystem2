@@ -463,3 +463,116 @@ async def test_http_create_requires_existing_project_and_respects_cap(client):
     for i in range(MAX_PROJECT_OBJECTS):
         await repository.save_object(WorldObject(object_id=f"o{i:03d}", project_id=pid, name=f"物件{i}"))
     assert (await client.post(f"/projects/{pid}/objects", json=_BODY)).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 物件之间名称与别名不得重复（PR-2a 评审）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "aliases"),
+    [
+        ("玻璃王冠", []),  # 名称撞名称
+        ("水晶冠", ["王冠"]),  # 别名撞别名
+        ("王冠", []),  # 名称撞别名
+        ("水晶冠", ["玻璃王冠"]),  # 别名撞名称
+    ],
+)
+async def test_http_create_rejects_names_and_aliases_taken_by_another_object(client, name, aliases):
+    """两个"王冠"：角色说"戴上王冠"时预过滤同时命中两个，意图抽取只能随便挑一个。"""
+    pid = f"p-obj-dup-{name}-{len(aliases)}"
+    await _http_project(pid)
+    url = f"/projects/{pid}/objects"
+    assert (await client.post(url, json=_BODY)).status_code == 200
+    second = await client.post(url, json={**_BODY, "name": name, "aliases": aliases, "request_id": "create-2"})
+    assert second.status_code == 422
+    assert "玻璃王冠" in second.json()["error"]
+    assert len((await client.get(url)).json()["data"]) == 1
+
+
+async def test_http_name_clash_is_case_insensitive(client):
+    """与预过滤同一口径（casefold）：Crown 与 crown 在动作文本里是同一个词。"""
+    pid = "p-obj-dup-case"
+    await _http_project(pid)
+    url = f"/projects/{pid}/objects"
+    assert (await client.post(url, json={**_BODY, "name": "Crown", "aliases": []})).status_code == 200
+    clash = await client.post(url, json={**_BODY, "name": "crown", "aliases": [], "request_id": "create-2"})
+    assert clash.status_code == 422
+
+
+async def test_http_update_may_keep_its_own_name_but_not_take_another(client):
+    pid = "p-obj-dup-update"
+    await _http_project(pid)
+    url = f"/projects/{pid}/objects"
+    crown = (await client.post(url, json=_BODY)).json()["data"]
+    niche = (await client.post(url, json={**_BODY, "name": "暗格", "aliases": ["墙洞"], "request_id": "c2"})).json()["data"]
+
+    # 自己的名字和别名不算重复
+    same = await client.patch(f"{url}/{crown['object_id']}",
+                              json={"name": "玻璃王冠", "aliases": ["王冠"], "public_description": "改了描述",
+                                    "revision": 0, "request_id": "e1"})
+    assert same.status_code == 200
+    # 改名改成别人的别名
+    taken = await client.patch(f"{url}/{niche['object_id']}",
+                               json={"name": "王冠", "revision": 0, "request_id": "e2"})
+    assert taken.status_code == 422
+    assert (await client.get(f"{url}/{niche['object_id']}")).json()["data"]["name"] == "暗格"
+
+
+async def test_http_concurrent_creates_with_the_same_name_write_once(client, monkeypatch):
+    """查重在物件锁内：两个不同幂等键、同名的新建并发到达，只能有一个成功。"""
+    import asyncio
+
+    pid = "p-obj-dup-race"
+    await _http_project(pid)
+    url = f"/projects/{pid}/objects"
+    real_list = repository.list_objects
+
+    async def slow_list(*args, **kwargs):
+        objs = await real_list(*args, **kwargs)
+        await asyncio.sleep(0.01)
+        return objs
+
+    monkeypatch.setattr(repository, "list_objects", slow_list)
+    results = await asyncio.gather(
+        client.post(url, json={**_BODY, "request_id": "a"}),
+        client.post(url, json={**_BODY, "request_id": "b"}),
+    )
+    assert sorted(r.status_code for r in results) == [200, 422]
+
+
+def test_build_dedup_is_case_insensitive_too():
+    from backend.services.objects import select_new_objects
+
+    existing = [WorldObject(object_id="o1", project_id="p", name="Crown", aliases=["Tiara"])]
+    extracted = [WorldObject(object_id="x1", project_id="p", name="crown"),
+                 WorldObject(object_id="x2", project_id="p", name="Mirror", aliases=["TIARA"]),
+                 WorldObject(object_id="x3", project_id="p", name="Key")]
+    fresh, skipped = select_new_objects(existing, extracted)
+    assert [o.name for o in fresh] == ["Key"]
+    assert skipped == ["crown", "Mirror"]
+
+
+def test_duplicate_terms_reports_shared_names_and_aliases():
+    from backend.services.objects import duplicate_terms
+
+    objs = [WorldObject(object_id="o1", project_id="p", name="王冠", aliases=["冠冕"]),
+            WorldObject(object_id="o2", project_id="p", name="王冠"),
+            WorldObject(object_id="o3", project_id="p", name="镜子", aliases=["冠冕"]),
+            WorldObject(object_id="o4", project_id="p", name="钥匙", aliases=["钥匙"])]
+    assert duplicate_terms(objs) == ["冠冕", "王冠"]  # 自己的名字与别名相同不算
+
+
+async def test_hand_edited_duplicates_are_warned_at_run_time(caplog):
+    """写入侧已拦；人工编辑的文件绕过它时，不改数据，但开演时要看得见。"""
+    from backend.models import Scene
+    from backend.services import orchestrator
+
+    pid = "p-obj-dup-hand"
+    for oid in ("o1", "o2"):
+        await repository.save_object(WorldObject(object_id=oid, project_id=pid, name="王冠"))
+    scene = Scene(scene_id="s-dup", project_id=pid, objects_present=["o1", "o2"])
+    present = await orchestrator._present_objects(scene)
+    assert [o.object_id for o in present] == ["o1", "o2"]
+    assert "名称或别名重复" in caplog.text

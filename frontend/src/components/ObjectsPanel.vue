@@ -76,6 +76,16 @@ let saveSeq = 0
 let reloading = false
 
 const characterNames = computed(() => new Set(props.characters.map((c) => c.name)))
+// 其他物件的名称与别名（小写）→ 所属物件名。物件之间不得重名，后端按 casefold 判、必然 422
+const takenTerms = computed(() => {
+  const own = draft.value?.objectId
+  const terms = new Map<string, string>()
+  for (const o of objects.value) {
+    if (o.object_id === own) continue
+    for (const t of [o.name, ...o.aliases]) if (t && !terms.has(t.toLowerCase())) terms.set(t.toLowerCase(), o.name)
+  }
+  return terms
+})
 const nameOf = computed(() => new Map(props.characters.map((c) => [c.character_id, c.name])))
 
 // 新建草稿、或编辑中被删掉的物件不在列表里，放在最前面
@@ -105,11 +115,13 @@ const blockers = computed(() => {
   if (!name) out.push('名称不能为空')
   else if (name.length > NAME_CHARS) out.push(`名称超过 ${NAME_CHARS} 字`)
   else if (characterNames.value.has(name)) out.push(`名称「${name}」与角色同名，动作里每提到这个角色都会被当成提到了物件`)
+  else if (takenTerms.value.has(name.toLowerCase())) out.push(`名称「${name}」与物件「${takenTerms.value.get(name.toLowerCase())}」重复`)
   for (const alias of d.aliases) {
     if (alias === name) continue
     if (alias.length < ALIAS_MIN_CHARS) out.push(`别名「${alias}」只有一个字，几乎每一轮都会被当成提到了这个物件`)
     else if (alias.length > ALIAS_CHARS) out.push(`别名「${alias.slice(0, ALIAS_CHARS)}…」超过 ${ALIAS_CHARS} 字`)
     else if (characterNames.value.has(alias)) out.push(`别名「${alias}」与角色同名`)
+    else if (takenTerms.value.has(alias.toLowerCase())) out.push(`别名「${alias}」与物件「${takenTerms.value.get(alias.toLowerCase())}」重复`)
   }
   // 放不下的别名留在输入框里：此时保存会把它们丢掉，先拦下
   const pending = oneLine(d.aliasInput)

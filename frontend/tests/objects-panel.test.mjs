@@ -22,7 +22,8 @@ const CHARACTERS = [
 
 function obj(id, overrides = {}) {
   return {
-    object_id: id, project_id: 'p', name: `物件${id}`, aliases: ['水晶冠'], public_description: '剔透',
+    // 别名按 id 区分：物件之间名称与别名不得重复，共用一个别名会被当成重名拦下
+    object_id: id, project_id: 'p', name: `物件${id}`, aliases: [`水晶冠${id}`], public_description: '剔透',
     hidden_rules: ['王室血脉戴上才会投影'], visibility: 'global', known_by: [], revision: 2,
     ...overrides,
   }
@@ -221,7 +222,7 @@ test('the draft is read-only while saving', async () => {
   h.removeAlias(0)
   h.setVisibility('hidden')
   h.cancelEdit()
-  assert.deepEqual([...h.draft.value.aliases], ['水晶冠'])
+  assert.deepEqual([...h.draft.value.aliases], ['水晶冠o1'])
   assert.equal(h.draft.value.hidden_rules.length, 1)
   assert.equal(h.draft.value.visibility, 'global')
   h.updates[0].resolve(obj('o1', { revision: 3 }))
@@ -278,6 +279,24 @@ test('object deleted while editing (404) keeps the draft and can be saved as a n
   h.creates[0].resolve(obj('o2', { public_description: '舍不得丢的描述' }))
   await tick()
   assert.equal(h.draft.value, null)
+})
+
+test('names and aliases taken by another object are blocked locally, its own are not', async () => {
+  const h = await loaded([obj('o1'), obj('o2', { name: '暗格', aliases: ['墙洞'] })])
+  h.startCreate()
+  h.draft.value.name = '暗格'
+  assert.ok(h.blockers.value.some(b => b.includes('与物件「暗格」重复')))
+  h.draft.value.name = '镜子'
+  h.draft.value.aliasInput = '水晶冠o1'
+  h.addAlias()
+  assert.ok(h.blockers.value.some(b => b.includes('别名「水晶冠o1」与物件「物件o1」重复')))
+  await h.save()
+  assert.equal(h.creates.length, 0)
+
+  // 编辑自己：自己的名字与别名不算重复
+  h.cancelEdit()
+  h.startEdit(h.objects.value[0])
+  assert.equal(h.blockers.value.length, 0)
 })
 
 test('creation is disabled at the project limit', async () => {

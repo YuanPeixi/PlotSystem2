@@ -1080,7 +1080,7 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 | PUT | `/projects/{project_id}/branches/{branch_id}/storyboard` | 用户整份替换 `outline` / `memo`，带读取时的 `revision`：不匹配 409；超预算、引用不存在的 `beat_id` 422（不截断）；`request_id` 为幂等键，命中已生效的编辑视为重放（200、不写），同键不同内容 422；与当前内容完全相同视为无操作。`confirm_goal` 显式确认已按目标重排，须同时带回读取时的 `goal_revision_seen`（缺失 422），写回的就是它。分支不存在 404。`goal_revision` / `fork_origin` / `changelog` / `revision` 由后端维护 |
 | GET | `/projects/{project_id}/objects` | 物件列表（工单24，含隐藏规则：面向用户/导演，同角色卡返回 `unknown_facts`） |
 | GET | `/projects/{project_id}/objects/{object_id}` | 物件详情 |
-| POST | `/projects/{project_id}/objects` | 新建物件。`request_id` 必填，物件 ID 由它确定性生成，重放返回同一物件；超预算、`private` 无知情者或知情者不存在 422（不截断）；每项目上限 40 |
+| POST | `/projects/{project_id}/objects` | 新建物件。`request_id` 必填，物件 ID 由它确定性生成，重放返回同一物件；超预算、`private` 无知情者或知情者不存在、名称或别名与其他物件重复（不区分大小写）422（不截断）；每项目上限 40 |
 | PATCH | `/projects/{project_id}/objects/{object_id}` | 修改物件（字段为 null 不改），带读取时的 `revision`：不匹配 409；`request_id` 为幂等键；与当前内容相同视为无操作 |
 | DELETE | `/projects/{project_id}/objects/{object_id}` | 删除物件，已不存在也成功（`existed` 区分） |
 | GET | `/projects/{project_id}/snapshots` | 快照列表：id / scene_id / branch_id / label / created_at / `character_count`（不带角色状态明细与导演历史，SQL 侧投影） |
@@ -1208,7 +1208,7 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
   **幂等键两种用法**——修改随内容走，新建一份草稿从头到尾只用一个键（创建响应丢了、用户改完再提交时，
   换新键会建出第二个同名物件；沿用旧键则后端 422"幂等键已用于另一份内容"，面板据此刷新列表）；
   编辑中物件被删（PATCH 404，后端不会重建）草稿转只读，只能"另存为新物件"，换新键走 POST；
-  本地只拦必然 422 的形状问题（空名、单字别名、与角色同名、private 无知情者），token 预算以后端
+  本地只拦必然 422 的形状问题（空名、单字别名、与角色同名、与其他物件重名、private 无知情者），token 预算以后端
   422 原文为准。**超出别名上限的输入留在输入框并拦下保存**，不清空（清空即替用户截断）；
   **409 后的重新加载只在读取成功时重开草稿**，失败时保留草稿与冲突状态（拿旧列表重开只会带着旧修订号再撞 409）。
   非 private 时提交空 `known_by`，但草稿里保留名单，切回 private 不必重选。
