@@ -429,6 +429,13 @@ selector 的重复发言惩罚与点名检测没跳过环境回合；世界变�
 | A32 | 场景内物件状态以什么为身份 | **object_id**：`Scene.environment_state` 形如 `{object_id: {属性: 值}}`，【当前环境】渲染时才按物件当前的名字拼出 `物件名·属性`。理由（PR-2a 评审）：名称可改，接口原先也允许重名 —— 按名称拼键的话，两个同名物件共用一份状态、改名后旧状态读不回来，裁决基于错误状态 |
 | A33 | 物件之间能否重名 | 不能：名称与别名都不得与其他物件的名称或别名相同（casefold，与预过滤同一口径），新建/编辑 422、构建期去重同口径、人工编辑造成的重名开演时 warning。与 A32 互补：状态已按 ID 归属，但角色说"戴上王冠"时两个"王冠"会被同时命中，界面与 prompt 也按名称显示 |
 
+**2026-10-07 补充**（PR-2a C4 方案，owner 拍板）：
+
+| # | 问题 | 结论 |
+|---|---|---|
+| A34 | 续跑补裁决时，pending 动作指向的物件已不在本场（被删或不在 `objects_present`） | 置 failed + warning：不生成环境回合、不占额度、推非致命 `scene_error`、来源 `revision+1`。与裁决失败同一语义（无法裁决、不再重试）。保持 pending 会让删掉的物件永久占额度；记 `skipped/invalid_object` 会混淆"抽取判错"与"事后物件没了" |
+| A35 | 同 ID 环境回合已在日志里、来源动作却仍是 pending | 改记 resolved + warning，随下一次落盘修正。正常路径里两者同一次 `save_scene` 原子写入，走到这里只能是手改数据；再裁决就是同一个动作两个结果，只跳过不改又会永久占一个额度 |
+
 **PR-2b 待重议（2026-10-07，PR-2a 评审引出，开工 2b 时与 owner 确认）**：
 
 - **跨场的物件状态不再进世界变量**（推翻 A5 / A26 与 §7 已排除 7）。两个理由：
@@ -456,12 +463,12 @@ selector 的重复发言惩罚与点名检测没跳过环境回合；世界变�
 | **PR-1a** ✅ | `WorldObject` 模型 / 存储 / 三道预算闸门（可见性含 `known_by`）；构建期抽取 + 可见性（复用 29 分类器）；物件 CRUD API（PATCH 带幂等键，契约 5）；`Scene.objects_present` 持久化 + SceneComposer 手动勾选 + 全部建场景路径搬运；`scripts/extract_objects` | 构建多出物件抽取调用 |
 | **PR-1b** ✅ | `DialogueTurn.actions` + 预过滤 + 意图抽取；`ENVIRONMENT_MODE` off / record；`scripts/action_stats` | 默认 off 无变化；record 档可评估命中率与成本 |
 | **PR-1c** ✅ | Workspace 物件编辑器（`ObjectsPanel.vue`） | 用户可在工作台增删改物件 |
-| **PR-2a = 20a 引擎**（C1–C3 ✅ `76b4907`到`075d656`；C4–C8 进行中） | 环境回合字段与 `revision`、动作的 pending / resolved / failed 与 `quota`；EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、selector 与渲染 / 感知的 `kind` 分支）；`turn_update`；【当前环境】块；格式规范"只写尝试"；物件公开描述进角色 system（A24）；前端显示环境回合与动作状态、轮次进度只数角色轮次 | `adjudicate` 档可用，物件状态只在本场有效（A30） |
+| **PR-2a = 20a 引擎**（C1–C3 ✅ `76b4907`到`075d656`；C4–C8 🔍 审核中，分支 `feat/ticket-20-adjudicate-loop`） | 环境回合字段与 `revision`、动作的 pending / resolved / failed 与 `quota`；EnvironmentAgent（揭示来源 ① ③）；引擎集成（环境回合、续跑补裁决、额度预占、selector 与渲染 / 感知的 `kind` 分支）；`turn_update`；【当前环境】块；格式规范"只写尝试"；物件公开描述进角色 system（A24）；前端显示环境回合与动作状态、轮次进度只数角色轮次 | `adjudicate` 档可用，物件状态只在本场有效（A30） |
 | **PR-2b = 20a 跨场** | `plan_scene` 产出 `objects_present` / `environment_script`（规划与评估 prompt 看得到物件），全部建场景路径搬运，SceneComposer 可编辑（A29）；环境 delta 并入世界变量（与评估 delta 各自独立的 `try`）+ `environment_delta_applied` 启动对账（A28） | 物件状态跨场延续 |
 | **PR-3 = 20b** | 揭示来源 ②（独立生成调用 + 现场当事人视图）；《玻璃王冠》整场验收；成本报告 | — |
 
-收尾：CLAUDE.md 第 13 节"环境智能体"移入正文（【设想】→【实况】），新增陷阱条目；
-§8 SSE 事件、§9.2 前端要点、5.4 checklist 涉及的反序列化函数同步登记。
+收尾：CLAUDE.md 第 13 节"环境智能体"移入正文（【设想】→【实况】）在 PR-3 做；
+新增陷阱条目、§8 SSE 事件、§9.2 前端要点、5.4 checklist 涉及的反序列化函数已随 PR-2a 登记（陷阱 27）。
 
 ## 11. 线索
 
