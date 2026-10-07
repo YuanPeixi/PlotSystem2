@@ -211,7 +211,7 @@ async def test_run_scene_rejects_concurrent_duplicate_start(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             call_count["engine_run"] += 1
             await asyncio.sleep(0.05)
             return SceneResult(
@@ -787,7 +787,7 @@ async def test_run_scene_persists_each_turn(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             turn = DialogueTurn(
                 scene_id=self.scene.scene_id,
                 turn_number=1,
@@ -850,7 +850,7 @@ async def test_run_scene_failure_marks_scene_paused(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             raise RuntimeError("LLM 挂了")
 
     async def fake_build_agents(pid, cids, states=None, branch_id=""):
@@ -890,7 +890,7 @@ async def test_run_scene_keeps_completed_when_evaluation_fails(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             self.scene.status = "completed"
             self.scene.snapshot_id_after = "snap-fake"
             return SceneResult(

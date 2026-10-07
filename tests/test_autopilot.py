@@ -56,7 +56,7 @@ class _Harness:
             def inject_history(self, *args, **kwargs):
                 pass
 
-            async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+            async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
                 harness.runs.append(self.scene.scene_id)
                 if harness.gate is not None:
                     await harness.gate.wait()

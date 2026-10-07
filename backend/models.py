@@ -106,10 +106,11 @@ class SpeakerMode(str, Enum):
 
 class EnvironmentMode(str, Enum):
     """环境层开关（工单24/20）。off = 行为与工单24 之前逐字一致；record = 只抽取动作意图、
-    不裁决，用来在真实项目上量命中率与成本；adjudicate（PR-2）才产生环境回合。"""
+    不裁决，用来在真实项目上量命中率与成本；adjudicate 裁决动作、产生环境回合（工单20）。"""
 
     OFF = "off"
     RECORD = "record"
+    ADJUDICATE = "adjudicate"
 
 
 class ActionStatus(str, Enum):

@@ -21,11 +21,12 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from backend.models import RevealEntry
+from backend.models import ActionStatus, DialogueTurn, RevealEntry
 from backend.services.world_state import normalize_world_value
 from backend.utils.context import ContextBudget, fit_lines
 from backend.utils.llm import estimate_tokens
 from backend.utils.logger import get_logger
+from backend.utils.turns import is_character_turn
 
 logger = get_logger("services.environment")
 
@@ -290,6 +291,19 @@ def parse_adjudication(raw: str, *, reveals: Sequence[RevealEntry]) -> Adjudicat
             continue
         result.state_changes[attr_text] = normalize_world_value(value) or None
     return result
+
+
+def remaining_environment_quota(turns: Sequence[DialogueTurn], limit: int) -> int:
+    """本场还能产生几个环境回合（设计单 A15）：上限 − 已有的环境回合 − 仍 pending 的动作。
+
+    pending 必须计入：续跑补裁决会把它们变成环境回合，不计入则续跑后超限。
+    failed / skipped 不占额度 —— 它们不会再产生回合。可能为负（上限被调小），调用方按 <= 0 处理。
+    """
+    produced = sum(1 for t in turns if not is_character_turn(t))
+    pending = sum(
+        1 for t in turns for a in t.actions if a.status == ActionStatus.PENDING.value
+    )
+    return limit - produced - pending
 
 
 def object_state_view(object_id: str, environment_state: EnvironmentState | None) -> dict[str, str]:

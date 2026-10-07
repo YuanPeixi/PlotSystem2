@@ -15,9 +15,12 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 
 from backend.agents.character_agent import CharacterAgent
+from backend.agents.environment_agent import EnvironmentAgent
 from backend.config import settings
 from backend.models import (
+    ENVIRONMENT_SPEAKER,
     RESERVED_SCENE_CONTEXT_KEYS,
+    ActionStatus,
     CharacterState,
     DialogueTurn,
     EnvironmentMode,
@@ -27,23 +30,34 @@ from backend.models import (
     SceneStatus,
     SpeakerMode,
     Storyboard,
+    TurnKind,
     WorldObject,
+    environment_turn_id,
     new_id,
 )
 from backend.scene_engine.action_intents import ActionIntentExtractor
 from backend.scene_engine.speaker_selector import ScoringSpeakerSelector, SelectionTrace
 from backend.scene_engine.termination import check_termination
-from backend.services.objects import MAX_OBJECTS_PRESENT
+from backend.services.environment import (
+    apply_state_changes,
+    describe_environment_state,
+    object_state_view,
+    remaining_environment_quota,
+)
+from backend.services.objects import MAX_OBJECTS_PRESENT, describe_objects_for
 from backend.snapshot import SnapshotManager
 from backend.utils.llm import estimate_tokens
 from backend.utils.logger import get_logger
-from backend.utils.turns import count_character_turns, render_turn
+from backend.utils.turns import count_character_turns, is_character_turn, render_turn
 
 logger = get_logger("scene_engine")
 
 TurnCallback = Callable[[DialogueTurn], Awaitable[None]] | None
 # 把当前 scene 落库（不推 SSE），用于固化水位线这类不伴随新轮次的进展。
 PersistCallback = Callable[[], Awaitable[None]] | None
+# 一次环境裁决之后：(来源角色轮次, 环境回合 | None)。None = 裁决失败（动作已置 failed、
+# 不生成环境回合）。引擎已把两者写回 scene，编排层负责"落盘 → turn_update → turn"（R5）
+EnvironmentCallback = Callable[[DialogueTurn, DialogueTurn | None], Awaitable[None]] | None
 # 后置快照的 id 在**创建之前**先告知编排层，让它有机会挂上"待补写"守卫。
 # 刻意是同步回调：异步回调意味着调用点存在挂起可能，而这里要的恰恰是
 # "从告知到快照可见之间没有任何调度间隙"。
@@ -85,6 +99,7 @@ class SceneEngine:
         storyboard: Storyboard | None = None,
         objects: Sequence[WorldObject] | None = None,
         environment_mode: str = EnvironmentMode.OFF.value,
+        adjudicator: EnvironmentAgent | None = None,
     ):
         self.scene = scene
         self.config = scene_config
@@ -104,11 +119,31 @@ class SceneEngine:
         self._history_transcript: list[str] = []  # continue 时注入的历史
         self._selector: ScoringSpeakerSelector | None = None
         self._unknown_mode_warned = False
-        # 环境层（工单24）。档位由编排层在进 run_scene 时读一次、整段不变（设计单 A21）；
+        # 环境层（工单24/20）。档位由编排层在进 run_scene 时读一次、整段不变（设计单 A21）；
         # off 档不构造抽取器，`actions` 恒为空，行为与之前逐字一致
         self._action_extractor: ActionIntentExtractor | None = None
-        if environment_mode == EnvironmentMode.RECORD.value:
-            self._action_extractor = ActionIntentExtractor(self._cap_objects(objects or []))
+        self._adjudicate = environment_mode == EnvironmentMode.ADJUDICATE.value
+        # 裁决器由编排层构造后注入（R8：引擎不碰 SQLite，也不自己建 LLM 客户端）
+        self._adjudicator = adjudicator
+        #: 本场在场物件（已过闸门），只有 adjudicate 档用来裁决与渲染
+        self._objects: dict[str, WorldObject] = {}
+        #: 每个角色 system 里的【在场物件】正文（按可见性），整场不变
+        self._object_briefs: dict[str, str] = {}
+        if environment_mode in (EnvironmentMode.RECORD.value, EnvironmentMode.ADJUDICATE.value):
+            present = self._cap_objects(objects or [])
+            self._action_extractor = ActionIntentExtractor(present, adjudicate=self._adjudicate)
+            if self._adjudicate:
+                if adjudicator is None:
+                    raise ValueError("ENVIRONMENT_MODE=adjudicate 需要由编排层注入环境裁决器")
+                self._objects = {o.object_id: o for o in present}
+                for agent in character_agents:
+                    brief, dropped = describe_objects_for(present, agent.character_id)
+                    if dropped:
+                        logger.warning(
+                            "场景 %s 角色 %s 可见的在场物件超出预算，未列出：%s",
+                            scene.scene_id, agent.name, "、".join(dropped),
+                        )
+                    self._object_briefs[agent.character_id] = brief
 
     def interrupt(self) -> None:
         """外部请求中断（如导演/暂停）。"""
@@ -167,6 +202,7 @@ class SceneEngine:
         on_turn: TurnCallback = None,
         on_persist: PersistCallback = None,
         on_after_snapshot: AfterSnapshotCallback = None,
+        on_environment: EnvironmentCallback = None,
     ) -> SceneResult:
         """场景执行主流程。"""
         if not self.agents:
@@ -215,6 +251,14 @@ class SceneEngine:
         #   崩溃时通常为 0，重放恰好覆盖全部而掩盖了它。
         await self._replay_unconsolidated(turns, on_persist)
 
+        # 上一段落盘时还没裁决完的动作（设计单 §5.4）：按日志顺序补裁决，再进发言循环。
+        # 只在 adjudicate 档补；其余档位原样保留 pending、仍占额度（A27），改成 skipped 就不可恢复了
+        if self._adjudicate:
+            for past in list(turns):
+                if is_character_turn(past):
+                    await self._adjudicate_pending(past, turns, transcript, on_persist, on_environment)
+            turn_number = len(turns)
+
         terminated_reason = ""
         while True:
             stop, reason = check_termination(
@@ -225,14 +269,21 @@ class SceneEngine:
                 break
 
             agent, selector_notice = await self._select_speaker(transcript, turns)
-            raw = await agent.respond(self._scene_context(), transcript)
+            raw = await agent.respond(
+                self._scene_context(), transcript, **self._respond_extras(agent)
+            )
             turn_number += 1
             turn = self._parse_turn(raw, agent, turn_number)
             turn.selector_notice = selector_notice
             if self._action_extractor is not None:
-                # 必须早于下面的第一次落盘（设计单 A9）：落盘的轮次意图恒完整，续跑不重抽
+                # 必须早于下面的第一次落盘（设计单 A9）：落盘的轮次意图恒完整，续跑不重抽。
+                # 额度在调用前预占（A15），只有 adjudicate 档有额度
+                quota = (
+                    remaining_environment_quota(turns, settings.MAX_ENVIRONMENT_TURNS)
+                    if self._adjudicate else None
+                )
                 turn.actions = await self._action_extractor.extract(
-                    _ACTION_RE.findall(raw), agent.name
+                    _ACTION_RE.findall(raw), agent.name, quota
                 )
             turns.append(turn)
             transcript.append(self._turn_line(turn))
@@ -261,6 +312,12 @@ class SceneEngine:
 
             if on_turn:
                 await on_turn(turn)
+
+            # 本轮的尝试在推送之后、下一次终止判定之前裁决（设计单 §5.1）：角色轮次已落盘，
+            # 裁决中途崩溃的话动作停在 pending，续跑补裁决
+            if self._adjudicate:
+                await self._adjudicate_pending(turn, turns, transcript, on_persist, on_environment)
+                turn_number = len(turns)
 
         # 4. 收尾固化（必须先于后置快照！）。consolidate 会清空 short_term 缓冲，
         # 把周期固化之后剩下的尾巴写进长期记忆。若顺序颠倒——
@@ -394,6 +451,111 @@ class SceneEngine:
         """
         for participant in self.agents:
             await participant.memory.add_experience(turn)
+
+    # ---- 环境裁决（工单20 PR-2a）----
+    def _respond_extras(self, agent: CharacterAgent) -> dict:
+        """adjudicate 档给角色多传的三样东西；其余档位为空，角色 prompt 与之前逐字相同。"""
+        if not self._adjudicate:
+            return {}
+        names = {oid: obj.name for oid, obj in self._objects.items()}
+        return {
+            "objects_brief": self._object_briefs.get(agent.character_id, ""),
+            "attempt_only": True,
+            # 场景内会变的状态，只进 user 消息（契约3 补充条款）。本场之内对全体在场角色
+            # 公开：每次状态变化都伴随一条全场可见的公开叙述
+            "environment": describe_environment_state(self.scene.environment_state, names),
+        }
+
+    async def _adjudicate_pending(
+        self,
+        source: DialogueTurn,
+        turns: list[DialogueTurn],
+        transcript: list[str],
+        on_persist: PersistCallback,
+        on_environment: EnvironmentCallback,
+    ) -> None:
+        """按段落顺序裁决 `source` 里仍 pending 的动作，每个动作一个独立的提交单元。
+
+        成功：追加环境回合 + 动作置 resolved + 来源轮次 revision+1 + 物件状态更新，同在
+        `scene.data_json`，由 `on_environment` 一次落盘后再推送（R5）。环境回合作为普通轮次走
+        `_remember` 与周期固化（R6、陷阱 9），不另开记忆写入口。
+        失败：动作置 failed、不生成环境回合 —— 绝不补一句"毫无反应"（设计单 §5.7）。
+        """
+        for intent in source.actions:
+            if intent.status != ActionStatus.PENDING.value:
+                continue
+            if self._interrupt:
+                # 剩下的保持 pending：已占着额度，续跑时补裁决
+                return
+            env_id = environment_turn_id(source.turn_id, intent.index)
+            if any(t.turn_id == env_id for t in turns):
+                # 正常路径里环境回合与 resolved 同一次落盘，走到这里只能是手改过的数据。
+                # 改记 resolved（设计单 A35）：再裁决一次就是同一个动作两个结果，
+                # 留着 pending 又会永久占一个额度。随下一次落盘修正
+                logger.warning("场景 %s 的动作 %s#%d 已有环境回合却仍是 pending，改记 resolved",
+                               self.scene.scene_id, source.turn_id, intent.index)
+                intent.status = ActionStatus.RESOLVED.value
+                source.revision += 1
+                continue
+
+            obj = self._objects.get(intent.object_id)
+            if obj is None:
+                # 续跑时物件已被删或已不在本场（设计单 A34）：无从裁决，与裁决失败同一语义
+                logger.warning("场景 %s 的动作 %s#%d 指向的物件 %s 已不在本场，记为裁决失败",
+                               self.scene.scene_id, source.turn_id, intent.index, intent.object_id)
+                adjudication = None
+            else:
+                adjudication = await self._adjudicator.adjudicate(
+                    obj,
+                    source.character_name,
+                    intent,
+                    object_state_view(obj.object_id, self.scene.environment_state),
+                )
+            source.revision += 1
+            if adjudication is None:
+                intent.status = ActionStatus.FAILED.value
+                self.scene.dialogue_log = list(turns)
+                if on_environment:
+                    await on_environment(source, None)
+                continue
+
+            env = DialogueTurn(
+                turn_id=env_id,
+                scene_id=self.scene.scene_id,
+                turn_number=len(turns) + 1,
+                kind=TurnKind.ENVIRONMENT.value,
+                character_id="",
+                character_name=ENVIRONMENT_SPEAKER,
+                narration=adjudication.narration,
+                private_detail=adjudication.private_detail or None,
+                # A25：私密细节只给执行者本人，裁决器无权指定他人
+                perceived_by=[source.character_id] if source.character_id else [],
+                source_turn_id=source.turn_id,
+                source_action_index=intent.index,
+            )
+            if adjudication.state_changes:
+                state, rejected = apply_state_changes(
+                    self.scene.environment_state, obj.object_id, adjudication.state_changes
+                )
+                self.scene.environment_state = state
+                if rejected:
+                    # 叙述照常保留（它是已裁决出的事实），只是【当前环境】里少了这几项
+                    logger.warning("场景 %s 物件 %s 的状态变化超出预算，未记录：%s",
+                                   self.scene.scene_id, obj.name, "、".join(rejected))
+            intent.status = ActionStatus.RESOLVED.value
+            turns.append(env)
+            # R3："目前对话"只有公开叙述
+            transcript.append(self._turn_line(env))
+            await self._remember(env)
+            self.scene.dialogue_log = list(turns)
+            self.scene.turns_completed = len(turns)
+            # 与角色轮次同一套周期固化，同样必须早于推送（见主循环）
+            if self._should_consolidate(len(turns)):
+                if on_persist:
+                    await on_persist()
+                await self._consolidate_all(len(turns), on_persist)
+            if on_environment:
+                await on_environment(source, env)
 
     # ---- 发言者选择 ----
     async def _select_speaker(

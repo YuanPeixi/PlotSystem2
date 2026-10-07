@@ -120,7 +120,7 @@ async def test_run_scene_injects_world_and_keeps_scene_conditions_clean(monkeypa
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             self.scene.status = "completed"
             self.scene.snapshot_id_after = ""
             return SceneResult(
@@ -428,7 +428,7 @@ async def test_run_scene_applies_delta_and_patches_snapshot(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             self.scene.status = "completed"
             self.scene.snapshot_id_after = snap.snapshot_id
             return SceneResult(
@@ -485,7 +485,7 @@ async def test_world_state_failure_keeps_scene_completed(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             self.scene.status = "completed"
             self.scene.snapshot_id_after = "snap-missing"
             return SceneResult(
@@ -854,7 +854,7 @@ async def test_pending_mark_is_set_before_snapshot_visible_and_cleared_on_succes
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             # 真实引擎在此处才创建后置快照：回调返回后快照立即可见，
             # 因此标记必须在回调内就生效。
             assert on_after_snapshot is not None, "run_scene 必须接上守卫回调"
@@ -926,7 +926,7 @@ async def test_pending_mark_is_cleared_when_engine_itself_fails(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             on_after_snapshot(snap.snapshot_id)
             raise RuntimeError("快照之后炸了")
 
@@ -969,7 +969,7 @@ async def test_pending_mark_is_cleared_even_when_evaluation_fails(monkeypatch):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             on_after_snapshot(snap.snapshot_id)
             self.scene.status = "completed"
             self.scene.snapshot_id_after = snap.snapshot_id

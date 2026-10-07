@@ -4,6 +4,7 @@ import Icon from '@/components/ui/Icon.vue'
 import DialogLog from '@/components/DialogLog.vue'
 import AutoPilotControl from '@/components/director/AutoPilotControl.vue'
 import type { AutoPilotSession, DialogueTurn, Scene } from '@/types'
+import { characterTurnCount, isEnvironmentTurn } from '@/utils/turns'
 
 const props = defineProps<{
   scene: Scene
@@ -61,11 +62,16 @@ const conditions = computed(() =>
 )
 const speakers = computed(() => {
   const seen = new Map<string, string>()
-  props.turns.forEach((t) => seen.set(t.character_id, t.character_name))
+  props.turns.forEach((t) => {
+    if (!isEnvironmentTurn(t)) seen.set(t.character_id, t.character_name)
+  })
   return [...seen]
 })
+// max_turns 只数角色轮次（工单20 设计单 §5.5）：环境回合不占发言顺序，数全部轮次的话
+// 进度会提前走满，"第 N 轮"也会比后端的终止判定多出几轮
+const spokenTurns = computed(() => characterTurnCount(props.turns))
 const progress = computed(() =>
-  props.scene.max_turns ? Math.min(1, props.turns.length / props.scene.max_turns) : 0,
+  props.scene.max_turns ? Math.min(1, spokenTurns.value / props.scene.max_turns) : 0,
 )
 
 function onScroll() {
@@ -128,7 +134,7 @@ watch(
         <Icon name="play" :size="15" />{{ scene.status === 'paused' ? '继续这一场' : '开演' }}
       </button>
       <span class="status"><span class="status-dot" :class="running ? 'running' : scene.status"></span>{{ statusText }}</span>
-      <span class="num turns">第 {{ turns.length }} / {{ scene.max_turns }} 轮</span>
+      <span class="num turns">第 {{ spokenTurns }} / {{ scene.max_turns }} 轮</span>
       <span class="meter bar"><i :style="{ width: progress * 100 + '%' }"></i></span>
       <span class="spacer"></span>
       <span class="mode">{{ SPEAKER_MODE[scene.speaker_mode] || scene.speaker_mode }}</span>

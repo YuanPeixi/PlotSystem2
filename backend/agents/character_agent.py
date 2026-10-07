@@ -49,16 +49,23 @@ _SYSTEM_TEMPLATE = """你是【{name}】。
 
 【当前场景】
 {scene_brief}
-
+{objects_section}
 【行为格式规范】
 - 对白直接说出，无需引号
 - 动作用 *星号包裹*，如：*走向窗边*
 - 内心独白用 [方括号包裹]，如：[他在说谎]
 - 每轮回应必须包含至少一种格式
-- 保持角色一致性，不得跳出角色视角
+{attempt_rule}- 保持角色一致性，不得跳出角色视角
 - 你只知道你"已知"的信息，不得使用你不该知道的信息
 - 回应要简洁有戏剧张力，控制在 3 句话以内
 """
+
+#: 以下两段只在 ENVIRONMENT_MODE=adjudicate 时出现（设计单 A24 / R7）；其余两档留空，
+#: system prompt 与之前逐字相同
+_OBJECTS_SECTION = "\n【在场物件】\n{brief}\n"
+# R7：与环境裁决同时上线。动作只写尝试，结果由环境回合给出 —— 角色自己写了结果，
+# 环境裁决就无从纠正（"*戴上王冠，王冠亮了*"），动作也会与环境回合各说各的
+_ATTEMPT_RULE = "- 对物件的动作只写你的尝试，不写结果：成不成、发生了什么由环境告诉你\n"
 
 
 class CharacterAgent:
@@ -153,12 +160,22 @@ class CharacterAgent:
             lines.extend(conditions)
         return "\n".join(lines) or "（场景信息待补充）"
 
-    def build_system_prompt(self, scene_context: dict, memory_context: list[str] | None = None) -> str:
+    def build_system_prompt(
+        self,
+        scene_context: dict,
+        memory_context: list[str] | None = None,
+        *,
+        objects_brief: str = "",
+        attempt_only: bool = False,
+    ) -> str:
         """构建角色 system prompt。严禁注入 unknown_facts。
 
         memory_context 默认不注入：检索结果每轮都变，放进 system 会让
         prompt 前缀每轮失效。respond() 会改为把记忆放进 user 消息。
         仅 AutoGen 路径（system_message 是唯一注入点）才需要传入。
+
+        `objects_brief`（本角色看得见的在场物件，只含公开描述）与 `attempt_only`（R7 格式规范）
+        只在 adjudicate 档由引擎传入，整场不变，进 system 不破契约3。
         """
         lore = self._select_lore(scene_context)
         lore_text = "\n".join(f"- {e.content}" for e in lore) or "（你对世界所知有限）"
@@ -176,6 +193,8 @@ class CharacterAgent:
             known_facts=known,
             relationship_summary=self._relationship_summary(),
             scene_brief=self._scene_brief(scene_context),
+            objects_section=_OBJECTS_SECTION.format(brief=objects_brief) if objects_brief else "",
+            attempt_rule=_ATTEMPT_RULE if attempt_only else "",
         )
         if memory_context:
             prompt += "\n【相关记忆】\n" + "\n".join(f"- {m}" for m in memory_context)
@@ -223,8 +242,20 @@ class CharacterAgent:
         return body
 
     # ---- 对话生成（直接 LLM 路径，不依赖 AutoGen 可用）----
-    async def respond(self, scene_context: dict, transcript: list[str]) -> str:
-        """根据场景上下文与已发生对话，生成本角色的下一轮回应原始文本。"""
+    async def respond(
+        self,
+        scene_context: dict,
+        transcript: list[str],
+        *,
+        objects_brief: str = "",
+        attempt_only: bool = False,
+        environment: str = "",
+    ) -> str:
+        """根据场景上下文与已发生对话，生成本角色的下一轮回应原始文本。
+
+        `environment` 是【当前环境】块的正文（场景内物件状态，每次裁决都可能变），
+        **只进 user 消息**（契约3 补充条款、设计单 R4）；为空时不加这一块。
+        """
         q_window = max(settings.MEMORY_QUERY_WINDOW, 0)
         tail = transcript[-q_window:] if q_window else []
         query = (scene_context.get("description", "") + " " + " ".join(tail)).strip()
@@ -234,11 +265,16 @@ class CharacterAgent:
 
         # 静态部分进 system（整场不变），动态部分进 user 且按"历史在前、变化在后"排列，
         # 使得 prompt 前缀随轮次只增不改，命中服务端 prefix cache。
-        system = self.build_system_prompt(scene_context)
+        system = self.build_system_prompt(
+            scene_context, objects_brief=objects_brief, attempt_only=attempt_only
+        )
         recent = self._recent_transcript(transcript)
         mem_text = "\n".join(f"- {m}" for m in memory_context) or "（暂无相关记忆）"
+        # 环境块排在"目前对话"之后：对话只在末尾追加，放在它前面的话每次裁决都会改动前缀
+        env_text = f"【当前环境】\n{environment}\n\n" if environment else ""
         user = (
             f"【目前对话】\n{recent}\n\n"
+            f"{env_text}"
             f"【你此刻想起的】\n{mem_text}\n\n"
             f"现在轮到你（{self.name}）发言，请按行为格式规范回应。"
         )
