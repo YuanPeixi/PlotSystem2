@@ -282,8 +282,9 @@ class SceneEngine:
                     remaining_environment_quota(turns, settings.MAX_ENVIRONMENT_TURNS)
                     if self._adjudicate else None
                 )
+                # 动作段取解析层剥过独白之后的那一份，与 turn.action 同源（契约1，见 _split_reply）
                 turn.actions = await self._action_extractor.extract(
-                    _ACTION_RE.findall(raw), agent.name, quota
+                    self._split_reply(raw)[0], agent.name, quota
                 )
             turns.append(turn)
             transcript.append(self._turn_line(turn))
@@ -584,9 +585,16 @@ class SceneEngine:
         return self.agents[count_character_turns(turns) % len(self.agents)], ""
 
     # ---- 解析 ----
-    def _parse_turn(self, raw: str, agent: CharacterAgent, turn_number: int) -> DialogueTurn:
-        # **先剥独白、再取动作**。反过来的话 `*戴上王冠[我怕]*` 整段被动作正则抓走，
-        # 独白就留在 `action` 里，随 transcript 进全场角色的 prompt 与他人记忆（契约1）。
+    @staticmethod
+    def _split_reply(raw: str) -> tuple[list[str], str, list[str]]:
+        """把一次回复拆成 (动作段, 对白, 独白)。"什么算动作"只在这里判一次。
+
+        **先剥独白、再取动作**。反过来的话 `*戴上王冠[我怕]*` 整段被动作正则抓走，
+        独白就留在 `action` 里，随 transcript 进全场角色的 prompt 与他人记忆（契约1）。
+        动作意图抽取也只能用这里的动作段：拿原文重跑动作正则的话，独白里写的
+        `*戴上王冠*`（想做、没做）与没闭合的 `[` 之后的星号都会被当成尝试去裁决，
+        公开的环境回合就把角色心里的打算演了出来。
+        """
         thoughts = _THOUGHT_RE.findall(raw)
         rest = _THOUGHT_RE.sub("", raw)
         unclosed = _UNCLOSED_THOUGHT_RE.search(rest)
@@ -596,7 +604,10 @@ class SceneEngine:
         actions = _ACTION_RE.findall(rest)
         # 去掉动作与独白后剩余即为对白
         dialogue = re.sub(r"\s+", " ", _ACTION_RE.sub("", rest)).strip()
+        return actions, dialogue, thoughts
 
+    def _parse_turn(self, raw: str, agent: CharacterAgent, turn_number: int) -> DialogueTurn:
+        actions, dialogue, thoughts = self._split_reply(raw)
         return DialogueTurn(
             turn_id=new_id(),
             scene_id=self.scene.scene_id,
