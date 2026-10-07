@@ -349,10 +349,20 @@ async def test_actions_round_trip_through_the_database():
     assert loaded.dialogue_log[0].actions == scene.dialogue_log[0].actions
 
 
-@pytest.mark.parametrize("value", ["adjudicate", "ON", "recording", ""])
+@pytest.mark.parametrize("value", ["ADJUDICATE", "ON", "recording", ""])
 def test_unsupported_environment_mode_fails_at_startup(value):
     with pytest.raises(ValueError):
         Settings(ENVIRONMENT_MODE=value)
+
+
+@pytest.mark.parametrize("value", ["off", "record", "adjudicate"])
+def test_supported_environment_modes(value):
+    assert Settings(ENVIRONMENT_MODE=value).ENVIRONMENT_MODE == value
+
+
+def test_negative_environment_turn_limit_fails_at_startup():
+    with pytest.raises(ValueError):
+        Settings(MAX_ENVIRONMENT_TURNS=-1)
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Icon from '@/components/ui/Icon.vue'
-import type { DialogueTurn } from '@/types'
+import type { ActionIntent, DialogueTurn } from '@/types'
+import { isEnvironmentTurn } from '@/utils/turns'
 
 const props = defineProps<{
   turns: DialogueTurn[]
@@ -11,10 +12,33 @@ const props = defineProps<{
   only?: string
 }>()
 
+// 只看某个角色时，环境回合跟着它的执行者走（perceived_by 即执行者，A25）
 const shown = computed(() =>
-  props.only ? props.turns.filter((t) => t.character_id === props.only) : props.turns,
+  props.only
+    ? props.turns.filter((t) =>
+        isEnvironmentTurn(t) ? (t.perceived_by ?? []).includes(props.only!) : t.character_id === props.only,
+      )
+    : props.turns,
 )
 const lastId = computed(() => props.turns[props.turns.length - 1]?.turn_id)
+
+// 动作状态标签（工单24/20）：只标"和物件有关"的动作，神态（没提到物件）不标，免得满屏标签
+const ACTION_LABELS: Record<string, string> = {
+  recorded: '已记录',
+  pending: '待裁决',
+  resolved: '已裁决',
+  failed: '裁决失败',
+}
+function actionTags(t: DialogueTurn): { key: string; label: string; title: string; cls: string }[] {
+  return (t.actions ?? [])
+    .filter((a: ActionIntent) => a.status !== 'skipped' || a.skip_reason === 'quota')
+    .map((a) => ({
+      key: `${t.turn_id}-${a.index}`,
+      label: a.status === 'skipped' ? '额度已满' : ACTION_LABELS[a.status] ?? a.status,
+      title: a.text,
+      cls: a.status,
+    }))
+}
 
 // 名字栏按本场最长的名字定宽：各轮共用一个宽度才能对齐，又不为短名字留白。
 // 汉字按 1em、其他字符按 0.6em 估算，超过上限的名字折行。
@@ -35,15 +59,25 @@ const whoWidth = computed(() => {
       v-for="t in shown"
       :key="t.turn_id"
       class="turn"
-      :class="{ live: running && t.turn_id === lastId }"
+      :class="{ live: running && t.turn_id === lastId, env: isEnvironmentTurn(t) }"
     >
       <span class="idx num">{{ t.turn_number }}</span>
       <div class="who">
         {{ t.character_name }}
         <small v-if="t.selector_notice" :title="`选人阶段降级：${t.selector_notice}`">降级选择</small>
       </div>
-      <div class="body">
+      <!-- 环境回合：公开叙述全场可见；私密细节只给执行者，这里是导演视角才显示（契约1） -->
+      <div v-if="isEnvironmentTurn(t)" class="body">
+        <span class="narration">{{ t.narration }}</span>
+        <div v-if="t.private_detail" class="inner">
+          <span class="inner-tag"><Icon name="private" :size="13" />私密</span>{{ t.private_detail }}
+        </div>
+      </div>
+      <div v-else class="body">
         <span v-if="t.action" class="act">（{{ t.action }}）</span>{{ t.dialogue }}
+        <span v-for="tag in actionTags(t)" :key="tag.key" class="act-tag" :class="tag.cls" :title="tag.title">{{
+          tag.label
+        }}</span>
         <!-- 独白只给导演看：它不进入任何其他角色的上下文（契约1） -->
         <div v-if="t.inner_thought" class="inner">
           <span class="inner-tag"><Icon name="private" :size="13" />独白</span>{{ t.inner_thought }}
@@ -100,6 +134,30 @@ const whoWidth = computed(() => {
 }
 .act {
   color: var(--ink-2);
+}
+/* 环境回合：不是谁在说话，名字与叙述都退一档 */
+.turn.env .who {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+.narration {
+  color: var(--ink-2);
+  font-style: italic;
+}
+.act-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--ink-3);
+  vertical-align: 2px;
+}
+.act-tag.failed {
+  color: var(--danger);
 }
 .inner {
   margin-top: 8px;

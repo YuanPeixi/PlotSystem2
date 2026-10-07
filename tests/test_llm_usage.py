@@ -304,7 +304,7 @@ def _install_fake_run(monkeypatch, scene_id: str, *, turns: int):
         def inject_history(self, *args, **kwargs):
             pass
 
-        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None):
+        async def run(self, on_turn=None, on_persist=None, on_after_snapshot=None, on_environment=None):
             log = list(self.scene.dialogue_log)
             for _ in range(turns):
                 await _call(LLMPurpose.CHARACTER)

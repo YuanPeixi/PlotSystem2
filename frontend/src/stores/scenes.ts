@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api, openSceneStream } from '@/api/client'
 import type { AutoPilotSession, DialogueTurn, Scene, SceneConfig, SceneEvaluation } from '@/types'
+import { applyTurnUpdate } from '@/utils/turns'
 
 /** 场景已经跑完（或被中断），不应再等待流事件。 */
 const TERMINAL = ['completed', 'paused']
@@ -90,6 +91,13 @@ export const useSceneStore = defineStore('scenes', () => {
       // 逐轮落盘先于 SSE 推送，铺底用的 GET 可能已经包含这一轮，按 turn_id 去重
       if (turns.value.some((t) => t.turn_id === turn.turn_id)) return
       turns.value.push(turn)
+    })
+    // 已推过的轮次被服务端改写（环境裁决改了动作状态，工单20）：turn 按 turn_id 去重会吞掉它，
+    // 只能以更新的形式送达。按 revision 判新旧，本地没有就忽略（终态对账会补齐）
+    source.addEventListener('turn_update', (e) => {
+      if (stale()) return
+      const next = applyTurnUpdate(turns.value, JSON.parse((e as MessageEvent).data))
+      if (next) turns.value = next
     })
     source.addEventListener('status', (e) => {
       if (stale()) return

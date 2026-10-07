@@ -12,6 +12,7 @@ from pathlib import Path
 
 from backend.agents import CharacterAgent, DirectorAgent, SummaryAgent
 from backend.agents.director_agent import unavailable_evaluation
+from backend.agents.environment_agent import EnvironmentAgent
 from backend.config import settings
 from backend.exceptions import (
     BranchNotFoundError,
@@ -663,6 +664,12 @@ async def run_scene(scene_id: str) -> None:
             scene, config, agents, sm,
             world_variables=world.variables, storyboard=opening_board,
             objects=present_objects, environment_mode=environment_mode,
+            # 裁决器由这里构造后注入（R8）；每场一个实例，用导演模型
+            adjudicator=(
+                EnvironmentAgent()
+                if environment_mode == EnvironmentMode.ADJUDICATE.value
+                else None
+            ),
         )
         # continue 续跑：注入历史 transcript，让角色知道之前说了什么
         if scene.dialogue_log:
@@ -686,6 +693,20 @@ async def run_scene(scene_id: str) -> None:
             await _persist_scene()
             await events.publish(scene_id, "turn", to_dict(turn))
 
+        async def _on_environment(source: DialogueTurn, env_turn: DialogueTurn | None) -> None:
+            # 一次落盘提交整个裁决结果（环境回合 + 动作状态 + 来源 revision + 物件状态），
+            # 之后才推送（R5）。先推 turn_update 再推 turn：前端按 turn_id 去重，已推过的
+            # 来源轮次只能以"更新"的形式送达（设计单 §5.2）
+            await _persist_scene()
+            await events.publish(scene_id, "turn_update", to_dict(source))
+            if env_turn is not None:
+                await events.publish(scene_id, "turn", to_dict(env_turn))
+            else:
+                await events.publish(scene_id, "scene_error", {
+                    "message": f"{source.character_name} 的一个动作未能裁决，没有产生环境反应。",
+                    "fatal": False,
+                })
+
         # "待补写"守卫必须在后置快照**可见之前**挂上，而快照一进 snapshots 表就
         # 对 /snapshots/{id}/fork 可见 —— 它不依赖 scene 落库，也不等 run() 返回。
         # 所以标记由引擎在创建后置快照前经 on_after_snapshot 回调挂上，这里只负责
@@ -703,6 +724,7 @@ async def run_scene(scene_id: str) -> None:
                 on_turn=_on_turn,
                 on_persist=_persist_scene,
                 on_after_snapshot=_mark_pending_world_patch,
+                on_environment=_on_environment,
             )
             # 持久化角色状态变更（情绪/目标/位置）
             await _persist_character_states(agents)

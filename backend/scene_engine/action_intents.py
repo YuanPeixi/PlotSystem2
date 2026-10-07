@@ -121,12 +121,16 @@ def _is_true(value: object) -> bool:
 
 
 def apply_extraction(
-    intents: dict[int, ActionIntent], raw: str, codes: dict[str, str]
+    intents: dict[int, ActionIntent],
+    raw: str,
+    codes: dict[str, str],
+    attempt_status: str = ActionStatus.RECORDED.value,
 ) -> None:
     """把模型输出按 `index` 回填进送去抽取的那几段（就地修改）。
 
     同一 index 只认第一条；index 越界、不是整数的条目丢弃；没被任何条目覆盖的段落记
     `invalid_object` —— 模型漏答不等于"不是尝试"，不能替它下结论。
+    构成尝试的段落置 `attempt_status`：record 档 recorded，adjudicate 档 pending（待裁决）。
     """
     items = _extract_array(raw)
     if items is None:
@@ -153,7 +157,7 @@ def apply_extraction(
         intent.object_id = object_id
         intent.verb = _one_line(item.get("verb") or "")[:VERB_CHARS]
         intent.detail = _one_line(item.get("detail") or "")[:DETAIL_CHARS]
-        intent.status = ActionStatus.RECORDED.value
+        intent.status = attempt_status
         intent.skip_reason = ""
     for index, intent in intents.items():
         if index not in seen:
@@ -161,13 +165,26 @@ def apply_extraction(
 
 
 class ActionIntentExtractor:
-    """每场一个实例，持有本场在场物件。只在 `ENVIRONMENT_MODE=record` 时构造。"""
+    """每场一个实例，持有本场在场物件。`ENVIRONMENT_MODE` 为 record 或 adjudicate 时构造。
 
-    def __init__(self, objects: Sequence[WorldObject]):
+    两档只差尝试的去向：record 档置 recorded、不裁决；adjudicate 档置 pending 待裁决，
+    并受本场环境回合额度约束（设计单 A15）。
+    """
+
+    def __init__(self, objects: Sequence[WorldObject], *, adjudicate: bool = False):
         self.objects = list(objects)
+        self.adjudicate = adjudicate
 
-    async def extract(self, raw_segments: Sequence[str], actor: str) -> list[ActionIntent]:
-        """`raw_segments` 是动作正则按段落顺序抓到的原文，index 即其下标。"""
+    async def extract(
+        self, raw_segments: Sequence[str], actor: str, quota: int | None = None
+    ) -> list[ActionIntent]:
+        """`raw_segments` 是动作正则按段落顺序抓到的原文，index 即其下标。
+
+        `quota` 只在 adjudicate 档有意义：本场还能产生几个环境回合（已扣掉日志里的环境回合与
+        仍 pending 的动作）。<= 0 时命中段直接记 quota、**不发起抽取**——放到裁决之后再判，
+        到顶后每个命中轮次都要白付一次抽取 + 一次裁决再丢弃结果。抽出的尝试按段落顺序
+        占额度，超出的记 quota。
+        """
         intents = [
             ActionIntent(
                 index=i,
@@ -182,6 +199,12 @@ class ActionIntentExtractor:
             if matched:
                 hits.append((intent, matched))
         if not hits:
+            return intents
+
+        if self.adjudicate and quota is not None and quota <= 0:
+            for intent, _ in hits:
+                intent.skip_reason = ActionSkipReason.QUOTA.value
+            logger.warning("本场环境回合额度已满，角色 %s 本轮 %d 段提到物件的动作不再识别", actor, len(hits))
             return intents
 
         sent = hits[:MAX_ACTION_EXTRACTS_PER_TURN]
@@ -214,5 +237,15 @@ class ActionIntentExtractor:
             for intent in pending.values():
                 intent.skip_reason = ActionSkipReason.EXTRACT_FAILED.value
             return intents
-        apply_extraction(pending, raw, codes)
+        attempt = ActionStatus.PENDING.value if self.adjudicate else ActionStatus.RECORDED.value
+        apply_extraction(pending, raw, codes, attempt)
+        if self.adjudicate and quota is not None:
+            attempts = [i for i in intents if i.status == ActionStatus.PENDING.value]
+            for intent in attempts[max(quota, 0):]:
+                # 抽取结果（物件 / 动词 / 细节）留着：action_stats 据此能看出被额度挡掉的是什么
+                intent.status = ActionStatus.SKIPPED.value
+                intent.skip_reason = ActionSkipReason.QUOTA.value
+            if len(attempts) > quota:
+                logger.warning("本场环境回合额度只剩 %d，角色 %s 本轮有 %d 个尝试不裁决",
+                               quota, actor, len(attempts) - quota)
         return intents

@@ -140,9 +140,11 @@ class Settings(BaseSettings):
     AUTOPILOT_DEFAULT_MAX_ROLLBACKS: int = 2
 
     # --- 环境层（工单24/20）---
-    # off / record。adjudicate 在 PR-2 落地前不接受（启动即失败），否则它是个看起来生效、
-    # 实际什么都不做的选项。每次进 run_scene 读一次、整段不变（设计单 A21）
+    # off / record / adjudicate。每次进 run_scene 读一次、整段不变（设计单 A21）
     ENVIRONMENT_MODE: str = "off"
+    # 每场环境回合上限（设计单 A3），含仍 pending 的动作、在调用前预占（A15）。
+    # 0 = adjudicate 档也不裁决：命中段一律 quota 跳过、不发起抽取
+    MAX_ENVIRONMENT_TURNS: int = 8
 
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
@@ -160,10 +162,15 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_environment_mode(cls, v: str) -> str:
         allowed = sorted(m.value for m in EnvironmentMode)
-        if v == "adjudicate":
-            raise ValueError("ENVIRONMENT_MODE=adjudicate 需要工单20（PR-2）落地后才可用，目前只支持 off / record")
         if v not in allowed:
             raise ValueError(f"ENVIRONMENT_MODE 必须是 {allowed} 之一，收到 {v!r}")
+        return v
+
+    @field_validator("MAX_ENVIRONMENT_TURNS")
+    @classmethod
+    def _validate_max_environment_turns(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"MAX_ENVIRONMENT_TURNS 不能为负数，收到 {v}")
         return v
 
     @field_validator("DIRECTOR_TRANSCRIPT_STRATEGY")

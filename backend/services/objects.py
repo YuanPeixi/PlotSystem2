@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from backend.exceptions import ConflictError, InvalidRequestError
 from backend.models import (
     OBJECT_VISIBILITIES,
+    OBJECT_VISIBILITY_GLOBAL,
     OBJECT_VISIBILITY_HIDDEN,
     OBJECT_VISIBILITY_PRIVATE,
     WorldObject,
@@ -404,3 +405,46 @@ def _safe_normalized(obj: WorldObject) -> WorldObject:
     out.hidden_rules = [r for r in (single_line(r) for r in out.hidden_rules) if r]
     out.known_by = _clean_ids(out.known_by) if out.visibility == OBJECT_VISIBILITY_PRIVATE else []
     return out
+
+
+# ---------------------------------------------------------------------------
+# 角色视野（工单20 PR-2a，设计单 A24）
+# ---------------------------------------------------------------------------
+
+#: 一个角色 system 里【在场物件】的总预算。它进这个角色整场每一轮的 prompt
+OBJECTS_BRIEF_BUDGET_TOKENS = 600
+
+
+def visible_to(obj: WorldObject, character_id: str) -> bool:
+    """这个角色知不知道物件的存在与外观：global 全员，private 只有 `known_by`，hidden 谁都不。
+
+    可见性按 `normalize_visibility` 再收紧一次：非法取值按 hidden（失败即收紧，同工单29）。
+    """
+    visibility = normalize_visibility(obj.visibility)
+    if visibility == OBJECT_VISIBILITY_GLOBAL:
+        return True
+    return visibility == OBJECT_VISIBILITY_PRIVATE and bool(character_id) and character_id in obj.known_by
+
+
+def describe_objects_for(
+    objects: list[WorldObject], character_id: str, budget_tokens: int = OBJECTS_BRIEF_BUDGET_TOKENS
+) -> tuple[str, list[str]]:
+    """角色 system 里【在场物件】的正文与因超预算没放进去的物件名。没有可见物件时正文为空串。
+
+    只渲染名称与**公开描述**，绝不碰 `hidden_rules`（契约1，设计单 R1）。一行一条，塌单行。
+    超预算时从排在后面的物件起整条丢弃（不截半条），由调用方 warning。
+    """
+    lines: list[str] = []
+    dropped: list[str] = []
+    used = 0
+    for obj in objects:
+        if not visible_to(obj, character_id):
+            continue
+        line = f"- {single_line(obj.name)}：{single_line(obj.public_description) or '（无描述）'}"
+        cost = estimate_tokens(line)
+        if dropped or used + cost > budget_tokens:
+            dropped.append(single_line(obj.name))
+            continue
+        lines.append(line)
+        used += cost
+    return "\n".join(lines), dropped
