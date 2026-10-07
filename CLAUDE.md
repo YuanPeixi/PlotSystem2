@@ -154,7 +154,8 @@ backend/
 │   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON + 分支世界变量 / 分镜稿 JSON）
 │   ├── world_state.py    世界变量的规范化/预算/渲染（纯函数，无 IO；读写两侧共用）
 │   ├── storyboard.py     导演分镜稿的预算/渲染/patch 合并/用户编辑/分叉（纯函数，工单18）
-│   ├── objects.py        物件的预算/可见性规整/用户编辑（纯函数，工单24）
+│   ├── objects.py        物件的预算/可见性规整/用户编辑/角色可见的【在场物件】（纯函数，工单24/20）
+│   ├── environment.py    场景物件状态的预算/渲染、裁决输出解析、环境回合额度（纯函数，工单20）
 │   ├── autopilot.py      AutoPilot 会话的停止判定与记账（纯函数，工单12；调度在 orchestrator）
 │   ├── inspection.py     ★ 角色内部状态的唯一只读查询层（面板/导演/总结共用）
 │   └── events.py         SSE 内存事件总线（asyncio.Queue）
@@ -166,6 +167,7 @@ backend/
 │   ├── character_agent.py  角色演绎（prompt 构建 + 记忆检索 + chat_safe）
 │   ├── director_agent.py   plan_scene / evaluate_scene / make_decision
 │   ├── summary_agent.py    5 种格式输出
+│   ├── environment_agent.py 环境裁决器：按物件隐藏规则裁决角色的尝试（工单20，由 orchestrator 注入引擎）
 │   └── base_agent.py       AutoGen 模型客户端封装（⚠️ 无调用方）
 │
 ├── scene_engine/
@@ -218,7 +220,7 @@ frontend/src/
 │   │              AutoPilotControl.vue（舞台底栏的自动推演开关）
 │   └── ui/        Icon.vue + icons.ts（内联 SVG 图标）、PageHeader.vue
 ├── composables/ theme.ts（亮/暗主题 + 给 G6 取 CSS 变量）
-├── utils/       branches.ts（分支配色、谱系、分支图布局，纯函数）
+├── utils/       branches.ts（分支配色、谱系、分支图布局，纯函数）、turns.ts（turn_update 合并、角色轮次计数）
 ├── stores/      project.ts / characters.ts / scenes.ts / director.ts
 ├── router/index.ts、api/client.ts、types/index.ts、styles/global.css（设计变量的唯一定义处）
 ```
@@ -249,8 +251,8 @@ frontend/src/
 | `Storyboard` / `StoryBeat` / `ForkOrigin` | **分支级**导演分镜稿：路线图（带稳定 `beat_id` 的节拍）+ 长期备忘 + 分叉说明 + changelog + 修订号。**只进导演 prompt** | **文件** `storyboard/{branch_id}.json`，快照带时点副本 |
 | `StoryboardPatch` | 导演随评估产出的分镜稿修改（相对导演读到的那一版） | 内嵌于 `SceneEvaluation` |
 | `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
-| `Scene` / `DialogueTurn` | 场景与对话轮次（`Scene.objects_present` 为本场在场物件；轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24） | SQLite `scenes`（轮次内嵌） |
-| `ActionIntent` | 一个 `*动作*` 段的意图（物件 / 动词 / 细节 / `status` + `skip_reason`），挂在 `DialogueTurn.actions`，**只给导演与用户看**（见陷阱 25） | 随轮次内嵌 |
+| `Scene` / `DialogueTurn` | 场景与对话轮次（`Scene.objects_present` 为本场在场物件，`Scene.environment_state` 为本场物件公开状态；轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24 / 27；环境回合带 `narration` / `private_detail` / `perceived_by` / 来源，轮次带 `revision`） | SQLite `scenes`（轮次内嵌） |
+| `ActionIntent` | 一个 `*动作*` 段的意图（物件 / 动词 / 细节 / `status` + `skip_reason`），挂在 `DialogueTurn.actions`，**只给导演与用户看**（见陷阱 25）；adjudicate 档的 pending / resolved / failed 见陷阱 27 | 随轮次内嵌 |
 | `LLMUsageStat` | 某一用途的 LLM 调用计数（次数 / 失败 / 重试 / token / 估算次数 / 耗时）。`Scene.llm_usage` 记运行期间的、`SceneEvaluation.llm_usage` 记评估的（见陷阱 26） | 随场景 / 评估内嵌 |
 | `WorldObject` | **项目级**物件：公开描述 + 隐藏规则（**只进导演与环境层**）+ 可见性 `global` / `private`（配 `known_by` 名单）/ `hidden` | **文件** `objects/{object_id}.json` |
 | `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
@@ -640,7 +642,7 @@ frontend/src/
     - **`EpisodicMemory._snippet` 的条目格式冻结、不并入 `render_turn`**：它是序列化格式，
       老快照与重放去重都靠逐字相同。
 
-25. **`DialogueTurn.actions`（工单24 PR-1b）有五条语义**，`ENVIRONMENT_MODE=record` 时才产生：
+25. **`DialogueTurn.actions`（工单24 PR-1b）有五条语义**，`ENVIRONMENT_MODE` 为 record / adjudicate 时才产生：
     - **不进任何角色记忆、transcript 或 prompt**：`render_turn` / `_turn_line` / 记忆文本只读
       `action` 拼接字段。这是**设计保证不是现状**，`test_record_mode_leaves_memory_and_transcript_byte_identical`
       逐字比对 off 与 record 两档。PR-2 想让环境结果进角色视野，走环境回合，**不要**把 `detail`
@@ -668,6 +670,33 @@ frontend/src/
       `run_scene` 里起的任务，复制了它的上下文；不重新装两轮就混在一起，不撤下则收尾阶段
       （AutoPilot 决策、下一场规划）的调用会记到已经落库的那场上。continue 的多段在场景已有
       计数上累加（`UsageMeter.seed`）。导演历史副本里清掉评估的计数（同 `storyboard_patch` 的理由）。
+
+27. **环境回合（工单20 PR-2a，`ENVIRONMENT_MODE=adjudicate`）的七条语义**，设计单
+    `docs/fix-tickets/24-20-environment.md` §5 / §9 是判据来源：
+    - **一个动作一个提交单元**：角色轮次推送之后、下一次终止判定之前，`SceneEngine._adjudicate_pending`
+      逐个裁决本轮 pending 动作。成功 = 追加环境回合 + 动作置 resolved + 来源轮次 `revision+1` +
+      `Scene.environment_state` 更新，全在 `scenes.data_json`，`on_environment` 一次 `save_scene` 原子提交后
+      **才**推 `turn_update`（来源轮次）再推 `turn`（环境回合）。环境回合作为普通轮次走 `_remember` 与周期
+      固化（陷阱 9），**不另开记忆写入口**；
+    - **失败不伪造**：裁决调用失败或输出不可用 → 动作 failed、不生成环境回合、推非致命 `scene_error`。
+      **绝不补一句"毫无反应"**（同陷阱 14）。而"裁决成功但没触发规则"照样生成环境回合，那是裁决出的事实；
+    - **额度在调用前预占**（`remaining_environment_quota`）：上限 − 已有环境回合 − 仍 pending 的动作。
+      ≤0 时命中段直接 `skipped/quota`、**不发起抽取**；pending 必须计入，否则续跑补裁决后超限；
+    - **续跑先补裁决**：`_replay_unconsolidated` 之后按日志顺序补 pending 动作。中断只在动作之间生效，
+      剩下的留 pending。环境回合 `turn_id` 由 `(来源轮次, 动作序号)` 确定性生成（`environment_turn_id`），
+      已有同 ID 回合的动作改记 resolved（A35）；物件已不在本场记 failed（A34）；**非 adjudicate 档原样保留
+      pending、仍占额度**（A27）——改成 skipped 就不可恢复了；
+    - **可见性三条线**：公开叙述 `narration` 进"目前对话"与全体在场角色记忆；`private_detail` 只进
+      `perceived_by`（固定为执行者本人，A25）的记忆与导演/用户界面，**不进 transcript**；物件隐藏规则与
+      预制揭示的 content **只进裁决 prompt**（R1，`test_hidden_rules_reach_only_the_adjudicator` 扫遍角色 /
+      selector / 抽取的全部 prompt）。私密细节只能是导演预制揭示的原文（A31），裁决器自己写的不采纳；
+    - **角色侧只在 adjudicate 档变化**：system 多出按可见性过滤的【在场物件】（只有名称与公开描述，A24）
+      与"动作只写尝试"规范（R7），整场不变；场景内物件状态进 **user** 消息的【当前环境】块
+      （契约3 补充条款），排在"目前对话"之后。off / record 两档 prompt 由 golden 用例逐字钉住；
+    - **物件状态按 `object_id` 归属、只在本场有效**（A30 / A32）：渲染时才按物件当前名字拼
+      `物件名·属性`；裁决器只读本场状态（`object_state_view`）。跨场延续与是否进世界变量待 PR-2b 重议
+      （设计单 §9），**不要**顺手把 `environment_state` 并进 `WorldState`：世界变量进全体角色的 system，
+      private / hidden 物件的状态会泄露给不知道它存在的人。
 
 ---
 
@@ -730,8 +759,8 @@ build_status.json                 构建进度（供重启后对账）
 1. 改 `backend/models.py` 的 dataclass；
 2. **同步改 `services/repository.py` 里对应的 `_deserialize_*`**（`_deserialize_card` /
    `_deserialize_scene` / `deserialize_story_history` / `deserialize_storyboard` /
-   `_deserialize_object` / `_deserialize_actions` / 快照的 `_deserialize_character_state`，
-   以及场景与评估共用的 `usage.deserialize_usage`）——漏这步字段会静默丢失；
+   `_deserialize_object` / `_deserialize_actions` / `_deserialize_turn` / 快照的 `_deserialize_character_state`，
+   以及场景与评估共用的 `usage.deserialize_usage`、场景物件状态的 `environment.clamp_environment_state`）——漏这步字段会静默丢失；
 3. 评估是否需要新增 SQL 列（只有需要索引/过滤/CAS 时才加，普通字段靠 `data_json` 自动携带）。
 
 前端有对应类型时，同步改 `frontend/src/types/index.ts`。
@@ -785,13 +814,14 @@ graph TD
 4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
    （`selector` 模式下转交 `ScoringSpeakerSelector`：每个候选各一次并行打分调用，
    叠加被点名加分与重复发言惩罚；兜底必须 warning 可见，不得静默选 `agents[0]`）
-   → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 →（record 档）动作意图抽取
-   （`ActionIntentExtractor`，提到在场物件的轮次一次调用，必须早于落盘，见陷阱 25）→ 追加 transcript
+   → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 →（record / adjudicate 档）动作意图抽取
+   （`ActionIntentExtractor`，提到在场物件的轮次一次调用，必须早于落盘，见陷阱 25；adjudicate 档先按额度预占）→ 追加 transcript
    → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；每个角色能感知到
    什么由记忆层按 `utils/turns.perceive` 自行判定——他人轮次剥离 `inner_thought`，
    调用方不传判定，续跑重放走同一个函数）→ 每满 `MEMORY_CONSOLIDATE_EVERY_TURNS` 轮**或缓冲占用逼近容量**
    时走一次 `_consolidate_all`（先单独落一次日志 → 固化 + 推水位线 + `on_persist`，
-   整体必须早于 SSE 推送）→ SSE 推送；
+   整体必须早于 SSE 推送）→ SSE 推送 →（adjudicate 档）逐个裁决本轮 pending 动作，每个动作
+   落盘一次再推 `turn_update` + `turn`（见陷阱 27）；
 5. 终止后做收尾固化（`_consolidate_all`：`consolidate(force=True)`，唯一写入点在第4步，不重复写入）
    → 同一步内通过 `on_persist` 把水位线落库 → 再打后置快照（此时短期缓冲已清空，
    快照记录的是"已落库"的干净状态，供下一场 `prime()` 回填也不会重新引入已固化过的内容）。
@@ -967,7 +997,7 @@ graph TD
 | 类别 | 何时变 | 放哪 | 现状 |
 |------|--------|------|------|
 | **场景常量** | 只在场次**之间**变，开场即冻结 | system（`scene_brief` 的"当前情境"块） | ✅ 工单07 已落地 |
-| **场景内变量** | 场景**进行中**由环境裁决改变 | user 消息里独立的"当前环境"块 | 【设想】工单20 |
+| **场景内变量** | 场景**进行中**由环境裁决改变 | user 消息里独立的"当前环境"块 | ✅ 工单20 PR-2a（`Scene.environment_state`，见陷阱 27） |
 
 工单07 的 `WorldState` 属于前者，所以进 system 不破契约；工单11 §2.2 曾写的
 "更新后的环境状态在下一轮 `build_system_prompt` 中体现"属于后者，**那样做会每轮击穿
@@ -1089,7 +1119,8 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 | POST | `/projects/{project_id}/output` | 生成输出 |
 | GET | `/output/{output_id}` | 取回生成结果 |
 
-**SSE 事件类型**：`turn`（新 DialogueTurn）、`status`、`snapshot`、`evaluation`、`scene_error`、
+**SSE 事件类型**：`turn`（新 DialogueTurn）、`turn_update`（已推过的轮次被服务端改写后的完整版本，
+带更大的 `revision`；目前只有环境裁决改动作状态时发，见陷阱 27）、`status`、`snapshot`、`evaluation`、`scene_error`、
 `autopilot`（自动推演会话的最新状态，带 `current_scene_id`；推在刚收场那一场的流上，**先于**终态帧）。
 自动 continue 时这一场的终态帧**不推**，同一条流直接接着收到新一轮的 `status: running` 与 `turn`。
 业务失败事件**必须叫 `scene_error` 而不是 `error`**：`error` 是 EventSource 的原生连接
@@ -1099,6 +1130,7 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 若首帧已是 `completed` / `paused`，服务端**直接结束流**，不留只会 ping 的连接。
 逐轮落盘先于 SSE 推送，因此铺底用的 GET 与随后的 `turn` 事件**可能撞上同一轮**，
 客户端必须按 `turn_id` 去重，并在终态时无条件以持久化日志为准。
+`turn` 的去重语义因此**不能**用来送达改写：同一 `turn_id` 再推一次会被丢掉，改写只能走 `turn_update`。
 
 ---
 
@@ -1171,6 +1203,12 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
   `startSimulation({keepLog})` 保留续跑日志，场景完成后 `reconcileLog()` 补齐
   SSE 建立前遗漏的轮次。改动实时日志逻辑时别破坏这个对账。
   舞台只在用户停在底部附近时才跟随新台词滚动（`StageView` 的 `stick`）。
+- **`turn_update` 必须比 `revision`**（工单20，`utils/turns.ts::applyTurnUpdate`）：本地有同 `turn_id`
+  且新版 `revision` 更大才替换，本地没有就忽略（终态 `reconcileLog` 会补齐）。不比的话，订阅期间铺底 GET
+  先拿到新版、队列里的旧事件随后才到，就会把动作状态回退。
+- **环境回合不是发言**：`DialogLog` 把它渲染成叙述，私密细节用 `--private` 只在导演视角显示；
+  只看某个角色时，环境回合跟着执行者（`perceived_by`）走。`StageView` 的"第 N / max_turns 轮"与
+  进度条只数角色轮次（`characterTurnCount`），与后端终止判定同一口径。
 - **`attachScene` 与 `joinScene` 不可混用**：前者用于“打开/重连已存在的场景”（刷新恢复、
   点选历史场景），**绝不调 `/start`**；后者用于决策产生的新场景/续跑，会调 `/start`。
   对已完成场景误调 `/start` 会白烧一整场 LLM 并覆盖快照/评估（后端已加拦截，但前端不该依赖它）。
