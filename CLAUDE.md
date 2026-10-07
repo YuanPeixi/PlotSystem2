@@ -642,7 +642,7 @@ frontend/src/
     - **`EpisodicMemory._snippet` 的条目格式冻结、不并入 `render_turn`**：它是序列化格式，
       老快照与重放去重都靠逐字相同。
 
-25. **`DialogueTurn.actions`（工单24 PR-1b）有五条语义**，`ENVIRONMENT_MODE` 为 record / adjudicate 时才产生：
+25. **`DialogueTurn.actions`（工单24 PR-1b）有六条语义**，`ENVIRONMENT_MODE` 为 record / adjudicate 时才产生：
     - **不进任何角色记忆、transcript 或 prompt**：`render_turn` / `_turn_line` / 记忆文本只读
       `action` 拼接字段。这是**设计保证不是现状**，`test_record_mode_leaves_memory_and_transcript_byte_identical`
       逐字比对 off 与 record 两档。PR-2 想让环境结果进角色视野，走环境回合，**不要**把 `detail`
@@ -650,6 +650,9 @@ frontend/src/
     - **抽取 prompt 只有命中段**（不传对白、不传隐藏规则），段内 `[...]` 先剥掉
       （`action_intents.strip_thoughts`，没闭合的 `[` 剥到段尾）：角色把独白格式写坏时，
       独白会混进对白或动作段，而 `text` / `detail` 在 PR-2 会交给裁决器、产出公开叙述；
+    - **动作段与 `turn.action` 同源**（`SceneEngine._split_reply`，先剥独白再取动作）：抽取**不得**
+      拿原始回复重跑动作正则。否则独白里的 `*戴上王冠*`（想做、没做）与没闭合的 `[` 之后的星号
+      都会被当成尝试，adjudicate 档会把角色心里的打算裁决成全场可见的环境回合（PR-2a 评审 P1）；
     - **抽取先于第一次落盘**，落盘的轮次意图恒完整，续跑不重抽；命中段超过 6 段按段落顺序取前 6，
       结果按 `index` 回填 —— 结果可复现是"续跑不重抽"的前提；
     - **`ENVIRONMENT_MODE` 按段冻结**：每次进 `run_scene` 读一次。continue 重进会重读配置，

@@ -344,6 +344,47 @@ async def test_two_environment_turns_in_a_row_do_not_count_toward_max_turns():
     assert result.terminated_reason == "达到最大轮次"
 
 
+# 格式写坏的回复：星号落在独白里（想做、没做），或独白的 `[` 没闭合吞掉了后面的星号。
+# 解析层不把它们算作动作（action 为空），意图抽取也必须同口径 —— 拿原文重跑动作正则的话，
+# 角色心里的打算会被裁决成一个全场可见的环境回合（评审 P1，契约1）
+_THOUGHT_ONLY_ACTIONS = [
+    "[我想*戴上王冠*，可不能让人看见] 晚上好。",
+    "*走近王冠[她在撒谎* 你来了",
+    "［等他们走了再*戴上王冠*］ 夜深了。",
+]
+
+
+@pytest.mark.parametrize("raw", _THOUGHT_ONLY_ACTIONS)
+@pytest.mark.parametrize("mode", [ADJ, EnvironmentMode.RECORD.value])
+@pytest.mark.asyncio
+async def test_actions_inside_thoughts_are_never_extracted_or_adjudicated(raw, mode):
+    engine, _ = _engine(f"s-env-thought-{mode}", mode=mode, max_turns=1)
+    router = Router(character=[raw], action_extract=[_extracted(_attempt())])
+    with router:
+        result = await engine.run()
+    (src,) = result.dialogue_log
+    assert src.action is None, "前提：解析层没把它当成动作"
+    assert src.actions == []
+    assert router.of(LLMPurpose.ACTION_EXTRACT) == []
+    assert router.of(LLMPurpose.ADJUDICATE) == []
+
+
+@pytest.mark.asyncio
+async def test_extraction_uses_the_same_segments_as_the_public_action():
+    """正常动作与独白混写：抽取只拿到公开的那一段，独白里的那一段不算。"""
+    engine, _ = _engine("s-env-thought-mixed", max_turns=1)
+    router = Router(character=["*拿起王冠* [其实想*戴上王冠*] 真轻。"],
+                    action_extract=[_extracted(_attempt(verb="拿起"))])
+    with router:
+        result = await engine.run()
+    src = result.dialogue_log[0]
+    assert src.action == "拿起王冠"
+    assert [a.text for a in src.actions] == ["拿起王冠"]
+    (extract,) = router.of(LLMPurpose.ACTION_EXTRACT)
+    segments = extract[0]["content"].split("【动作】")[1].split("只输出")[0]
+    assert segments.strip() == "0. 拿起王冠"
+
+
 # ---------------------------------------------------------------------------
 # 续跑（§5.4、A27、A34、A35）
 # ---------------------------------------------------------------------------
