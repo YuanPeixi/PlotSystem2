@@ -20,7 +20,8 @@
 - 场景上下文、【在场物件】、R7、【当前环境】都由真实的 `SceneEngine` 算出；世界变量与角色
   时点状态取该场的前置快照；人设取**当前**角色卡（事后编辑过会漂移）；
 - "目前对话" = 开场白一行 + 该轮之前的全部轮次，逐行经引擎的 `_turn_line`。若该轮属于
-  continue 续跑段，真实现场没有开场白那一行（段边界没落盘，无从得知）；
+  continue 续跑段，真实现场没有开场白那一行（段边界没落盘，无从得知）；超预算时的窗口起点
+  按本角色此前每次发言从场景开头推演，continue 段的归零同样还原不了；
 - 档位没落盘：有环境回合或裁决过的动作就按 adjudicate，可用 `--mode` 覆盖。【当前环境】
   只有场景终态，该轮之前没有环境回合时按空处理，否则用终态并在现场备注里写明；
 - 记忆块（`memory_context_used` 没落盘）：`empty` 统一给空记忆块（默认，变体之间完全公平）；
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import math
 import re
@@ -51,6 +53,7 @@ from backend.agents.character_agent import _ATTEMPT_RULE, CharacterAgent
 from backend.config import settings
 from backend.exceptions import LLMError, PlotSystemError
 from backend.memory import MemoryManager
+from backend.memory.long_term import LongTermMemory
 from backend.models import (
     ActionStatus,
     CharacterState,
@@ -228,8 +231,8 @@ async def load_site(
     memory_context: list[str] = []
     if memory == "checkpoint":
         query = speaker.memory_query(scene_context, transcript)
-        memory_context, note = await asyncio.to_thread(
-            _checkpoint_memory, snap, speaker.character_id, scene.branch_id, query
+        memory_context, note = await _checkpoint_memory(
+            snap, project_id, speaker.character_id, scene.branch_id, query
         )
         if note:
             notes.append(note)
@@ -256,50 +259,35 @@ class _NoAdjudicator:
         raise RuntimeError("回放评测不裁决动作")
 
 
-def _checkpoint_memory(
-    snap: Snapshot | None, character_id: str, branch_id: str, query: str
+async def _checkpoint_memory(
+    snap: Snapshot | None, project_id: str, character_id: str, branch_id: str, query: str
 ) -> tuple[list[str], str]:
-    """从前置快照的向量库副本检索。只打开临时副本：PersistentClient 打开即改写文件（I2）。"""
+    """从前置快照的向量库副本检索开场时的记忆。
+
+    用真实的 `LongTermMemory` 打开临时副本，承接规则全走生产代码：分叉初始化凭据封住的分支
+    不回退项目级老集合，未承接的分支集合会把老集合并进来（工单08 I3、陷阱 12）。手写一份回退
+    的话，这两条迟早漂移（30b 评审）。承接会往副本里写，副本用完即删；只打开副本是因为
+    PersistentClient 打开即改写文件（I2）。
+    """
     if snap is None or not snap.chroma_checkpoint:
         return [], "前置快照不含向量库，记忆块按空"
     ckpt = Path(snap.chroma_checkpoint)
     if not (ckpt / "chroma.sqlite3").exists():
         return [], "前置快照不含向量库，记忆块按空"
-    try:
-        import chromadb
-        from chromadb.config import Settings as ChromaSettings
 
-        from backend.memory.embeddings import RemoteEmbeddingFunction
-        from backend.memory.long_term import collection_name_for
-    except Exception as exc:  # noqa: BLE001
-        return [], f"Chroma 不可用，记忆块按空：{exc}"
-
-    work = Path(tempfile.mkdtemp(prefix="plotsystem_replay_"))
-    client = None
+    work = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="plotsystem_replay_"))
+    memory = LongTermMemory(character_id, project_id, branch_id)
+    memory.db_dir = work / "ckpt"
     try:
-        shutil.copytree(ckpt, work / "ckpt")
-        client = chromadb.PersistentClient(
-            path=str(work / "ckpt"), settings=ChromaSettings(anonymized_telemetry=False)
-        )
-        names = {c.name for c in client.list_collections()}
-        # 改造前的老项目只有项目级集合，与 LongTermMemory 的承接同一顺序
-        for name in (collection_name_for(character_id, branch_id), collection_name_for(character_id)):
-            if name in names:
-                col = client.get_collection(name, embedding_function=RemoteEmbeddingFunction())
-                k = min(settings.MEMORY_TOP_K, col.count())
-                if not k:
-                    return [], "快照里该角色的记忆集合为空"
-                res = col.query(query_texts=[query], n_results=k)
-                return list((res.get("documents") or [[]])[0]), ""
-        return [], "快照里没有该角色的记忆集合，记忆块按空"
+        await asyncio.to_thread(shutil.copytree, ckpt, memory.db_dir)
+        await memory.connect()
+        if memory._collection is None:
+            return [], "Chroma 不可用，记忆块按空"
+        chunks = await memory.retrieve(query, settings.MEMORY_TOP_K)
+        return [c.text for c in chunks], "" if chunks else "快照里该角色没有可检索的记忆"
     finally:
-        close = getattr(client, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:  # noqa: BLE001
-                pass
-        shutil.rmtree(work, ignore_errors=True)
+        SnapshotManager._close_chroma_client(memory._client, stop_fallback=True)
+        await asyncio.to_thread(shutil.rmtree, work, True)
 
 
 # ---------------------------------------------------------------------------
@@ -319,15 +307,26 @@ class Variant:
     extra_marker: Callable[[ReplaySite], re.Pattern[str] | None] = lambda site: None
 
 
-def _fresh(site: ReplaySite) -> CharacterAgent:
-    # `_recent_transcript` 会把窗口起点记在实例上，变体之间不能互相带
-    site.speaker._transcript_start = 0
-    return site.speaker
+def _windowed(site: ReplaySite, lines: list[str]) -> CharacterAgent:
+    """一个独立的角色实例，"目前对话"的窗口起点已推演到该轮之前。
+
+    `_recent_transcript` 把起点记在实例上，只在超预算时成块前推、之后沿用；从 0 起一次算到底
+    会比真实调用多丢一截（30b 评审）。所以按本角色此前每次发言时看到的行数依次推一遍。
+    每个变体各用一份浅拷贝：起点是实例上唯一的可变状态，变体之间不能互相带。
+    continue 每段都新建实例、起点归零，而段边界没落盘，这里只能从场景开头推起。
+    """
+    agent = copy.copy(site.speaker)
+    agent._transcript_start = 0
+    opening = 1 if site.opening else 0
+    for i, turn in enumerate(site.prior):
+        if is_character_turn(turn) and turn.character_id == site.speaker.character_id:
+            agent._recent_transcript(lines[: opening + i])
+    return agent
 
 
 def build_base(site: ReplaySite) -> Messages:
     """真实的 `CharacterAgent.build_messages`，只有记忆块由口径决定。"""
-    return _fresh(site).build_messages(
+    return _windowed(site, site.transcript).build_messages(
         site.scene_context, site.transcript, site.memory_context, **site.extras
     )
 
@@ -436,8 +435,9 @@ def b_memory(site: ReplaySite) -> list[str]:
 
 
 def build_b(site: ReplaySite) -> Messages:
-    return _fresh(site).build_messages(
-        site.scene_context, b_transcript(site), b_memory(site), **site.extras
+    lines = b_transcript(site)
+    return _windowed(site, lines).build_messages(
+        site.scene_context, lines, b_memory(site), **site.extras
     )
 
 
@@ -469,12 +469,13 @@ def _own_reply(turn: DialogueTurn) -> str:
 def build_c(site: ReplaySite) -> Messages:
     """本人过去的轮次作 assistant，其余（他人、环境、开场白）作 user，块与指令在末条 user。
 
-    system 与他人行的写法都与基线相同，差别只在消息结构。原型不做预算裁剪（回放场景都短）。
+    system 与他人行的写法都与基线相同，差别只在消息结构。原型不做预算裁剪：历史超出
+    `TRANSCRIPT_TOKEN_BUDGET` 的现场，C 看到的比基线多，比较前先看现场的 prompt 规模。
     """
     base = build_base(site)
-    tail = base[-1]["content"]
-    # 末条 user 的块（当前环境 / 想起的 / 指令）取自基线，"目前对话"部分换成多轮
-    blocks = tail[tail.index("\n\n", tail.index("【目前对话】")) + 2:]
+    # 末条 user 的块（当前环境 / 想起的 / 指令）用真实的 prompt_tail 现拼，不从基线里切：
+    # 历史台词里可能有空行，被污染的台词里还可能有区块标题字样（30b 评审）
+    blocks = site.speaker.prompt_tail(site.memory_context, site.extras.get("environment", ""))
     engine_lines: list[tuple[str, str]] = []
     if site.opening:
         engine_lines.append(("user", f"【旁白】{site.opening}"))
@@ -559,7 +560,7 @@ async def run_replay(
 ) -> tuple[list[Sample], dict[str, UsageMeter]]:
     meters = {v.name: UsageMeter() for v in variants}
     gate = asyncio.Semaphore(max(1, concurrency))
-    # 消息先全部建好：build 会改 `_transcript_start`，不能和并发的调用交错
+    # 消息先全部建好，调用期间不再碰角色实例
     plans = [(site, v, v.build(site)) for site in sites for v in variants]
 
     async def one(site: ReplaySite, variant: Variant, messages: Messages, index: int) -> Sample:

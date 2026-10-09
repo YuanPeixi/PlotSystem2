@@ -1376,8 +1376,10 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
 - 角色回复回放评测：`python -m scripts.replay_character --project ID --site SCENE:TURN [...] [--run]`
   （工单30b，只读库、**带 `--run` 才调 LLM**）：重建某轮之前的现场，按 prompt 变体各生成 N 次，
   用 `trim_continuation` 统计污染率，样本并排导出到项目目录。基线走真实的
-  `CharacterAgent.build_messages`（`respond` = 检索记忆 → `build_messages` → `complete`），
-  候选变体是脚本内原型；改角色 prompt 时变体 A / C 的锚点找不到会直接报错，跟着改脚本。
+  `CharacterAgent.build_messages`（`respond` = 检索记忆 → `build_messages` → `complete`；"目前对话"
+  之后的几块是 `prompt_tail`，多轮变体 C 直接复用），候选变体是脚本内原型；改角色 prompt 时变体 A
+  的锚点找不到会直接报错，跟着改脚本。`--memory checkpoint` 用真实的 `LongTermMemory` 打开快照
+  向量库的临时副本，承接规则与生产一致。
 
 ### 10.4 注释
 
