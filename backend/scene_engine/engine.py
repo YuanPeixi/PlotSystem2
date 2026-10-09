@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from backend.agents.character_agent import CharacterAgent
 from backend.agents.environment_agent import EnvironmentAgent
 from backend.config import settings
+from backend.exceptions import LLMError
 from backend.models import (
     ENVIRONMENT_SPEAKER,
     RESERVED_SCENE_CONTEXT_KEYS,
@@ -36,6 +37,7 @@ from backend.models import (
     new_id,
 )
 from backend.scene_engine.action_intents import ActionIntentExtractor
+from backend.scene_engine.continuation import trim_continuation
 from backend.scene_engine.speaker_selector import ScoringSpeakerSelector, SelectionTrace
 from backend.scene_engine.termination import check_termination
 from backend.services.environment import (
@@ -73,6 +75,9 @@ _THOUGHT_RE = re.compile(r"[\[［](.*?)[\]］]", re.DOTALL)
 _UNCLOSED_THOUGHT_RE = re.compile(r"[\[［](.*)$", re.DOTALL)
 
 _KNOWN_SPEAKER_MODES = {m.value for m in SpeakerMode}
+#: 截掉续写后为空时最多要几次回复（工单30）。llm.py 已对空正文退避重试 3 次，这里管的是
+#: "服务商给了正文、但全是续写"——每次都按输出上限计费，所以只多要一次
+_REPLY_ATTEMPTS = 2
 #: 抽取 prompt 里候选物件（名称 + 公开描述）的总预算。单个物件在读取侧已压过，这里挡的是条数
 _OBJECTS_PROMPT_BUDGET = 2000
 
@@ -269,10 +274,8 @@ class SceneEngine:
                 break
 
             agent, selector_notice = await self._select_speaker(transcript, turns)
-            raw = await agent.respond(
-                self._scene_context(), transcript, **self._respond_extras(agent)
-            )
             turn_number += 1
+            raw = await self._character_reply(agent, transcript, turn_number)
             turn = self._parse_turn(raw, agent, turn_number)
             turn.selector_notice = selector_notice
             if self._action_extractor is not None:
@@ -585,6 +588,35 @@ class SceneEngine:
         return self.agents[count_character_turns(turns) % len(self.agents)], ""
 
     # ---- 解析 ----
+    async def _character_reply(
+        self, agent: CharacterAgent, transcript: list[str], turn_number: int
+    ) -> str:
+        """取角色这一轮的回复，截掉续写（工单30）。必须早于解析：截下的内容不得进任何字段。
+
+        截完什么都不剩（整段回复就是续写，或只剩空括号）时重新要一次；仍不行就按调用失败
+        抛 `LLMError`，与其他 LLM 失败同一语义（场景转 paused、可续跑）。**不落空轮次、
+        不补占位台词**（R5）：一个三项全空的轮次会进全场记忆，且看起来像角色沉默了。
+        """
+        others = [a.name for a in self.agents if a is not agent]
+        for attempt in range(1, _REPLY_ATTEMPTS + 1):
+            raw = await agent.respond(
+                self._scene_context(), transcript, **self._respond_extras(agent)
+            )
+            kept, cut = trim_continuation(raw, self_name=agent.name, other_names=others)
+            if cut:
+                logger.warning(
+                    "场景 %s 第 %d 轮 %s 的回复在续写处截断：保留 %d 字，截掉 %d 字（开头：%r）",
+                    self.scene.scene_id, turn_number, agent.name, len(kept), len(cut), cut[:40],
+                )
+            actions, dialogue, thoughts = self._split_reply(kept)
+            if dialogue or any(a.strip() for a in actions) or any(t.strip() for t in thoughts):
+                return kept
+            logger.warning(
+                "场景 %s 第 %d 轮 %s 的回复截掉续写后为空（第 %d/%d 次）",
+                self.scene.scene_id, turn_number, agent.name, attempt, _REPLY_ATTEMPTS,
+            )
+        raise LLMError(f"角色 {agent.name} 连续 {_REPLY_ATTEMPTS} 次没有给出有效回复")
+
     @staticmethod
     def _split_reply(raw: str) -> tuple[list[str], str, list[str]]:
         """把一次回复拆成 (动作段, 对白, 独白)。"什么算动作"只在这里判一次。

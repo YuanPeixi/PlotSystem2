@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.models import EnvironmentMode, SpeakerMode
@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     # "目前对话"的 token 预算（估算值）。现代模型上下文普遍 128K+，
     # 默认给到 24K 足以完整容纳一整场对话，避免过早截断浪费模型能力。
     TRANSCRIPT_TOKEN_BUDGET: int = 24000
+    # 角色单次回复的输出 token 上限（工单30）；0 = 不限。格式规范要求 3 句以内，
+    # 这个上限挡的是模型把剧本续写下去、复读到服务商上限。推理模型把推理 token 也算进来
+    # （DeepSeek-V4-Flash 实测输出 token 是可见正文的 1.5–3.4 倍），所以要给足余量：
+    # 设得太低，正常回复会被推理吃光额度、只剩空正文
+    CHARACTER_MAX_TOKENS: int = 2000
 
     # --- 导演 / 总结的上下文预算（工单27）---
     # 默认足以容纳整场，正常场景触发不到裁剪（即事实上的全文），
@@ -166,11 +171,11 @@ class Settings(BaseSettings):
             raise ValueError(f"ENVIRONMENT_MODE 必须是 {allowed} 之一，收到 {v!r}")
         return v
 
-    @field_validator("MAX_ENVIRONMENT_TURNS")
+    @field_validator("MAX_ENVIRONMENT_TURNS", "CHARACTER_MAX_TOKENS")
     @classmethod
-    def _validate_max_environment_turns(cls, v: int) -> int:
+    def _validate_non_negative(cls, v: int, info: ValidationInfo) -> int:
         if v < 0:
-            raise ValueError(f"MAX_ENVIRONMENT_TURNS 不能为负数，收到 {v}")
+            raise ValueError(f"{info.field_name} 不能为负数，收到 {v}")
         return v
 
     @field_validator("DIRECTOR_TRANSCRIPT_STRATEGY")
