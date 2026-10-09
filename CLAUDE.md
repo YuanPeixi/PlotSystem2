@@ -1366,6 +1366,11 @@ API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内
   不调 LLM）：record 档下的命中率、抽取调用次数、跳过原因分布。
 - LLM 用量报表：`python -m scripts.usage_report --project ID [--branch B]`（工单25，**只读**、
   不调 LLM）：按场景与用途列出调用次数、token（"≈"表示含估算）、耗时，运行与评估分开计。
+- 角色回复回放评测：`python -m scripts.replay_character --project ID --site SCENE:TURN [...] [--run]`
+  （工单30b，只读库、**带 `--run` 才调 LLM**）：重建某轮之前的现场，按 prompt 变体各生成 N 次，
+  用 `trim_continuation` 统计污染率，样本并排导出到项目目录。基线走真实的
+  `CharacterAgent.build_messages`（`respond` = 检索记忆 → `build_messages` → `complete`），
+  候选变体是脚本内原型；改角色 prompt 时变体 A / C 的锚点找不到会直接报错，跟着改脚本。
 
 ### 10.4 注释
 
