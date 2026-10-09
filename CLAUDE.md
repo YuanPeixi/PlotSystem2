@@ -174,6 +174,7 @@ backend/
 │   ├── engine.py           手写对话循环 + 三态解析 + 快照编排
 │   ├── speaker_selector.py selector 模式的独立评分选人（工单11）
 │   ├── action_intents.py   动作意图：本地预过滤 + 一轮至多一次的意图抽取（工单24）
+│   ├── continuation.py     角色回复的续写截断（解析之前，工单30，见 4.2 陷阱 28）
 │   ├── termination.py      终止条件判定
 │   └── scene_config.py     仅从 models.py 再导出
 │
@@ -701,6 +702,22 @@ frontend/src/
       （设计单 §9），**不要**顺手把 `environment_state` 并进 `WorldState`：世界变量进全体角色的 system，
       private / hidden 物件的状态会泄露给不知道它存在的人。
 
+28. **角色回复先截续写、再解析**（工单30 PR-30a，`scene_engine/continuation.py`）。角色拿到的
+    "目前对话"是逐行排列的剧本，模型说完自己这一轮常常不停：替别人写台词、写 `【环境】…`
+    （伪造裁决结果）、复读到输出上限。解析进 `dialogue` 就是公开对白，进全场 transcript 与长期记忆。
+    - **截断必须早于 `_split_reply`**：动作意图抽取、transcript、记忆都吃解析结果，晚一步，续写里的
+      `*动作*` 就会被当成尝试去裁决。截下的内容**不挽救**（不当提示、不改写、不交给裁决器）；
+    - **续写标记**：任意 `【…】` 标签（模型会自造 `【用户】` `【导演视角】`，不能只认已知的）；
+      参演角色（含本人）或伪发言人（环境 / 旁白 / 导演…）后跟冒号，且在行首或空白、句末标点之后。
+      开头的本人名字前缀只剥不截。名字后不跟冒号不算（"诺安大人说得对"）；
+    - **不落空轮次**：截完什么都不剩就再要一次（`_REPLY_ATTEMPTS`），仍不行抛 `LLMError`
+      （场景转 paused）。服务商的空正文在 `utils/llm.py` 就是可重试的失败（契约7），
+      两层各管一种：前者是"给了正文但全是续写"，后者是"根本没给正文"；
+    - **输出上限 `CHARACTER_MAX_TOKENS` 要给推理留余量**：推理模型把推理 token 算进 `max_tokens`，
+      设低了正常回复会被吃光、只剩空正文，日志先出现"输出触顶"；
+    - 这是兜底不是根治：没有标记的续写（直接用叙述口吻写出结果）挡不住，prompt 层的修法见工单30c。
+      30b 的回放评测用同一个 `trim_continuation` 判定污染，不另写一套。
+
 ---
 
 ## 5. 持久化契约 ★
@@ -817,7 +834,7 @@ graph TD
 4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
    （`selector` 模式下转交 `ScoringSpeakerSelector`：每个候选各一次并行打分调用，
    叠加被点名加分与重复发言惩罚；兜底必须 warning 可见，不得静默选 `agents[0]`）
-   → `agent.respond()` → 正则拆 `*动作*` / `[独白]` / 对白 →（record / adjudicate 档）动作意图抽取
+   → `agent.respond()` → 截掉续写（`trim_continuation`，截完为空则再要一次，见陷阱 28）→ 正则拆 `*动作*` / `[独白]` / 对白 →（record / adjudicate 档）动作意图抽取
    （`ActionIntentExtractor`，提到在场物件的轮次一次调用，必须早于落盘，见陷阱 25；adjudicate 档先按额度预占）→ 追加 transcript
    → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；每个角色能感知到
    什么由记忆层按 `utils/turns.perceive` 自行判定——他人轮次剥离 `inner_thought`，
@@ -1052,6 +1069,8 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 **禁止**在其他模块直接实例化 OpenAI 客户端——唯一例外是 `memory/embeddings.py`
 （Chroma 要求同步接口）。模型名一律走 `settings`，禁止硬编码。
 调用点要用 `purpose` 标明用途：调用计数（工单25）只在这一个出口发生，见 4.2 陷阱 26。
+服务商返回空正文时这里抛出可重试的失败、日志带 `finish_reason`（工单30）：任何用途的空回复都不合法，
+不得再以 `content or ""` 当成功交回。
 
 ### 契约 8 — 分层边界
 
@@ -1373,7 +1392,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 | **Kuzu 图谱无分支隔离** | 图谱是项目级单文件。当前只在构建阶段写入一次、全程只读，所以“共享”与“隔离”等价，无实际影响 | 工单06（场景结束后动态回写图谱）的**前置约束**：它一落地图谱就变成可变状态，分支隔离立刻破 |
 | `Branch.scenes` 恒为空数组 | 无写入方；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它 | 工单 03 可选目标 6 |
 | `pause` 的语义与 `SceneStatus.PAUSED` 无关 | `engine.interrupt()` 走的是正常终止路径，场景最终是 `completed`，但前端提示“已中断” | 待排期 |
-| **角色回复没有输出边界** | 角色把"目前对话"当剧本续写：替其他角色写台词、写 `【环境】` / `【旁白】` 段，复读到输出上限（角色调用未设 `max_tokens`）。整段落进 `dialogue`，作为公开对白进全场 transcript 与长期记忆。adjudicate 档下尤其严重：伪造的环境结果绕过裁决器成了全员已知的事实（设计单 A30）。另：服务商返回空 `content` 时 `utils/llm.py` 当成功返回，落成三项全空的轮次 | 工单 30。修复前不要在需要保留的项目上开 `ENVIRONMENT_MODE=adjudicate` |
+| **角色回复没有输出边界（prompt 层）** | 角色把"目前对话"当剧本续写：替其他角色写台词、写 `【环境】` / `【旁白】` 段。PR-30a 已兜底（带标记的续写在解析前截掉、输出设上限、空正文重试，见 4.2 陷阱 28），但**没有标记的续写**（直接用叙述口吻写出"底座里确实有夹层"）仍会进公开对白；adjudicate 档下它等于绕过裁决器伪造事实（设计单 A30） | 工单 30b / 30c（prompt 改造）。合入前开 `ENVIRONMENT_MODE=adjudicate` 要留意对白里的自述结果 |
 | `DialogueTurn.timestamp` 不还原 | `_deserialize_turn` 不读 `timestamp`，每次读取都填成当前时间，同一场所有轮次时间相同（同陷阱 16 的 `created_at`） | 待排期，独立小修 |
 | **后置快照冻结的是内存副本** | `run_scene` 落 `record_story_history` 时用的 `scene` 是方法开头读的副本，中间隔着整场 LLM。若期间别的路径改写了库里的 `inherited_story_history`，落进快照的就是过时历史，从该快照分叉的分支据此起算 | 触发需在场景 `running` 时对它提交决策，而决策 CAS 只接 `completed`，正常路径进不来；构造不出可靠复现。真要修得在写快照前重读 scene（窗口只缩小、不消除）。待排期 |
 
