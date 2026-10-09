@@ -221,7 +221,8 @@ frontend/src/
 │   │              AutoPilotControl.vue（舞台底栏的自动推演开关）
 │   └── ui/        Icon.vue + icons.ts（内联 SVG 图标）、PageHeader.vue
 ├── composables/ theme.ts（亮/暗主题 + 给 G6 取 CSS 变量）
-├── utils/       branches.ts（分支配色、谱系、分支图布局，纯函数）、turns.ts（turn_update 合并、角色轮次计数）
+├── utils/       branches.ts（分支配色、谱系、分支图布局，纯函数）、turns.ts（turn_update 合并、角色轮次计数）、
+│                decision.ts（舞台底栏的导演建议高亮）
 ├── stores/      project.ts / characters.ts / scenes.ts / director.ts
 ├── router/index.ts、api/client.ts、types/index.ts、styles/global.css（设计变量的唯一定义处）
 ```
@@ -723,7 +724,10 @@ frontend/src/
     - **输出上限 `CHARACTER_MAX_TOKENS` 要给推理留余量**：推理模型把推理 token 算进 `max_tokens`，
       设低了正常回复会被吃光、只剩空正文，日志先出现"输出触顶"；
     - 这是兜底不是根治：没有标记的续写（直接用叙述口吻写出结果）挡不住，prompt 层的修法见工单30c。
-      30b 的回放评测用同一个 `trim_continuation` 判定污染，不另写一套。
+      30b 的回放评测用同一个 `trim_continuation` 判定污染，不另写一套；
+    - **`DialogueTurn.output_notice` 记下发生过截断**（`已截断：…` / `已重新生成：…`，冒号前是前端标签），
+      与 `selector_notice` 同类：只给导演 / 用户看，不进 prompt、记忆与任何逻辑。**只存字数与开头 40 字，
+      不存截掉的原文**：伪造内容整段落盘，迟早被某个"渲染全部字段"的新代码带回角色视野。
 
 ---
 
@@ -1209,7 +1213,12 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
   `running=false`、原因进 `lastError`，返回 false；场景回到可开演。决策后的续跑启动失败
   因此也不会被误报成"决策提交失败"。
 - **舞台底栏有快捷决策**（已完成且未决策时）：继续 / 下一场与决策面板的默认提交等价；
-  回滚要选快照、填条件，只负责打开检查器的决策页。
+  回滚要选快照、填条件，只负责打开检查器的决策页。**导演建议的那一个用实底（`.primary`）**，
+  不另写"导演建议"字样；评估未到 / 不属于本场时写"评估中…"、评估不可用（−1 分）时写"评估不可用"，
+  都不高亮（`utils/decision.ts::stageDecisionHint`，陷阱 14：失败的评估不得伪装成导演意见）。
+  侧边决策面板保持原样（只有一行"导演建议：xx"）。
+- **截断提示**：角色名后的黄字（`--warn`）"已截断 / 已重新生成"来自 `output_notice`，悬停看字数与开头；
+  比灰字"降级选择"重一档 —— 有内容被丢了，而且多半是伪造的（陷阱 28）。
 - **自动推演（工单12）只跟随、不开演**：会话状态经场景流上的 `autopilot` 事件与 3 秒轮询两条路
   进 `sceneStore.applyAutopilot`，跟到下一场只 `attachScene`（下一场还是 pending 时再补开流），
   **绝不调 `/start`**——后端已经替用户开演。**只在会话前进时跟随**（换场景/多一步/新会话），
