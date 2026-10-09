@@ -256,13 +256,42 @@ class CharacterAgent:
         `environment` 是【当前环境】块的正文（场景内物件状态，每次裁决都可能变），
         **只进 user 消息**（契约3 补充条款、设计单 R4）；为空时不加这一块。
         """
+        memory_context = await self.retrieve_relevant_memory(
+            self.memory_query(scene_context, transcript), top_k=settings.MEMORY_TOP_K
+        )
+        messages = self.build_messages(
+            scene_context,
+            transcript,
+            memory_context,
+            objects_brief=objects_brief,
+            attempt_only=attempt_only,
+            environment=environment,
+        )
+        return await self.complete(messages)
+
+    def memory_query(self, scene_context: dict, transcript: list[str]) -> str:
+        """检索长期记忆用的查询文本：场景描述 + 最近几行对话。"""
         q_window = max(settings.MEMORY_QUERY_WINDOW, 0)
         tail = transcript[-q_window:] if q_window else []
         query = (scene_context.get("description", "") + " " + " ".join(tail)).strip()
-        memory_context = await self.retrieve_relevant_memory(
-            query or self.name, top_k=settings.MEMORY_TOP_K
-        )
+        return query or self.name
 
+    def build_messages(
+        self,
+        scene_context: dict,
+        transcript: list[str],
+        memory_context: list[str],
+        *,
+        objects_brief: str = "",
+        attempt_only: bool = False,
+        environment: str = "",
+    ) -> list[dict]:
+        """拼出一次发言调用的全部消息，不检索、不调用。
+
+        与 `respond` 拆开是为了回放评测（工单30b）：基线必须用这份真实的构建代码，
+        而记忆块要由评测脚本按固定口径给出（`memory_context_used` 没落盘，现在检索
+        会拿到之后写入的记忆）。会推进 `_transcript_start`，与 `respond` 同一语义。
+        """
         # 静态部分进 system（整场不变），动态部分进 user 且按"历史在前、变化在后"排列，
         # 使得 prompt 前缀随轮次只增不改，命中服务端 prefix cache。
         system = self.build_system_prompt(
@@ -278,12 +307,16 @@ class CharacterAgent:
             f"【你此刻想起的】\n{mem_text}\n\n"
             f"现在轮到你（{self.name}）发言，请按行为格式规范回应。"
         )
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    async def complete(self, messages: list[dict], *, temperature: float | None = None) -> str:
+        """按角色的模型与输出上限发出一次调用。`temperature` 只给回放评测的对照变体用。"""
         return await chat_safe(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=self.temperature,
+            messages,
+            temperature=self.temperature if temperature is None else temperature,
             model=self.model,
             max_tokens=settings.CHARACTER_MAX_TOKENS or None,
             purpose=LLMPurpose.CHARACTER,
