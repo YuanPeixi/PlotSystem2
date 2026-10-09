@@ -13,6 +13,8 @@
 - **变体特有形态**：B 改了"目前对话"的写法，模型照抄新写法续写时 `trim_continuation`
   认不出（它只认现行格式的标记）。这一列单独统计、不并进污染率，免得 B 靠"换了个检测不到的
   写法"显得更好。没有标记的续写（直接用叙述口吻写出结果）两列都抓不到，只能人读样本；
+- **其中仅本人名字标签**：截掉的部分去掉"本人名:"之后就没有续写标记了（`*动作*` 换行写
+  `本人: 台词`）。仍计入污染（引擎落库时就这么截），单列出来供人判断；
 - **空回复**：截掉续写后对白、动作、独白全空；**调用失败**：`LLMError`（含服务商的空正文，
   `utils/llm.py` 已退避重试过）。单次采样不做引擎那次"截完为空再要一次"。
 
@@ -529,10 +531,23 @@ class Sample:
     #: 变体特有形态在保留部分里的位置（-1 = 没有）
     extra_at: int = -1
     repeated: int = 0
+    #: 截掉的只是本人名字标签（`*动作*` 换行后 `本人: 台词`），见 `self_label_only`
+    self_label: bool = False
 
     @property
     def polluted(self) -> bool:
         return bool(self.cut)
+
+
+def self_label_only(raw: str, self_name: str, other_names: list[str]) -> bool:
+    """去掉本人名字标签后就没有续写标记了：截掉的仍是本人这一轮，不是替别人或环境写的。
+
+    30a 把回复中途出现的"本人名:"也当续写标记（模型另起一行接着写自己的下一轮），但模型
+    常把一轮写成"*动作*"换行"本人名: 台词"，截断会把这一轮自己的台词截掉。只做描述，
+    污染率仍按 `trim_continuation` 计（引擎落库时就是这么截的）。
+    """
+    stripped = re.sub(rf"{re.escape(self_name)}\s*[:：]", "", raw)
+    return not trim_continuation(stripped, self_name="", other_names=other_names)[1]
 
 
 def judge(site: ReplaySite, variant: Variant, raw: str, index: int) -> Sample:
@@ -547,6 +562,7 @@ def judge(site: ReplaySite, variant: Variant, raw: str, index: int) -> Sample:
         variant=variant.name, site=site.label, index=index, raw=raw, kept=kept, cut=cut,
         empty=empty, extra_at=hit.start() if hit else -1,
         repeated=repeated if repeated >= _REPEAT_LINES else 0,
+        self_label=bool(cut) and self_label_only(raw, site.speaker.name, site.other_names),
     )
 
 
@@ -593,6 +609,7 @@ class VariantStats:
     samples: int = 0
     answered: int = 0
     polluted: int = 0
+    self_label: int = 0
     extra: int = 0
     empty: int = 0
     failed: int = 0
@@ -630,6 +647,7 @@ def summarize(samples: list[Sample], meters: dict[str, UsageMeter], variants: li
             samples=len(own),
             answered=len(ok),
             polluted=sum(s.polluted for s in ok),
+            self_label=sum(s.self_label for s in ok),
             extra=sum(s.extra_at >= 0 for s in ok),
             empty=sum(s.empty for s in ok),
             failed=len(own) - len(ok),
@@ -653,14 +671,14 @@ def _pct(k: int, n: int) -> str:
 
 def stats_table(stats: list[VariantStats]) -> str:
     rows = [
-        "| 变体 | 污染（95% 区间） | 变体特有形态 | 空回复 | 调用失败 | 重试 | 复读 | 原始长度 中位 / P90 | 保留长度中位 | 输出 token | 截掉部分开头 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| 变体 | 污染（95% 区间） | 其中仅本人名字标签 | 变体特有形态 | 空回复 | 调用失败 | 重试 | 复读 | 原始长度 中位 / P90 | 保留长度中位 | 输出 token | 截掉部分开头 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in stats:
         heads = "、".join(f"{h}×{c}" for h, c in s.cut_heads.most_common(4)) or "—"
         tokens = f"{'≈' if s.usage.estimated_calls else ''}{s.usage.completion_tokens}"
         rows.append(
-            f"| {s.variant} | {_pct(s.polluted, s.answered)} | {s.extra} | {s.empty} | {s.failed} | "
+            f"| {s.variant} | {_pct(s.polluted, s.answered)} | {s.self_label} | {s.extra} | {s.empty} | {s.failed} | "
             f"{s.usage.retries} | {s.repeated} | {s.raw_median:.0f} / {s.raw_p90:.0f} | {s.kept_median:.0f} | "
             f"{tokens} | {heads} |"
         )
@@ -674,7 +692,8 @@ def _site_stats_table(samples: list[Sample], sites: list[ReplaySite], variants: 
         cells = []
         for v in variants:
             own = [s for s in samples if s.site == site.label and s.variant == v.name and not s.error]
-            cells.append(f"{sum(s.polluted for s in own)}/{len(own)}")
+            label = sum(s.self_label for s in own)
+            cells.append(f"{sum(s.polluted for s in own)}/{len(own)}" + (f"（本人标签 {label}）" if label else ""))
         rows.append(f"| {site.label} {site.turn.character_name} | " + " | ".join(cells) + " |")
     return "\n".join(rows)
 
@@ -740,7 +759,8 @@ def render_markdown(
                     continue
                 tags = []
                 if s.polluted:
-                    tags.append(f"截掉 {len(s.cut)} 字，开头「{_cut_head(s.cut)}」")
+                    tags.append(f"截掉 {len(s.cut)} 字，开头「{_cut_head(s.cut)}」"
+                                + ("（仅本人名字标签）" if s.self_label else ""))
                 if s.extra_at >= 0:
                     tags.append(f"变体特有形态 @ {s.extra_at}")
                 if s.empty:
