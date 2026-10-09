@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -21,10 +23,12 @@ from backend.exceptions import LLMError
 from backend.memory import MemoryManager
 from backend.models import CharacterCard, LLMPurpose, Scene, SceneConfig
 from backend.scene_engine import SceneEngine
-from backend.scene_engine.continuation import trim_continuation
+from backend.scene_engine.continuation import PROMPT_SECTION_TITLES, trim_continuation
 from backend.snapshot import SnapshotManager
 from backend.utils import llm
 from backend.utils.usage import usage_scope
+
+ROOT = Path(__file__).resolve().parent.parent
 
 # 149ff4bd 第 5 轮（阿德里安）：替环境写出裁决结果，再复读一个自造标签直到输出上限
 _FORGED_ENVIRONMENT = (
@@ -67,6 +71,10 @@ def _others(name: str) -> list[str]:
         ("夜深了。 旁白：烛火摇曳。", "诺安", "夜深了。"),
         # 动作收尾后直接接他人标签
         ("*转身*赫尔：站住。", "诺安", "*转身*"),
+        # 自造的伪发言人变体、prompt 区块标题、角色名标签
+        ("说完了。【导演视角】（可公开给用户）", "诺安", "说完了。"),
+        ("好。【当前环境】- 王冠·状态：亮起", "诺安", "好。"),
+        ("就这样。【 赫尔 】站住！", "诺安", "就这样。"),
     ],
 )
 def test_continuation_is_cut(raw, speaker, kept):
@@ -85,10 +93,22 @@ def test_continuation_is_cut(raw, speaker, kept):
         # 独白用方括号，与【】无关
         "*抬眼* [他在说谎] 是吗？［我不信］",
         "账册上写着：十二罐未开封。",
+        # 游戏 / 奇幻种子常用【】标技能、物品、称号（PR #34 评审）：句中、动作后、开头都不截
+        "他学会了【火球术】。",
+        "*举起法杖*【火球术】！",
+        "【火球术】！我不会让你过去。",
     ],
 )
 def test_normal_replies_are_untouched(raw):
     assert trim_continuation(raw, self_name="塞芙拉", other_names=_others("塞芙拉")) == (raw, "")
+
+
+def test_prompt_section_titles_match_the_character_prompt():
+    """角色 prompt 新增区块标题时，续写标记的名单必须跟上：模型照抄的正是这些标题。"""
+    source = (ROOT / "backend" / "agents" / "character_agent.py").read_text(encoding="utf-8")
+    titles = {t for t in re.findall(r"【([^】\n]+)】", source) if "{" not in t}
+    assert titles, "没扫到任何区块标题，扫描本身失效了"
+    assert titles <= set(PROMPT_SECTION_TITLES), titles - set(PROMPT_SECTION_TITLES)
 
 
 def test_own_name_prefix_is_stripped_not_cut():
@@ -204,11 +224,13 @@ async def _character_call() -> str:
 @pytest.mark.asyncio
 async def test_empty_content_is_retried(scripted_llm):
     # 只给一次空的测不到"重试了几次"：前两次空（None 与纯空白各一），第三次才有正文
-    scripted_llm.script.extend([_resp(None, "length"), _resp("  \n"), _resp("好")])
+    scripted_llm.script.extend([_resp(None), _resp("  \n"), _resp("好")])
     with usage_scope() as meter:
         assert await _character_call() == "好"
     stat = meter.snapshot()["character"]
     assert (stat.calls, stat.retries, stat.failures) == (1, 2, 0)
+    # 两次空正文也计费：三次响应的 token 都要进报表（PR #34 评审）
+    assert (stat.prompt_tokens, stat.completion_tokens) == (30, 15)
 
 
 @pytest.mark.asyncio
@@ -218,6 +240,21 @@ async def test_empty_content_every_time_is_a_failure(scripted_llm):
         await _character_call()
     stat = meter.snapshot()["character"]
     assert (stat.calls, stat.retries, stat.failures) == (0, 2, 1)
+    assert (stat.prompt_tokens, stat.completion_tokens) == (30, 15)
+
+
+@pytest.mark.asyncio
+async def test_empty_content_from_exhausted_budget_is_not_retried(scripted_llm):
+    """推理吃光 max_tokens 的空正文，同一个 prompt 再发结果一样：立即失败，调用方走兜底。"""
+    scripted_llm.script.extend([_resp(None, "length"), _resp("好")])
+    with usage_scope() as meter, pytest.raises(LLMError, match="finish_reason=length"):
+        await llm.chat_safe(
+            [{"role": "user", "content": "打分"}], max_tokens=200, purpose=LLMPurpose.SELECTOR
+        )
+    assert len(scripted_llm.requests) == 1
+    stat = meter.snapshot()["selector"]
+    assert (stat.calls, stat.retries, stat.failures) == (0, 0, 1)
+    assert (stat.prompt_tokens, stat.completion_tokens) == (10, 5)
 
 
 # ---------------------------------------------------------------------------

@@ -10,9 +10,11 @@
 用同一个函数统计污染率，不另写一套。
 
 续写标记：
-- `【任意】` 标签：环境回合与 prompt 区块标题同形，模型会自造同类标签（`【用户】` `【导演视角】`），
-  所以不能只认已知的几个；角色的独白用方括号 `[]` / `［］`，不受影响；
-- 发言人标签：本场参演角色（含本人）或环境、旁白之类的伪发言人，后跟半角或全角冒号，
+- `【…】` 标签，但只认**已知的**：伪发言人（环境 / 旁白 / 导演…，含以它们开头的自造变体如
+  `【导演视角】`）、参演角色名、我们自己 prompt 里的区块标题。**不能认任意 `【…】`**：游戏 / 奇幻类
+  种子常用 `【火球术】` 标技能、物品、称号，按任意标签截会把正常台词截掉，标签在开头时整段截光，
+  重新要一次仍是同样写法就抛错，场景每次续跑都卡在同一处（PR #34 评审）；
+- 发言人标签：本场参演角色（含本人）或伪发言人，后跟半角或全角冒号，
   且位于行首或紧跟在空白 / 句末标点之后。名字后不跟冒号（"诺安大人说得对"）不算。
 
 开头的本人名字前缀（"塞芙拉: 诺安大人…"）只剥掉前缀：那是模仿剧本行格式，正文仍是自己的台词。
@@ -25,10 +27,15 @@ from collections.abc import Sequence
 
 from backend.models import ENVIRONMENT_SPEAKER
 
-# 不是角色、却会被模型当成发言人写出来的名字。只认后跟冒号的形式，正常台词里提到它们不受影响
+# 不是角色、却会被模型当成发言人写出来的名字。只认后跟冒号或包在【】里的形式，正常台词里提到它们不受影响
 _PSEUDO_SPEAKERS = (ENVIRONMENT_SPEAKER, "旁白", "导演", "用户", "系统")
-# 标签内容限长、不跨行：截的是"像标签的东西"，不是任意一对【】括起来的长文本
-_LABEL_RE = re.compile(r"【[^】\n]{1,16}】")
+# 角色 prompt 里的区块标题：模型把它们当作"可以输出的标签"照抄。`test_output_boundary` 扫描
+# `character_agent.py` 钉住这份名单，prompt 新增区块而这里没跟上会变红
+PROMPT_SECTION_TITLES = (
+    "角色设定", "外貌", "说话风格", "当前状态", "你所了解的世界", "你知道的事实", "人际关系", "当前场景",
+    "在场物件", "行为格式规范", "相关记忆", "目前对话", "当前环境", "你此刻想起的",
+)
+_LABEL_RE = re.compile(r"【\s*([^】\n]{1,16}?)\s*】")
 # 发言人标签只在行首或"上一句已经说完"之后才算：直接接在正文字词后面的不是另起一行
 _SPEAKER_BOUNDARY = r"(?:^|(?<=[\s。！？!?…」”』）)\]］*]))"
 
@@ -39,6 +46,13 @@ def _speaker_pattern(names: Sequence[str]) -> re.Pattern[str] | None:
         return None
     alternatives = "|".join(re.escape(n) for n in unique)
     return re.compile(rf"{_SPEAKER_BOUNDARY}(?:{alternatives})\s*[:：]", re.MULTILINE)
+
+
+def _is_known_label(content: str, names: Sequence[str]) -> bool:
+    if content in PROMPT_SECTION_TITLES or content in names:
+        return True
+    # 伪发言人开头的自造变体：【导演视角】【环境描写】【系统提示】
+    return content.startswith(_PSEUDO_SPEAKERS)
 
 
 def trim_continuation(
@@ -52,11 +66,13 @@ def trim_continuation(
     if self_name:
         text = re.sub(rf"^\s*{re.escape(self_name)}\s*[:：]\s*", "", text, count=1)
 
+    names = [n.strip() for n in (self_name, *other_names) if n and n.strip()]
     cut_at = len(text)
-    label = _LABEL_RE.search(text)
-    if label:
-        cut_at = label.start()
-    speakers = _speaker_pattern([self_name, *other_names, *_PSEUDO_SPEAKERS])
+    for label in _LABEL_RE.finditer(text):
+        if _is_known_label(label.group(1), names):
+            cut_at = label.start()
+            break
+    speakers = _speaker_pattern([*names, *_PSEUDO_SPEAKERS])
     if speakers is not None:
         speaker = speakers.search(text)
         if speaker and speaker.start() < cut_at:

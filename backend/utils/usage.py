@@ -71,6 +71,16 @@ class UsageMeter:
             stat.estimated_calls += int(estimated)
             stat.seconds += seconds
 
+    def record_tokens(
+        self, purpose: str, *, prompt_tokens: int, completion_tokens: int, estimated: bool
+    ) -> None:
+        """拿到了响应却仍判失败的尝试（如空正文）：token 照样计费，但不算一次成功调用。"""
+        with self._lock:
+            stat = self._stat(purpose)
+            stat.prompt_tokens += prompt_tokens
+            stat.completion_tokens += completion_tokens
+            stat.estimated_calls += int(estimated)
+
     def record_failure(self, purpose: str, *, seconds: float) -> None:
         with self._lock:
             stat = self._stat(purpose)

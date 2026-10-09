@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from tenacity import (
     RetryCallState,
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -34,10 +34,21 @@ _REQUEST_TIMEOUT = 180.0
 class EmptyCompletionError(Exception):
     """服务商返回了成功响应，正文却为空（工单30）。
 
-    任何用途的空回复都不合法：以前它被 `content or ""` 当成功交回，角色轮次就落成
-    对白、动作、独白三项全空的一轮。抛它让 tenacity 照常退避重试，重试耗尽由
-    `chat_safe` 转成 `LLMError`，与其他调用失败同一语义。
+    以前它被 `content or ""` 当成功交回，角色轮次就落成对白、动作、独白三项全空的一轮。
+    重试耗尽由 `chat_safe` 转成 `LLMError`，与其他调用失败同一语义，调用方各走既有兜底。
+
+    `retryable` 区分两种空：`finish_reason=length` 是推理把 `max_tokens` 吃光了，同一个 prompt
+    再发几次结果一样，只会让小额度的调用（selector 打分 200、意图抽取 400）每次白等退避、
+    花三倍 token（PR #34 评审）—— 不重试，立即失败；其余（服务商抖动）照常退避重试。
     """
+
+    def __init__(self, message: str, *, retryable: bool):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _should_retry(exc: BaseException) -> bool:
+    return not isinstance(exc, EmptyCompletionError) or exc.retryable
 
 
 def _client(base_url: str | None = None, api_key: str | None = None) -> AsyncOpenAI:
@@ -58,7 +69,7 @@ def _note_retry(state: RetryCallState) -> None:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception(_should_retry),
     reraise=True,
     before_sleep=_note_retry,
 )
@@ -84,14 +95,44 @@ async def _complete(
         text = choice.message.content or ""
         finish = getattr(choice, "finish_reason", None)
         if not text.strip():
-            raise EmptyCompletionError(f"服务商返回了空正文（finish_reason={finish}）")
+            # 空正文也按量计费（推理 token 照算）：先记 token 再失败，否则恰好在要排查的
+            # 场景里报表少算（陷阱 26）。它不算一次成功调用，只进 token
+            _record_tokens(purpose, messages, "", getattr(resp, "usage", None))
+            raise EmptyCompletionError(
+                f"服务商返回了空正文（finish_reason={finish}，max_tokens={max_tokens}）",
+                retryable=finish != "length",
+            )
         if finish == "length":
             # 推理模型把推理 token 也算进 max_tokens，上限过低会先表现为这条，再严重就是上面的空正文
             logger.warning("LLM 输出触顶 max_tokens=%s（%s），正文可能被截断", max_tokens, purpose)
         return text, getattr(resp, "usage", None)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("LLM 调用失败，将重试：%s", exc)
+        logger.warning("LLM 调用失败，%s：%s", "将重试" if _should_retry(exc) else "不重试", exc)
         raise
+
+
+def _token_counts(messages: list[dict], text: str, usage: object) -> tuple[int, int, bool]:
+    """(prompt, completion, 是否估算)。服务商没给 usage（或结构不对）时按 estimate_tokens 估。"""
+    prompt = token_count(getattr(usage, "prompt_tokens", None))
+    completion = token_count(getattr(usage, "completion_tokens", None))
+    if prompt is None or completion is None:
+        prompt = sum(estimate_tokens(str(m.get("content") or "")) for m in messages)
+        return prompt, estimate_tokens(text), True
+    return prompt, completion, False
+
+
+def _record_tokens(purpose: str, messages: list[dict], text: str, usage: object) -> None:
+    """只记 token、不记调用次数：给拿到了响应却仍判失败的那次尝试用。"""
+    meter = current_meter()
+    if meter is None:
+        return
+    try:
+        prompt, completion, estimated = _token_counts(messages, text, usage)
+        meter.record_tokens(
+            purpose, prompt_tokens=prompt, completion_tokens=completion, estimated=estimated
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("LLM 调用计数失败（不影响调用结果）", exc_info=True)
 
 
 def _record_call(
@@ -102,12 +143,7 @@ def _record_call(
     if meter is None:
         return
     try:
-        prompt = token_count(getattr(usage, "prompt_tokens", None))
-        completion = token_count(getattr(usage, "completion_tokens", None))
-        estimated = prompt is None or completion is None
-        if estimated:
-            prompt = sum(estimate_tokens(str(m.get("content") or "")) for m in messages)
-            completion = estimate_tokens(text)
+        prompt, completion, estimated = _token_counts(messages, text, usage)
         meter.record_call(
             purpose,
             prompt_tokens=prompt,
