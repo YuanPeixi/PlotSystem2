@@ -285,6 +285,7 @@ class CharacterAgent:
             ],
             temperature=self.temperature,
             model=self.model,
+            max_tokens=settings.CHARACTER_MAX_TOKENS or None,
             purpose=LLMPurpose.CHARACTER,
         )
 

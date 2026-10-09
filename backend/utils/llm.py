@@ -31,6 +31,15 @@ logger = get_logger("llm")
 _REQUEST_TIMEOUT = 180.0
 
 
+class EmptyCompletionError(Exception):
+    """服务商返回了成功响应，正文却为空（工单30）。
+
+    任何用途的空回复都不合法：以前它被 `content or ""` 当成功交回，角色轮次就落成
+    对白、动作、独白三项全空的一轮。抛它让 tenacity 照常退避重试，重试耗尽由
+    `chat_safe` 转成 `LLMError`，与其他调用失败同一语义。
+    """
+
+
 def _client(base_url: str | None = None, api_key: str | None = None) -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=api_key or settings.LLM_API_KEY,
@@ -71,7 +80,15 @@ async def _complete(
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return resp.choices[0].message.content or "", getattr(resp, "usage", None)
+        choice = resp.choices[0]
+        text = choice.message.content or ""
+        finish = getattr(choice, "finish_reason", None)
+        if not text.strip():
+            raise EmptyCompletionError(f"服务商返回了空正文（finish_reason={finish}）")
+        if finish == "length":
+            # 推理模型把推理 token 也算进 max_tokens，上限过低会先表现为这条，再严重就是上面的空正文
+            logger.warning("LLM 输出触顶 max_tokens=%s（%s），正文可能被截断", max_tokens, purpose)
+        return text, getattr(resp, "usage", None)
     except Exception as exc:  # noqa: BLE001
         logger.warning("LLM 调用失败，将重试：%s", exc)
         raise
