@@ -14,10 +14,13 @@
   `【导演视角】`）、参演角色名、我们自己 prompt 里的区块标题。**不能认任意 `【…】`**：游戏 / 奇幻类
   种子常用 `【火球术】` 标技能、物品、称号，按任意标签截会把正常台词截掉，标签在开头时整段截光，
   重新要一次仍是同样写法就抛错，场景每次续跑都卡在同一处（PR #34 评审）；
-- 发言人标签：本场参演角色（含本人）或伪发言人，后跟半角或全角冒号，
+- 发言人标签：本场**其他**参演角色或伪发言人，后跟半角或全角冒号，
   且位于行首或紧跟在空白 / 句末标点之后。名字后不跟冒号（"诺安大人说得对"）不算。
 
-开头的本人名字前缀（"塞芙拉: 诺安大人…"）只剥掉前缀：那是模仿剧本行格式，正文仍是自己的台词。
+本人名字标签（"塞芙拉: 诺安大人…"）不论在开头还是中途都只剥掉标签、保留正文：那是模仿剧本行
+格式，正文仍是自己这一轮。模型常把一轮写成 `*动作*` 换行 `本人: 台词`，30a 起初把中途的本人标签
+也当续写，结果截掉的是本人这一轮的台词（30b 回放：叙事化视图与多轮结构下尤其多）。真正"替自己写
+下一轮"之前必然先写别人或环境，那里已经截断了。
 """
 
 from __future__ import annotations
@@ -48,6 +51,15 @@ def _speaker_pattern(names: Sequence[str]) -> re.Pattern[str] | None:
     return re.compile(rf"{_SPEAKER_BOUNDARY}(?:{alternatives})\s*[:：]", re.MULTILINE)
 
 
+def _strip_own_labels(text: str, self_name: str) -> str:
+    """剥掉本人名字标签（开头与中途），正文原样保留。"""
+    if not self_name.strip():
+        return text
+    name = re.escape(self_name.strip())
+    text = re.sub(rf"^\s*{name}\s*[:：]\s*", "", text, count=1)
+    return re.sub(rf"{_SPEAKER_BOUNDARY}{name}\s*[:：][ \t]*", "", text, flags=re.MULTILINE)
+
+
 def _is_known_label(content: str, names: Sequence[str]) -> bool:
     if content in PROMPT_SECTION_TITLES or content in names:
         return True
@@ -61,21 +73,21 @@ def trim_continuation(
     """返回 (保留的本人回复, 截掉的续写)。没有续写时第二项为空串。
 
     保留部分可能为空（整段回复就是续写），由调用方按空回复处理 —— 不得落一个空轮次。
+    本人名字标签不算续写，只剥掉（见模块说明）。
     """
-    text = raw
-    if self_name:
-        text = re.sub(rf"^\s*{re.escape(self_name)}\s*[:：]\s*", "", text, count=1)
-
     names = [n.strip() for n in (self_name, *other_names) if n and n.strip()]
+    others = [n.strip() for n in other_names if n and n.strip() and n.strip() != self_name.strip()]
+    text = raw
     cut_at = len(text)
+    # 【本人名】仍是续写标记：剧本里没有这种写法，模型写它是在仿区块标题
     for label in _LABEL_RE.finditer(text):
         if _is_known_label(label.group(1), names):
             cut_at = label.start()
             break
-    speakers = _speaker_pattern([*names, *_PSEUDO_SPEAKERS])
+    speakers = _speaker_pattern([*others, *_PSEUDO_SPEAKERS])
     if speakers is not None:
         speaker = speakers.search(text)
         if speaker and speaker.start() < cut_at:
             cut_at = speaker.start()
 
-    return text[:cut_at].rstrip(), text[cut_at:]
+    return _strip_own_labels(text[:cut_at], self_name).rstrip(), text[cut_at:]
