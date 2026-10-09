@@ -175,11 +175,10 @@ async def test_judging_reuses_the_engine_truncation():
     # 只剩续写：截后为空
     assert rc.judge(site, base, "塞芙拉: 你错了。", 0).empty
 
-    # 本人名字标签：仍计污染，但单列出来；夹着他人台词的不算
+    # 本人名字标签不是续写（30a 起初误判），夹着他人台词的照截
     own = rc.judge(site, base, "*起身*\n阿德里安: 那就再试一次。", 0)
-    assert own.polluted and own.self_label
-    mixed = rc.judge(site, base, "*起身*\n阿德里安: 再试。\n塞芙拉: 不行。", 0)
-    assert mixed.polluted and not mixed.self_label
+    assert not own.polluted and own.kept == "*起身*\n那就再试一次。"
+    assert rc.judge(site, base, "*起身*\n阿德里安: 再试。\n塞芙拉: 不行。", 0).polluted
 
     # B 视图的写法 30a 认不出，单列为变体特有形态，不算进污染
     copied = rc.judge(site, b, "我不信。 塞芙拉（冷笑）：「随你。」", 0)
