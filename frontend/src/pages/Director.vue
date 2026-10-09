@@ -501,6 +501,7 @@ async function stopAutopilot() {
           :resumable="resumable"
           :decidable="sceneStore.currentScene.status === 'completed' && !sceneStore.running && !sceneStore.appliedDecision"
           :deciding="sceneStore.decisionPending"
+          :evaluation="sceneStore.evaluation"
           :name-of="charStore.nameOf"
           :autopilot="sceneStore.autopilot"
           :autopilot-startable="!sceneStore.appliedDecision && !sceneStore.decisionPending"
