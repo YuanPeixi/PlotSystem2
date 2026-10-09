@@ -30,3 +30,12 @@ export function applyTurnUpdate(
   next[i] = update
   return next
 }
+
+/**
+ * `output_notice` 的标签（工单30）：后端写成 `标签：说明`，标签放角色名后，整句作悬停说明。
+ * 没有冒号的（格式以后改了）退回"已截断"，至少不把整句挤进名字栏。
+ */
+export function outputNoticeLabel(notice: string): string {
+  const i = notice.indexOf('：')
+  return i > 0 && i <= 8 ? notice.slice(0, i) : '已截断'
+}

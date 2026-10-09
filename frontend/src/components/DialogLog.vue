@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import Icon from '@/components/ui/Icon.vue'
 import type { ActionIntent, DialogueTurn } from '@/types'
-import { isEnvironmentTurn } from '@/utils/turns'
+import { isEnvironmentTurn, outputNoticeLabel } from '@/utils/turns'
 
 const props = defineProps<{
   turns: DialogueTurn[]
@@ -64,6 +64,10 @@ const whoWidth = computed(() => {
       <span class="idx num">{{ t.turn_number }}</span>
       <div class="who">
         {{ t.character_name }}
+        <!-- 截掉了续写（工单30）：模型替别人或环境写的内容没进对白，这里告诉导演发生过 -->
+        <small v-if="t.output_notice" class="output-notice" :title="t.output_notice">{{
+          outputNoticeLabel(t.output_notice)
+        }}</small>
         <small v-if="t.selector_notice" :title="`选人阶段降级：${t.selector_notice}`">降级选择</small>
       </div>
       <!-- 环境回合：公开叙述全场可见；私密细节只给执行者，这里是导演视角才显示（契约1） -->
@@ -120,6 +124,11 @@ const whoWidth = computed(() => {
   font-size: 11px;
   color: var(--ink-3);
   white-space: nowrap;
+}
+/* 比"降级选择"重：有内容被丢掉了，而且多半是伪造的 */
+.who small.output-notice {
+  color: var(--warn);
+  cursor: help;
 }
 .body {
   font-family: var(--font-script);

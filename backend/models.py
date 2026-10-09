@@ -609,6 +609,10 @@ class DialogueTurn:
     memory_context_used: list[str] = field(default_factory=list)
     # selector 选人降级时的短提示，供前端在角色名后灰字展示；正常为空串
     selector_notice: str = ""
+    #: 角色回复被截掉续写时的说明（工单30，陷阱 28），形如 `已截断：……`，冒号前是前端标签、
+    #: 整句是悬停说明。与 selector_notice 同类：只给导演 / 用户看，不进 prompt、记忆与任何逻辑；
+    #: 只存字数与开头一小段，**不存截掉的原文**（伪造内容整段落盘，迟早被某个"渲染全部字段"带回来）
+    output_notice: str = ""
     # 计数一律走 utils/turns 的 character_turns，不要直接 len(dialogue_log)
     kind: str = TurnKind.CHARACTER.value
     #: 每个 *动作* 段一条（工单24）。off 档恒为空；`action` 拼接字段保持不变，渲染只读它
