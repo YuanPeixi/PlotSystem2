@@ -48,6 +48,10 @@ class EmptyCompletionError(Exception):
 
 
 def _should_retry(exc: BaseException) -> bool:
+    # tenacity 捕获的是 BaseException：取消与 Ctrl+C 不是调用失败，不挡住就会被当成失败重试，
+    # 取消信号被吞掉、再发一次付费请求
+    if not isinstance(exc, Exception):
+        return False
     return not isinstance(exc, EmptyCompletionError) or exc.retryable
 
 

@@ -209,7 +209,10 @@ def scripted_llm(monkeypatch):
     async def create(**kwargs):
         requests.append(kwargs)
         await asyncio.sleep(0)
-        return script.pop(0)
+        item = script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
     monkeypatch.setattr(llm, "_client", lambda base_url=None, api_key=None: client)
@@ -255,6 +258,15 @@ async def test_empty_content_from_exhausted_budget_is_not_retried(scripted_llm):
     stat = meter.snapshot()["selector"]
     assert (stat.calls, stat.retries, stat.failures) == (0, 0, 1)
     assert (stat.prompt_tokens, stat.completion_tokens) == (10, 5)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_not_retried(scripted_llm):
+    """取消不是调用失败：原样抛出，不再发一次付费请求。"""
+    scripted_llm.script.extend([asyncio.CancelledError(), _resp("好")])
+    with pytest.raises(asyncio.CancelledError):
+        await _character_call()
+    assert len(scripted_llm.requests) == 1
 
 
 # ---------------------------------------------------------------------------
