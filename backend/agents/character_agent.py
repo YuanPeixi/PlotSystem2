@@ -298,19 +298,26 @@ class CharacterAgent:
             scene_context, objects_brief=objects_brief, attempt_only=attempt_only
         )
         recent = self._recent_transcript(transcript)
-        mem_text = "\n".join(f"- {m}" for m in memory_context) or "（暂无相关记忆）"
-        # 环境块排在"目前对话"之后：对话只在末尾追加，放在它前面的话每次裁决都会改动前缀
-        env_text = f"【当前环境】\n{environment}\n\n" if environment else ""
-        user = (
-            f"【目前对话】\n{recent}\n\n"
-            f"{env_text}"
-            f"【你此刻想起的】\n{mem_text}\n\n"
-            f"现在轮到你（{self.name}）发言，请按行为格式规范回应。"
-        )
+        user = f"【目前对话】\n{recent}\n\n" + self.prompt_tail(memory_context, environment)
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
+
+    def prompt_tail(self, memory_context: list[str], environment: str = "") -> str:
+        """user 消息里"目前对话"之后的部分：当前环境、想起的记忆、发言指令。
+
+        单独成方法是给回放评测的多轮变体复用（工单30b）：从拼好的整段里按空行或标题切回来不可靠，
+        历史台词里本身就可能有空行，被污染的台词里还可能有【当前环境】字样。
+        """
+        mem_text = "\n".join(f"- {m}" for m in memory_context) or "（暂无相关记忆）"
+        # 环境块排在"目前对话"之后：对话只在末尾追加，放在它前面的话每次裁决都会改动前缀
+        env_text = f"【当前环境】\n{environment}\n\n" if environment else ""
+        return (
+            f"{env_text}"
+            f"【你此刻想起的】\n{mem_text}\n\n"
+            f"现在轮到你（{self.name}）发言，请按行为格式规范回应。"
+        )
 
     async def complete(self, messages: list[dict], *, temperature: float | None = None) -> str:
         """按角色的模型与输出上限发出一次调用。`temperature` 只给回放评测的对照变体用。"""
