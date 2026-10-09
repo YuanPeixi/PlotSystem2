@@ -78,6 +78,23 @@ _KNOWN_SPEAKER_MODES = {m.value for m in SpeakerMode}
 #: 截掉续写后为空时最多要几次回复（工单30）。llm.py 已对空正文退避重试 3 次，这里管的是
 #: "服务商给了正文、但全是续写"——每次都按输出上限计费，所以只多要一次
 _REPLY_ATTEMPTS = 2
+#: output_notice 里截掉部分的开头取几个字：够认出是哪种续写，又不至于把伪造内容整段落盘
+_NOTICE_HEAD_CHARS = 40
+
+
+def _output_notice(cut: str, *, retried: bool) -> str:
+    """`DialogueTurn.output_notice`：`标签：说明`，前端取冒号前作标签、整句作悬停说明。"""
+    details = []
+    if retried:
+        details.append("第一次回复全是续写（替他人或环境写的内容），已丢弃并重新生成")
+    if cut:
+        head = re.sub(r"\s+", " ", cut).strip()
+        if len(head) > _NOTICE_HEAD_CHARS:
+            head = head[:_NOTICE_HEAD_CHARS] + "……"
+        details.append(f"回复里混入了续写（替他人或环境写的内容），已截掉 {len(cut)} 字，开头：「{head}」")
+    if not details:
+        return ""
+    return f"{'已重新生成' if retried else '已截断'}：{'；'.join(details)}"
 #: 抽取 prompt 里候选物件（名称 + 公开描述）的总预算。单个物件在读取侧已压过，这里挡的是条数
 _OBJECTS_PROMPT_BUDGET = 2000
 
@@ -275,9 +292,10 @@ class SceneEngine:
 
             agent, selector_notice = await self._select_speaker(transcript, turns)
             turn_number += 1
-            raw = await self._character_reply(agent, transcript, turn_number)
+            raw, output_notice = await self._character_reply(agent, transcript, turn_number)
             turn = self._parse_turn(raw, agent, turn_number)
             turn.selector_notice = selector_notice
+            turn.output_notice = output_notice
             if self._action_extractor is not None:
                 # 必须早于下面的第一次落盘（设计单 A9）：落盘的轮次意图恒完整，续跑不重抽。
                 # 额度在调用前预占（A15），只有 adjudicate 档有额度
@@ -590,8 +608,10 @@ class SceneEngine:
     # ---- 解析 ----
     async def _character_reply(
         self, agent: CharacterAgent, transcript: list[str], turn_number: int
-    ) -> str:
+    ) -> tuple[str, str]:
         """取角色这一轮的回复，截掉续写（工单30）。必须早于解析：截下的内容不得进任何字段。
+
+        返回 (回复, 给 `DialogueTurn.output_notice` 的说明)。说明只含字数与开头一小段。
 
         截完什么都不剩（整段回复就是续写，或只剩空括号）时重新要一次；仍不行就按调用失败
         抛 `LLMError`，与其他 LLM 失败同一语义（场景转 paused、可续跑）。**不落空轮次、
@@ -610,7 +630,7 @@ class SceneEngine:
                 )
             actions, dialogue, thoughts = self._split_reply(kept)
             if dialogue or any(a.strip() for a in actions) or any(t.strip() for t in thoughts):
-                return kept
+                return kept, _output_notice(cut, retried=attempt > 1)
             logger.warning(
                 "场景 %s 第 %d 轮 %s 的回复截掉续写后为空（第 %d/%d 次）",
                 self.scene.scene_id, turn_number, agent.name, attempt, _REPLY_ATTEMPTS,

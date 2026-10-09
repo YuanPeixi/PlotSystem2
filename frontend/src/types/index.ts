@@ -86,6 +86,8 @@ export interface DialogueTurn {
   action: string | null
   inner_thought: string | null
   selector_notice?: string
+  /** 回复被截掉续写时的说明（工单30）：`标签：详情`，冒号前作角色名后的黄字，整句作悬停说明 */
+  output_notice?: string
   // 环境回合（工单24/20）不占发言顺序、不计入 max_turns；旧数据缺省即 character
   kind?: 'character' | 'environment'
   /** 每个 *动作* 段的意图（工单24，record / adjudicate 档才有）。只给导演/用户看，不进角色上下文 */

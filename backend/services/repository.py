@@ -443,6 +443,7 @@ def _deserialize_turn(t: dict) -> DialogueTurn:
         inner_thought=t.get("inner_thought"),
         memory_context_used=list(t.get("memory_context_used", []) or []),
         selector_notice=t.get("selector_notice", ""),
+        output_notice=str(t.get("output_notice") or ""),
         kind=kind,
         actions=_deserialize_actions(t.get("actions")),
         narration=_str_or_none(t.get("narration")),

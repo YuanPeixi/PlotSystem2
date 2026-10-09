@@ -9,7 +9,7 @@ const source = readFileSync(new URL('../src/utils/turns.ts', import.meta.url), '
 const js = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
-const { applyTurnUpdate, characterTurnCount, isEnvironmentTurn } = await import(
+const { applyTurnUpdate, characterTurnCount, isEnvironmentTurn, outputNoticeLabel } = await import(
   'data:text/javascript;base64,' + Buffer.from(js).toString('base64')
 )
 
@@ -48,4 +48,12 @@ test('only character turns count toward max_turns', () => {
     turn('e2', 0, { kind: 'environment' }), turn('old')]
   assert.equal(characterTurnCount(log), 3)
   assert.equal(isEnvironmentTurn({ kind: 'bogus' }), false, '非法取值按角色轮次，至少不让上限失效')
+})
+
+test('output notice label is the part before the first full-width colon', () => {
+  assert.equal(outputNoticeLabel('已截断：回复里混入了续写，已截掉 1308 字，开头：「【用户】」'), '已截断')
+  assert.equal(outputNoticeLabel('已重新生成：第一次回复全是续写；已截掉 12 字'), '已重新生成')
+  // 格式变了也不把整句挤进名字栏
+  assert.equal(outputNoticeLabel('截掉了一些续写内容'), '已截断')
+  assert.equal(outputNoticeLabel('这是一句很长很长的说明：后面'), '已截断')
 })

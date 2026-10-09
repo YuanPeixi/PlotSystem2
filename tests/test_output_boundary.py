@@ -158,6 +158,33 @@ async def test_forged_environment_never_reaches_turn_transcript_or_memory():
     assert (turn.action, turn.dialogue) == ("俯身细看", "镜子不会说谎。")
     for text in [engine._turn_line(turn), *noah.memory.short_term.dump(), *adrian.memory.short_term.dump()]:
         assert "夹层" not in text and "底座弹开" not in text and "果然如此" not in text
+    # 导演看得到发生过截断：标签 + 字数 + 开头一小段
+    assert turn.output_notice.startswith("已截断：")
+    assert "【环境】" in turn.output_notice
+
+
+def test_output_notice_keeps_only_a_short_head():
+    """伪造内容不整段落盘：只留开头一小段与字数。"""
+    from backend.scene_engine.engine import _NOTICE_HEAD_CHARS, _output_notice
+
+    cut = "【导演视角】（可公开给用户，但不可直接注入角色提示词） " * 30
+    notice = _output_notice(cut, retried=False)
+    assert f"已截掉 {len(cut)} 字" in notice
+    head = notice.split("「", 1)[1].rstrip("」")
+    assert len(head) <= _NOTICE_HEAD_CHARS + len("……")
+    assert _output_notice("", retried=False) == ""
+
+
+@pytest.mark.asyncio
+async def test_output_notice_survives_the_repository_round_trip():
+    from backend.models import DialogueTurn
+    from backend.services.repository import _deserialize_turn
+    from backend.utils.serializer import to_dict
+
+    turn = DialogueTurn(turn_id="t1", dialogue="好。", output_notice="已截断：已截掉 12 字")
+    assert _deserialize_turn(to_dict(turn)).output_notice == "已截断：已截掉 12 字"
+    # 旧数据没有这个键
+    assert _deserialize_turn({"turn_id": "t0"}).output_notice == ""
 
 
 @pytest.mark.asyncio
@@ -173,6 +200,7 @@ async def test_reply_that_is_all_continuation_is_asked_again():
     assert respond.await_count == 2
     assert len(result.dialogue_log) == 1
     assert result.dialogue_log[0].dialogue == "让我看看。"
+    assert result.dialogue_log[0].output_notice.startswith("已重新生成：")
 
 
 @pytest.mark.asyncio
