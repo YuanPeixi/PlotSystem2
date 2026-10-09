@@ -1373,6 +1373,8 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 | **Kuzu 图谱无分支隔离** | 图谱是项目级单文件。当前只在构建阶段写入一次、全程只读，所以“共享”与“隔离”等价，无实际影响 | 工单06（场景结束后动态回写图谱）的**前置约束**：它一落地图谱就变成可变状态，分支隔离立刻破 |
 | `Branch.scenes` 恒为空数组 | 无写入方；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它 | 工单 03 可选目标 6 |
 | `pause` 的语义与 `SceneStatus.PAUSED` 无关 | `engine.interrupt()` 走的是正常终止路径，场景最终是 `completed`，但前端提示“已中断” | 待排期 |
+| **角色回复没有输出边界** | 角色把"目前对话"当剧本续写：替其他角色写台词、写 `【环境】` / `【旁白】` 段，复读到输出上限（角色调用未设 `max_tokens`）。整段落进 `dialogue`，作为公开对白进全场 transcript 与长期记忆。adjudicate 档下尤其严重：伪造的环境结果绕过裁决器成了全员已知的事实（设计单 A30）。另：服务商返回空 `content` 时 `utils/llm.py` 当成功返回，落成三项全空的轮次 | 工单 30。修复前不要在需要保留的项目上开 `ENVIRONMENT_MODE=adjudicate` |
+| `DialogueTurn.timestamp` 不还原 | `_deserialize_turn` 不读 `timestamp`，每次读取都填成当前时间，同一场所有轮次时间相同（同陷阱 16 的 `created_at`） | 待排期，独立小修 |
 | **后置快照冻结的是内存副本** | `run_scene` 落 `record_story_history` 时用的 `scene` 是方法开头读的副本，中间隔着整场 LLM。若期间别的路径改写了库里的 `inherited_story_history`，落进快照的就是过时历史，从该快照分叉的分支据此起算 | 触发需在场景 `running` 时对它提交决策，而决策 CAS 只接 `completed`，正常路径进不来；构造不出可靠复现。真要修得在写快照前重读 scene（窗口只缩小、不消除）。待排期 |
 
 ### 12.2 Dead code（存在但零调用）
