@@ -3,7 +3,8 @@ import { computed, nextTick, ref, watch } from 'vue'
 import Icon from '@/components/ui/Icon.vue'
 import DialogLog from '@/components/DialogLog.vue'
 import AutoPilotControl from '@/components/director/AutoPilotControl.vue'
-import type { AutoPilotSession, DialogueTurn, Scene } from '@/types'
+import type { AutoPilotSession, DialogueTurn, Scene, SceneEvaluation } from '@/types'
+import { stageDecisionHint } from '@/utils/decision'
 import { characterTurnCount, isEnvironmentTurn } from '@/utils/turns'
 
 const props = defineProps<{
@@ -18,6 +19,8 @@ const props = defineProps<{
   decidable: boolean
   /** 决策请求在途 */
   deciding: boolean
+  /** 本场的导演评估；底栏据此高亮建议的决策 */
+  evaluation: SceneEvaluation | null
   nameOf: (cid: string) => string
   /** 该项目最近一次自动推演会话（可能已停止） */
   autopilot: AutoPilotSession | null
@@ -40,6 +43,8 @@ const scroller = ref<HTMLElement | null>(null)
 const stick = ref(true)
 
 const SPEAKER_MODE: Record<string, string> = { round_robin: '轮流发言', selector: '评分选人' }
+
+const hint = computed(() => stageDecisionHint(props.evaluation, props.scene.scene_id))
 
 // 自动推演进行中：手动开演/决策的入口收起，由后端替用户推进
 const piloting = computed(() => props.autopilot?.status === 'running')
@@ -142,15 +147,32 @@ watch(
         <option value="">全部角色</option>
         <option v-for="[id, name] in speakers" :key="id" :value="id">只看{{ name }}</option>
       </select>
-      <!-- 快捷决策：与决策面板的默认提交等价；回滚要选快照、填条件，引导到决策页 -->
+      <!-- 快捷决策：与决策面板的默认提交等价；回滚要选快照、填条件，引导到决策页。
+           导演建议的那一个用实底；评估未到 / 不可用时写一句、不高亮 -->
       <span v-if="decidable && !piloting" class="decide">
-        <button :disabled="deciding" title="同一场再演 6 轮" @click="emit('decide', 'continue')">
+        <span v-if="hint.note" class="hint">{{ hint.note }}</span>
+        <button
+          :class="{ primary: hint.recommended === 'continue' }"
+          :disabled="deciding"
+          title="同一场再演 6 轮"
+          @click="emit('decide', 'continue')"
+        >
           <Icon name="continue" :size="15" />继续
         </button>
-        <button :disabled="deciding" title="让导演规划并开演下一场" @click="emit('decide', 'next_scene')">
+        <button
+          :class="{ primary: hint.recommended === 'next_scene' }"
+          :disabled="deciding"
+          title="让导演规划并开演下一场"
+          @click="emit('decide', 'next_scene')"
+        >
           <Icon name="next" :size="15" />下一场
         </button>
-        <button :disabled="deciding" title="在决策面板里选择快照与新条件" @click="emit('open-decide')">
+        <button
+          :class="{ primary: hint.recommended === 'rollback' }"
+          :disabled="deciding"
+          title="在决策面板里选择快照与新条件"
+          @click="emit('open-decide')"
+        >
           <Icon name="rollback" :size="15" />回滚…
         </button>
       </span>
@@ -264,7 +286,12 @@ watch(
 }
 .decide {
   display: inline-flex;
+  align-items: center;
   gap: 6px;
+}
+.hint {
+  color: var(--ink-3);
+  margin-right: 2px;
 }
 @container director (max-width: 860px) {
   .script {
