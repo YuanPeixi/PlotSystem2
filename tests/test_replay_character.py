@@ -239,7 +239,7 @@ async def test_preview_never_calls_the_llm(capsys):
     await _setup()
     args = argparse.Namespace(
         project=PID, site=["s30b:4"], variants="base,A,B,C,A+B,t0.5", n=5,
-        memory="empty", mode=None, concurrency=4, run=False, out=None,
+        memory="empty", mode=None, concurrency=4, run=False, out=None, model=None,
     )
     boom = AsyncMock(side_effect=AssertionError("预览不得调用 LLM"))
     with patch.object(llm, "chat", boom):
@@ -247,6 +247,72 @@ async def test_preview_never_calls_the_llm(capsys):
     boom.assert_not_awaited()
     out = capsys.readouterr().out
     assert "将发起 30 次角色调用" in out and "--run" in out
+    # 走的是哪个平台要写明：同一个模型名换个服务商表现差很多（30b 结论）
+    assert rc._endpoint_host() in out
+
+
+@pytest.mark.asyncio
+async def test_model_override_reaches_the_actual_call(monkeypatch, capsys, tmp_path):
+    await _setup()
+    seen: list[str] = []
+
+    async def create(**kwargs):
+        seen.append(kwargs["model"])
+        return _resp("那就再试一次。")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(llm, "_client", lambda base_url=None, api_key=None: client)
+    args = argparse.Namespace(
+        project=PID, site=["s30b:4"], variants="base", n=1, memory="empty", mode=None,
+        concurrency=1, run=True, out=str(tmp_path), model="@preset/fp8-only",
+    )
+    assert await rc._main(args) == 0
+    assert seen == ["@preset/fp8-only"]
+    data = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert data["model"] == "@preset/fp8-only" and data["endpoint"] == rc._endpoint_host()
+
+
+def test_mode_is_inferred_from_what_the_scene_left_behind():
+    from backend.models import ActionIntent
+
+    def scene(*turns: DialogueTurn) -> Scene:
+        return Scene(scene_id="s", dialogue_log=list(turns))
+
+    plain = DialogueTurn(turn_id="a", character_id="c1", character_name="甲", dialogue="好。")
+    recorded = DialogueTurn(turn_id="b", character_id="c1", character_name="甲", action="碰王冠",
+                            actions=[ActionIntent(index=0, text="碰王冠", status="recorded")])
+    pending = DialogueTurn(turn_id="c", character_id="c1", character_name="甲", action="碰王冠",
+                           actions=[ActionIntent(index=0, text="碰王冠", status="pending")])
+    assert rc.infer_mode(scene(plain)) == "off"
+    assert rc.infer_mode(scene(plain, recorded)) == "record"
+    # 没有环境回合，但有待裁决的动作：仍是 adjudicate 档跑出来的
+    assert rc.infer_mode(scene(recorded, pending)) == "adjudicate"
+
+
+@pytest.mark.asyncio
+async def test_mode_override_changes_what_the_speaker_sees():
+    await _setup()
+    inferred = await _site()
+    off = await _site(mode_override="off")
+    assert inferred.mode == "adjudicate" and off.mode == "off"
+    # off 档没有【在场物件】与 R7：角色 prompt 与 adjudicate 档不同
+    assert off.extras.get("objects_brief", "") == "" and not off.extras.get("attempt_only")
+    assert "【在场物件】" in rc.build_base(inferred)[0]["content"]
+    assert "【在场物件】" not in rc.build_base(off)[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_environment_block_uses_final_state_only_after_an_environment_turn():
+    scene = await _setup()
+    scene.environment_state = {"o1": {"状态": "微光"}}
+    await repository.save_scene(scene)
+    # 第 4 轮之前有过环境回合：用终态，并在备注里写明可能含之后的变化
+    after = await _site("s30b:4")
+    assert "微光" in after.extras["environment"]
+    assert any("终态" in n for n in after.notes)
+    # 第 1 轮之前没有环境回合：当时还没有任何物件状态
+    first = await _site("s30b:1")
+    assert not first.extras.get("environment") and not any("终态" in n for n in first.notes)
 
 
 @pytest.mark.asyncio
