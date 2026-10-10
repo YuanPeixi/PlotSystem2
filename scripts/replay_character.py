@@ -3,7 +3,7 @@
 用法：
     python -m scripts.replay_character --project PROJECT_ID \\
         --site SCENE_ID:TURN [--site ...] [--variants base,A,B,C,A+B,t0.5] [-n 5] \\
-        [--memory empty|checkpoint] [--mode off|record|adjudicate] [--concurrency 4] [--run] [--out PATH]
+        [--memory empty|checkpoint] [--mode off|record|adjudicate] [--concurrency 4] [--run] [--out PATH] \n        [--model MODEL]
 
 `--site SCENE:TURN` 取"某场第 TURN 轮那位角色、在那一轮之前的现场"，场景 ID 可写前缀。不带 `--run`
 只重建现场并打印将发起的调用次数，**不调 LLM**；带 `--run` 才真正生成（每次运行都调 LLM、花钱）。
@@ -27,6 +27,10 @@
 - 记忆块（`memory_context_used` 没落盘）：`empty` 统一给空记忆块（默认，变体之间完全公平）；
   `checkpoint` 从前置快照的向量库副本检索（开场时的记忆，不含本场中途固化的；会调 embedding）。
 
+服务商：走 `LLM_BASE_URL`，报告记下主机名；`--model` 只换模型名（OpenRouter 上可写 `@preset/…`
+固定服务商偏好）。同一个模型名在不同平台、不同量化下差别很大（30b 结论），跨次比较先对齐这一条。
+OpenRouter 实际分到哪家厂商不在响应正文里落盘，要看它的活动日志。
+
 结论只在变体之间相对比较，不当绝对值。
 """
 
@@ -47,6 +51,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from backend.agents.character_agent import _ATTEMPT_RULE, CharacterAgent
@@ -707,7 +712,8 @@ def render_markdown(
     out = [
         f"# 角色回复回放评测（工单30b）{datetime.now():%Y-%m-%d %H:%M}",
         "",
-        f"角色模型 `{model}`，每个现场每个变体 {n} 次，输出上限 `CHARACTER_MAX_TOKENS={settings.CHARACTER_MAX_TOKENS}`。",
+        f"角色模型 `{model}`（经 `{_endpoint_host()}`），每个现场每个变体 {n} 次，"
+        f"输出上限 `CHARACTER_MAX_TOKENS={settings.CHARACTER_MAX_TOKENS}`。",
         "",
         "## 口径",
         *_method_notes(memory),
@@ -766,6 +772,7 @@ def render_json(
     return json.dumps(
         {
             "model": model,
+            "endpoint": _endpoint_host(),
             "n": n,
             "memory": memory,
             "variants": [{"name": v.name, "description": v.description} for v in variants],
@@ -789,6 +796,12 @@ def render_json(
     )
 
 
+def _endpoint_host() -> str:
+    """角色调用实际走的服务商主机。同一个模型名在不同平台、不同量化下表现差很多（30b 结论），
+    报告不记这一条就没法和别的数据比。"""
+    return urlparse(settings.LLM_BASE_URL).hostname or settings.LLM_BASE_URL
+
+
 def _exclusive_write(directory: Path, stem: str, suffix: str, text: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     for _ in range(5):
@@ -803,7 +816,9 @@ def _exclusive_write(directory: Path, stem: str, suffix: str, text: str) -> Path
     raise RuntimeError("连续 5 次随机后缀都撞上已存在的文件名，已放弃写入")
 
 
-def preview(sites: list[ReplaySite], variants: list[Variant], n: int, memory: str) -> str:
+def preview(
+    sites: list[ReplaySite], variants: list[Variant], n: int, memory: str, model: str | None = None
+) -> str:
     lines = ["回放现场："]
     for site in sites:
         lines.append(
@@ -820,7 +835,8 @@ def preview(sites: list[ReplaySite], variants: list[Variant], n: int, memory: st
     lines.append(f"\n记忆块口径：{memory}")
     lines.append(
         f"将发起 {planned_calls(sites, variants, n)} 次角色调用"
-        f"（{len(sites)} 个现场 × {len(variants)} 个变体 × {n} 次），模型 {settings.character_model}"
+        f"（{len(sites)} 个现场 × {len(variants)} 个变体 × {n} 次），"
+        f"模型 {model or settings.character_model}，经 {_endpoint_host()}"
     )
     return "\n".join(lines)
 
@@ -843,7 +859,10 @@ async def _main(args: argparse.Namespace) -> int:
             await load_site(args.project, spec, scenes=scenes, mode_override=args.mode, memory=args.memory)
             for spec in args.site
         ]
-        print(preview(sites, variants, args.n, args.memory))
+        model = args.model or settings.character_model
+        for site in sites:
+            site.speaker.model = model
+        print(preview(sites, variants, args.n, args.memory, model))
     except ValueError as exc:
         print(f"现场重建失败：{exc}")
         return 1
@@ -858,7 +877,7 @@ async def _main(args: argparse.Namespace) -> int:
 
     out_dir = Path(args.out) if args.out else settings.project_dir(args.project)
     stem = f"replay_{datetime.now():%Y%m%d-%H%M%S}"
-    common = dict(memory=args.memory, n=args.n, model=settings.character_model)
+    common = dict(memory=args.memory, n=args.n, model=model)
     md = _exclusive_write(out_dir, stem, ".md", render_markdown(sites, variants, samples, stats, **common))
     data = _exclusive_write(out_dir, stem, ".json", render_json(sites, variants, samples, stats, **common))
     print(f"\n样本：{md}\n原始数据：{data}")
@@ -876,6 +895,10 @@ def main() -> int:
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--run", action="store_true", help="真正调用 LLM（默认只预览）")
     parser.add_argument("--out", default=None, help="输出目录，缺省为项目目录")
+    parser.add_argument(
+        "--model", default=None,
+        help="覆盖角色模型（服务商仍是 LLM_BASE_URL；OpenRouter 可写 @preset/…）",
+    )
     args = parser.parse_args()
     if args.n < 1:
         parser.error("-n 至少为 1")
