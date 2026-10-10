@@ -135,6 +135,23 @@ def test_own_name_label_midway_is_stripped_not_cut(raw, kept):
     assert trim_continuation(raw, self_name="阿德里安", other_names=_others("阿德里安")) == (kept, "")
 
 
+@pytest.mark.parametrize(
+    ("raw", "kept"),
+    [
+        # 同一段反复出现：从第一次重复处截断（只剥不截的话会一直写到输出上限再落库）
+        ("阿德里安: 镜子不会说谎。\n" * 30, "镜子不会说谎。"),
+        ("*俯身*\n阿德里安：王冠亦然。 阿德里安：王冠亦然。 阿德里安：王冠亦然。", "*俯身*\n王冠亦然。"),
+        # 各段不同、但标签多过格式上限：第 4 处起截
+        ("阿德里安: 一。\n阿德里安: 二。\n阿德里安: 三。\n阿德里安: 四。\n阿德里安: 五。",
+         "一。\n二。\n三。"),
+    ],
+)
+def test_own_name_label_repeating_is_cut(raw, kept):
+    got, cut = trim_continuation(raw, self_name="阿德里安", other_names=_others("阿德里安"))
+    assert got == kept
+    assert cut and raw.endswith(cut) and cut.lstrip().startswith("阿德里安")
+
+
 def test_reply_that_is_all_continuation_keeps_nothing():
     kept, cut = trim_continuation("【环境】王冠亮了。", self_name="诺安", other_names=_others("诺安"))
     assert kept == "" and cut == "【环境】王冠亮了。"
