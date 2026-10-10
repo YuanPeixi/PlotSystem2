@@ -20,7 +20,8 @@
 本人名字标签（"塞芙拉: 诺安大人…"）不论在开头还是中途都只剥掉标签、保留正文：那是模仿剧本行
 格式，正文仍是自己这一轮。模型常把一轮写成 `*动作*` 换行 `本人: 台词`，30a 起初把中途的本人标签
 也当续写，结果截掉的是本人这一轮的台词（30b 回放：叙事化视图与多轮结构下尤其多）。真正"替自己写
-下一轮"之前必然先写别人或环境，那里已经截断了。
+下一轮"之前通常先写别人或环境，那里已经截断了。例外是本人标签自己复读（同一段反复出现、或标签
+多到超出 3 句的格式上限）：从复读处截断，否则整段会一直写到输出上限再落库（30b 评审）。
 """
 
 from __future__ import annotations
@@ -41,6 +42,8 @@ PROMPT_SECTION_TITLES = (
 _LABEL_RE = re.compile(r"【\s*([^】\n]{1,16}?)\s*】")
 # 发言人标签只在行首或"上一句已经说完"之后才算：直接接在正文字词后面的不是另起一行
 _SPEAKER_BOUNDARY = r"(?:^|(?<=[\s。！？!?…」”』）)\]］*]))"
+#: 一轮里最多容许几处本人名字标签，再多就是在复读（见 `_own_runaway_at`）
+_MAX_OWN_LABELS = 3
 
 
 def _speaker_pattern(names: Sequence[str]) -> re.Pattern[str] | None:
@@ -49,6 +52,26 @@ def _speaker_pattern(names: Sequence[str]) -> re.Pattern[str] | None:
         return None
     alternatives = "|".join(re.escape(n) for n in unique)
     return re.compile(rf"{_SPEAKER_BOUNDARY}(?:{alternatives})\s*[:：]", re.MULTILINE)
+
+
+def _own_runaway_at(text: str, self_name: str) -> int | None:
+    """本人标签开始复读的位置：某段与前面某段相同，或已是第 `_MAX_OWN_LABELS + 1` 处本人标签。
+
+    本人标签本身只剥不截，但"只剥"挡不住模型一直写 `本人: …` 直到输出上限 —— 那一整段会作为
+    公开对白落库（30b 评审）。正常一轮是 `*动作*` 与台词交替，格式规范要求 3 句以内，到不了第 4 处。
+    """
+    if not self_name.strip():
+        return None
+    name = re.escape(self_name.strip())
+    labels = list(re.finditer(rf"{_SPEAKER_BOUNDARY}{name}\s*[:：]", text, re.MULTILINE))
+    seen: set[str] = set()
+    for i, label in enumerate(labels):
+        end = labels[i + 1].start() if i + 1 < len(labels) else len(text)
+        segment = re.sub(r"\s+", " ", text[label.end():end]).strip()
+        if i >= _MAX_OWN_LABELS or (segment and segment in seen):
+            return label.start()
+        seen.add(segment)
+    return None
 
 
 def _strip_own_labels(text: str, self_name: str) -> str:
@@ -89,5 +112,8 @@ def trim_continuation(
         speaker = speakers.search(text)
         if speaker and speaker.start() < cut_at:
             cut_at = speaker.start()
+    runaway = _own_runaway_at(text[:cut_at], self_name)
+    if runaway is not None:
+        cut_at = runaway
 
     return _strip_own_labels(text[:cut_at], self_name).rstrip(), text[cut_at:]
