@@ -249,7 +249,9 @@ frontend/src/
 | `CharacterState` | 角色在某时刻的快照态（含短期缓冲 / 事件摘要） | 快照目录 JSON |
 | `CharacterInspection` | Inspection 层的只读组装结果（**不落库**） | 运行时 |
 | `LoreEntry` | 世界观条目（keywords 触发、scope 控制可见范围、priority 排序） | 内嵌于角色卡 |
-| `WorldState` | **分支级**世界变量（跨场次演进的公开世界层事实） | **文件** `world_state/{branch_id}.json` |
+| `WorldState` | schema 1 的分支级世界变量，供旧项目兼容 | 文件 `world_state/{branch_id}.json` |
+| `WorldRevision` / `WorldFact` / `WorldObservation` | schema 2 的不可变世界版本：客观属性、角色历史观察、时点物件定义；按稳定对象 ID 定位 | SQLite `world_revisions`；快照引用版本 ID |
+| `WorldOperation` / `WorldEvent` | 显式 set/unset 命令和已提交事件；来源、幂等键、观察者、结构化变化 | SQLite `world_events` |
 | `Storyboard` / `StoryBeat` / `ForkOrigin` | **分支级**导演分镜稿：路线图（带稳定 `beat_id` 的节拍）+ 长期备忘 + 分叉说明 + changelog + 修订号。**只进导演 prompt** | **文件** `storyboard/{branch_id}.json`，快照带时点副本 |
 | `StoryboardPatch` | 导演随评估产出的分镜稿修改（相对导演读到的那一版） | 内嵌于 `SceneEvaluation` |
 | `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
@@ -265,6 +267,66 @@ frontend/src/
 | `AutoPilotSession` / `AutoPilotStep` | 一次自动推演会话：步数/连续回滚上限、计数、已执行的自动决策、停止原因（**不落库**） | 进程内存 |
 | `Snapshot` / `Branch` / `BranchTree` | 快照与分支 | SQLite `snapshots`/`branches` + 快照目录 |
 | `MemoryChunk` / `MemorySnapshot` | 记忆检索与序列化载体 | 运行时 |
+
+### 4.1.1 统一世界与环境（schema 2，2026-10-13）
+
+**【实况】** API 新建项目使用 `Project.world_schema_version=2`；没有该字段的旧项目按 1
+读取。下文原有 `WorldState` 文件预算、场末 delta 补写和 `Scene.environment_state` 规则
+适用于 schema 1。schema 2 使用以下规则；两种项目各只有一个权威写入路径，不双写。
+
+- `services/world.py` 是无 IO 的领域规则；`world_repository.py` 经 `repository` 暴露持久化；
+  `world_access.py` 处理用户命令、规则采用和迁移。没有新增依赖。
+- 一项事实由 `(subject_kind, subject_id, attribute)` 定位，值保留 bool、数字、文本、null
+  或实体引用类型。`set` 与 `unset` 明确区分；删除保留时点标记，使角色重新到场可观察到属性已清除；
+  显示名称不承担身份。当前地点属性的现场匹配
+  使用 `Scene.location` 标识；尚未把地点迁成独立注册表。
+- `WorldRevision` 保存完整属性、各角色的历史观察和物件定义（含隐藏规则、可见性）。
+  `world_heads` 是各分支当前版本和运行占用的索引。版本不可修改，分叉可以引用同一版本，
+  后续写入生成各自的新版本。完整版本会占用更多存储，当前不做版本回收。
+- `global` 是明确允许广泛传播的事实；`observable` 需要在现场且能感知对应物件或地点；
+  `hidden` 不直接提供给角色。曾经获知某物件状态，只留下当时的观察，不订阅后来的值。
+  重新进入现场时更新观察。个人推测和言论不提升成客观世界属性，角色记忆继续独立工作。
+- 环境裁决读取版本内规则和本次允许作用的物件状态，提交显式属性变化。内部隐藏属性也能
+  保存，但不向观察者分发；可观察变化才形成现场观察。裁决输出不因
+  prompt 预算截断；非法结果整次拒绝，不保留与未接受变化对应的叙述。当前动作裁决的作用
+  范围仍是目标物件，主动环境事件和通用多物件物理模拟尚未实现。
+- 世界版本、事件、场景环境回合、动作状态及轮次 revision 在同一个 SQLite 事务提交。
+  提交完成后才写记忆和推 SSE。事务失败保持 pending，恢复时可补裁决。提示词展示预算
+  只省略显示行，不删除事实；用户用世界面板和事件接口查完整数据。
+- 角色和 selector 通过同一可见投影获得动态状态，进入 user 的【当前环境】。
+  system 不再摊入世界变量。`initial_conditions` 不能覆盖已存在的属性标识或名称。
+  它只承载本场提示；事实修改使用世界命令。
+- 场景脚本 `environment_script` 经过规划、手动创建、下一场和分叉传递，仅环境侧读取。
+  预制揭示只渲染触发条件，内容只给执行者；现场生成调用只拿当事人的 known_facts 与
+  可用记忆，拿不到隐藏规则和预制内容。生成触发只接受固定 actor_memory 代码，
+  不把裁决器自由书写的效果说明转交生成调用。生成失败保留有效的公开裁决。
+- 导演评估的 `world_operations` 是下一场前的宏观提案，只许修改世界层广泛公开属性。
+  next_scene 时经同一事务入口提交；continue 和 rollback 不应用。评估失败不撤销已经
+  提交的环境事实，后置快照无需补写世界状态。导演历史和分镜稿的既有补写守卫仍保留。
+- 前置/后置快照的 `world_revision_id` 分别引用实际起点和场末事实；物件规则随版本走。
+  编辑项目物件卡后，需要在某分支“采用当前物件规则”，旧快照保持旧规则。
+  schema 2 项目从 schema 1 快照分叉时，不猜历史物件状态和规则：只保留该快照的旧记录，
+  新分支可显式采用规则、补录属性，不回读来源分支的当前世界。
+- 每个 schema 2 分支同时只有一个场景推进世界，使用持久化占用和执行 token。
+  同分支其他场景及外部编辑被拒绝；不同分支可并行。启动时在契约 9 的单进程前提下
+  清理遗留占用，不声称支持多 worker。暂停后若该分支已经推进，原场需从快照分叉后继续。
+
+**【实况】迁移**：`GET /projects/{pid}/world/migration-preview` 只生成分类及内容指纹。
+`POST /projects/{pid}/world/migrate` 接受显式属性选择，事务内切换全项目所有分支和 schema。
+未选择的原始世界记录完整保留为 `legacy_records`，不向角色广播；不改旧文件和快照，也不
+重写角色记忆。运行/决策中的项目不能迁移，运行初始化与迁移共用项目锁。
+旧场景已有对白时不在新体系中直接续跑，需从历史快照分叉。前端导演页“世界”标签可预览
+迁移、管理事实、采用规则和查看来源；复杂迁移可直接使用命令接口。
+
+接口：`GET /branches/{bid}/world-state` 按项目 schema 返回旧变量或完整新版本；
+`POST /branches/{bid}/world/commands` 带 request_id、revision_id、operations 和 observers；
+`POST /branches/{bid}/world/adopt-definitions` 显式采用项目定义；
+`GET /branches/{bid}/world/events` 查看最近已提交事件（包含分叉起点前的继承来源，不包含
+来源分支之后的变化）。均挂在 `/projects/{pid}` 下。
+
+验收：`tests/test_unified_world.py`、`tests/test_unified_world_api.py` 与前端
+`tests/world-panel.test.mjs` 覆盖状态/观察分离、类型与删除、事务/幂等/恢复、规则和快照分叉、
+评估失败、场间提交、显式迁移，以及切分支与迟到响应隔离。
 
 ### 4.2 容易踩的语义陷阱
 
@@ -988,6 +1050,10 @@ graph TD
 
 ### 契约 1 — 信息不对称（注意隔离边界）
 
+**schema 2 补充**：下面的世界变量全体广播规则仅适用于 schema 1 的公共层。统一世界中的
+客观属性与角色知识分别保存，只有明确 global 的属性可以广泛传播，现场公开不等于跨场广播。
+完整事实/规则只供导演和裁决，角色及 selector 必须经过可见投影（见 4.1.1）。
+
 **该隔离的**：
 - `unknown_facts` 只允许出现在 `PersonaBuilder` 生成过程、构建期的设定可见性判定
   （`LoreVisibilityClassifier`，工单29）与面向导演/用户的 API 响应中，
@@ -1034,7 +1100,8 @@ graph TD
 目的：同一角色在同一场景内的 prompt 前缀保持稳定，命中服务端 prefix cache。
 **任何"优化"都不得把变化内容塞回 system，也不得改成逐行滑窗。**
 
-**补充条款（工单07 裁定，世界状态专用）**：世界状态分两类，**两者不得混用**——
+**补充条款**：schema 2 的动态世界属性统一走 user 的可见投影（见 4.1.1），整场
+稳定的静态资料仍进 system。schema 1 保留工单07 的两类分层，**两者不得混用**——
 
 | 类别 | 何时变 | 放哪 | 现状 |
 |------|--------|------|------|

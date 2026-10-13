@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS outputs (
     content     TEXT NOT NULL
 );
 
+-- Unified world authority. Revisions are immutable and shared safely by forks.
+CREATE TABLE IF NOT EXISTS world_revisions (
+    revision_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS world_heads (
+    project_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    running_scene_id TEXT NOT NULL DEFAULT '',
+    execution_token TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (project_id, branch_id)
+);
+CREATE TABLE IF NOT EXISTS world_events (
+    project_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    PRIMARY KEY (project_id, branch_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_world_revisions_project ON world_revisions(project_id);
+
 CREATE INDEX IF NOT EXISTS idx_scenes_project ON scenes(project_id);
 CREATE INDEX IF NOT EXISTS idx_scenes_branch ON scenes(branch_id);
 CREATE INDEX IF NOT EXISTS idx_branches_project ON branches(project_id);

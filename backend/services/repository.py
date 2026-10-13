@@ -50,9 +50,10 @@ from backend.models import (
     goal_revision,
     now,
 )
-from backend.services.environment import clamp_environment_state
+from backend.services.environment import clamp_environment_state, normalize_environment_script
 from backend.services.objects import MAX_PROJECT_OBJECTS, clamp_object, clamp_objects_present
 from backend.services.storyboard import clamp_storyboard
+from backend.services.world import parse_operations
 from backend.services.world_state import clamp_world_variables
 from backend.utils import db
 from backend.utils.fileio import atomic_write_text
@@ -123,6 +124,7 @@ def _deserialize_project(data: dict) -> Project:
         status=data.get("status", "initializing"),
         narrative_goal=data.get("narrative_goal", ""),
         ending_criteria=data.get("ending_criteria", ""),
+        world_schema_version=data.get("world_schema_version", 1),
     )
 
 
@@ -156,7 +158,7 @@ async def delete_project(project_id: str) -> None:
             "(SELECT scene_id FROM scenes WHERE project_id = ?)",
             (project_id,),
         )
-        for table in ("scenes", "branches", "snapshots", "projects"):
+        for table in ("world_events", "world_heads", "world_revisions", "scenes", "branches", "snapshots", "projects"):
             await conn.execute(f"DELETE FROM {table} WHERE project_id = ?", (project_id,))
         await conn.execute("DELETE FROM outputs WHERE project_id = ?", (project_id,))
         await conn.commit()
@@ -453,6 +455,8 @@ def _deserialize_turn(t: dict) -> DialogueTurn:
         source_turn_id=str(t.get("source_turn_id") or ""),
         source_action_index=_non_negative_int(t.get("source_action_index"), -1),
         revision=_non_negative_int(t.get("revision"), 0),
+        world_event_id=str(t.get("world_event_id") or ""),
+        world_revision_id=str(t.get("world_revision_id") or ""),
     )
 
 
@@ -483,6 +487,8 @@ def _deserialize_scene(data: dict) -> Scene:
         speaker_mode=data.get("speaker_mode", SpeakerMode.ROUND_ROBIN.value),
         dialogue_log=log,
         llm_usage=deserialize_usage(data.get("llm_usage"), f"场景 {data['scene_id']} "),
+        world_revision_id=str(data.get("world_revision_id") or ""),
+        environment_script=normalize_environment_script(data.get("environment_script"), set(data.get("objects_present") or [])),
         environment_state=clamp_environment_state(
             data.get("environment_state"), f"场景 {data['scene_id']} "
         ),
@@ -648,6 +654,7 @@ def _deserialize_evaluation(data: dict, scene_id: str) -> SceneEvaluation:
         # None 是"删除该变量"的标记，必须原样保留：压成空串会让删除意图变成
         # 一次"把变量改成空值"的更新，旧值反而永远留在世界状态里。
         world_state_delta=dict(data.get("world_state_delta") or {}),
+        world_operations=parse_operations(data.get("world_operations") or []),
         evaluated_snapshot_id=data.get("evaluated_snapshot_id", ""),
         storyboard_patch=_deserialize_storyboard_patch(data.get("storyboard_patch")),
         llm_usage=deserialize_usage(data.get("llm_usage"), f"场景 {scene_id} 的评估"),
@@ -1088,3 +1095,33 @@ async def get_output(output_id: str) -> dict | None:
         "created_at": row[3],
         "content": row[4],
     }
+
+
+# Unified world storage is exposed through this repository boundary.
+from backend.services.world_repository import (  # noqa: E402,F401
+    acquire_world_execution,
+    commit_world_event,
+    get_branch_world,
+    get_world_revision,
+    initialize_branch_world,
+    list_world_events,
+    migrate_project_worlds,
+    reconcile_world_executions,
+    release_world_execution,
+)
+
+
+async def get_legacy_world_records(project_id: str, branch_id: str) -> dict:
+    """Migration retains raw records, including entries exceeding prompt budgets."""
+    path = _world_state_dir(project_id) / f"{branch_id}.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        variables = data.get("variables", {})
+        if not isinstance(variables, dict):
+            raise ValueError("variables is not an object")
+        return variables
+    except (ValueError, UnicodeError, OSError) as exc:
+        from backend.exceptions import InvalidRequestError
+        raise InvalidRequestError("旧世界文件不可解析，迁移前请修复原始记录") from exc

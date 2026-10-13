@@ -142,7 +142,8 @@ class ScoringSpeakerSelector:
         self._transcript_start = 0
 
     async def select(
-        self, transcript: list[str], turns: list[DialogueTurn]
+        self, transcript: list[str], turns: list[DialogueTurn],
+        environments: dict[str, str] | None = None,
     ) -> tuple[CharacterAgent, SelectionTrace]:
         """选出下一个发言者，并返回可观测的评分轨迹。"""
         # 两个本地信号只看角色轮次（设计单 §5.5）：环境回合没有发言者，不该摊薄重复发言
@@ -153,7 +154,8 @@ class ScoringSpeakerSelector:
         user_msg = self._build_user(transcript)
 
         raw_scores = await asyncio.gather(
-            *(self._score_one(agent, user_msg) for agent in self.agents)
+            *(self._score_one(agent, user_msg + ("\n【当前环境】\n" + environments.get(agent.character_id, "")
+                                              if environments else "")) for agent in self.agents)
         )
         trace = self._combine(raw_scores, addressed, penalties)
         chosen = self._pick(trace)

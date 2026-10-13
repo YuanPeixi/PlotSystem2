@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from backend.api.schemas import ApiResponse, ForkBranchRequest, UpdateStoryboardRequest
+from backend.api.schemas import (
+    ApiResponse,
+    ForkBranchRequest,
+    UpdateStoryboardRequest,
+    WorldCommandRequest,
+    WorldDefinitionsRequest,
+    WorldMigrationRequest,
+)
 from backend.models import StoryBeat, StoryboardView
-from backend.services import orchestrator, repository
+from backend.services import orchestrator, repository, world_access
 from backend.snapshot import SnapshotManager
 from backend.utils.serializer import to_dict
 
@@ -38,6 +45,9 @@ async def get_world_state(project_id: str, branch_id: str) -> ApiResponse:
     """读取分支的世界变量（工单07）。分支没有记录时返回空变量，不是 404 ——
     "这条分支还没积累世界层事实"是正常状态，不是资源不存在。
     """
+    project = await world_access.check_branch(project_id, branch_id)
+    if project.world_schema_version == 2:
+        return ApiResponse.ok(to_dict(await world_access.branch_world(project_id, branch_id)))
     state = await repository.get_world_state(project_id, branch_id)
     return ApiResponse.ok(to_dict(state))
 
@@ -122,3 +132,30 @@ async def delete_snapshot(snapshot_id: str, project_id: str) -> ApiResponse:
     sm = SnapshotManager(project_id)
     await sm.delete_snapshot(snapshot_id)
     return ApiResponse.ok({"deleted": snapshot_id})
+
+
+@project_router.get("/world/migration-preview")
+async def preview_world_migration(project_id: str) -> ApiResponse:
+    preview, _, _ = await world_access.preview_migration(project_id)
+    return ApiResponse.ok(preview)
+
+
+@project_router.post("/world/migrate")
+async def migrate_world(project_id: str, req: WorldMigrationRequest) -> ApiResponse:
+    return ApiResponse.ok(await world_access.migrate(project_id, req))
+
+
+@project_router.post("/branches/{branch_id}/world/commands")
+async def world_command(project_id: str, branch_id: str, req: WorldCommandRequest) -> ApiResponse:
+    return ApiResponse.ok(to_dict(await world_access.command(project_id, branch_id, req)))
+
+
+@project_router.post("/branches/{branch_id}/world/adopt-definitions")
+async def adopt_world_definitions(project_id: str, branch_id: str, req: WorldDefinitionsRequest) -> ApiResponse:
+    return ApiResponse.ok(to_dict(await world_access.adopt_definitions(project_id, branch_id, req)))
+
+
+@project_router.get("/branches/{branch_id}/world/events")
+async def world_events(project_id: str, branch_id: str) -> ApiResponse:
+    await world_access.check_branch(project_id, branch_id)
+    return ApiResponse.ok(await repository.list_world_events(project_id, branch_id))

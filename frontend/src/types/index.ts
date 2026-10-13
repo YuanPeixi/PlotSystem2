@@ -16,6 +16,7 @@ export interface Project {
   /** 主线目标：导演的只读锚点，只能由用户修改 */
   narrative_goal: string
   ending_criteria: string
+  world_schema_version?: number
 }
 
 export interface RelationshipState {
@@ -102,6 +103,8 @@ export interface DialogueTurn {
   source_action_index?: number
   /** 服务端每改写一次已落盘的轮次就 +1；SSE turn_update 按它判新旧 */
   revision?: number
+  world_event_id?: string
+  world_revision_id?: string
 }
 
 export interface ActionIntent {
@@ -140,6 +143,8 @@ export interface Scene {
   llm_usage?: Record<string, LLMUsageStat>
   /** 场景内的物件公开状态（工单20）：物件 ID → { 属性: 值 }；null = 本场清除了该属性 */
   environment_state?: Record<string, Record<string, string | null>>
+  world_revision_id?: string
+  environment_script?: Record<string, RevealEntry[]>
 }
 
 /** 某一用途的 LLM 调用计数（工单25）。只增观测。 */
@@ -179,6 +184,7 @@ export interface SceneConfig {
   participating_characters: string[]
   location: string
   objects_present: string[]
+  environment_script?: Record<string, RevealEntry[]>
   initial_conditions: Record<string, unknown>
   max_turns: number
   speaker_mode: string
@@ -246,6 +252,7 @@ export interface SceneEvaluation {
   storyboard_patch?: StoryboardPatch
   /** 产出这份评估花掉的 LLM 调用（工单25） */
   llm_usage?: Record<string, LLMUsageStat>
+  world_operations?: WorldOperation[]
 }
 
 export type BeatStatus = 'planned' | 'done' | 'dropped'
@@ -424,4 +431,47 @@ export interface BuildStatus {
   character_done?: number
   character_total?: number
   lore_count?: number
+}
+
+
+export interface RevealEntry { condition: string; content: string }
+export type WorldValue = string | boolean | number | null | { kind: 'object' | 'character' | 'location'; id: string }
+export interface WorldFact {
+  subject_kind: 'world' | 'object' | 'location'
+  subject_id: string
+  attribute: string
+  label: string
+  value: WorldValue
+  visibility: 'global' | 'observable' | 'hidden'
+  source_event_id: string
+  source_branch_id?: string
+}
+export interface WorldOperation extends Omit<WorldFact, 'source_event_id' | 'source_branch_id'> { op: 'set' | 'unset' }
+export interface WorldRevision {
+  schema_version: 2
+  revision_id: string
+  parent_revision_id: string
+  project_id: string
+  facts: Record<string, WorldFact>
+  removed_facts: Record<string, WorldFact>
+  observations: Record<string, Record<string, { fact: WorldFact; event_id: string; deleted: boolean }>>
+  definitions: Record<string, WorldObject>
+  legacy_records: Record<string, unknown>
+}
+export interface LegacyWorldState { project_id: string; branch_id: string; variables: Record<string, string> }
+export interface WorldEvent {
+  event_id: string
+  source: string
+  source_id: string
+  narration: string
+  operations: WorldOperation[]
+  observers: string[]
+  revision_id: string
+}
+export interface WorldMigrationPreview {
+  schema_version: number
+  preview_revision: string
+  branches: { branch_id: string; name: string; entries: {
+    key: string; value: unknown; category: string; suggestion: WorldOperation | null
+  }[]; note: string }[]
 }

@@ -103,6 +103,7 @@ class SnapshotManager:
         label: str = "",
         story_history: list[StoryRecord] | None = None,
         world_state_variables: dict[str, str] | None = None,
+        world_revision_id: str = "",
         snapshot_id: str = "",
         storyboard: Storyboard | None = None,
     ) -> Snapshot:
@@ -121,6 +122,7 @@ class SnapshotManager:
             scene_context=scene_context or {},
             story_history=deepcopy(story_history),
             world_state_variables=dict(world_state_variables or {}),
+            world_revision_id=world_revision_id,
             storyboard=deepcopy(storyboard),
         )
         snap_dir = _snapshots_dir(self.project_id) / snap.snapshot_id
@@ -452,6 +454,7 @@ class SnapshotManager:
                 data.get("story_history"), f"快照 {snapshot_id}"
             ),
             world_state_variables=dict(data.get("world_state_variables") or {}),
+            world_revision_id=str(data.get("world_revision_id") or ""),
             # 缺键/null = 本功能上线前的旧快照，分叉时以空稿起步（不得回读来源分支）
             storyboard=(
                 deserialize_storyboard(data["storyboard"], self.project_id, data.get("branch_id", ""))

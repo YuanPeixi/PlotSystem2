@@ -345,3 +345,21 @@ def apply_state_changes(
             continue
         entries = candidate
     return _nest(entries), rejected
+
+
+def normalize_environment_script(raw: object, allowed_objects: set[str]) -> dict[str, list[RevealEntry]]:
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for oid, items in raw.items():
+        if oid not in allowed_objects or not isinstance(items, list):
+            continue
+        entries = []
+        for item in items:
+            if isinstance(item, RevealEntry):
+                entries.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("condition"), str) and isinstance(item.get("content"), str):
+                entries.append(RevealEntry(condition=item["condition"], content=item["content"]))
+        if normalized := normalize_reveals(entries):
+            out[oid] = normalized
+    return out

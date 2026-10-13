@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from backend.agents.character_agent import CharacterAgent
 from backend.agents.environment_agent import EnvironmentAgent
 from backend.config import settings
-from backend.exceptions import LLMError
+from backend.exceptions import InvalidRequestError, LLMError
 from backend.models import (
     ENVIRONMENT_SPEAKER,
     RESERVED_SCENE_CONTEXT_KEYS,
@@ -32,7 +32,9 @@ from backend.models import (
     SpeakerMode,
     Storyboard,
     TurnKind,
+    WorldEvent,
     WorldObject,
+    WorldRevision,
     environment_turn_id,
     new_id,
 )
@@ -47,6 +49,7 @@ from backend.services.environment import (
     remaining_environment_quota,
 )
 from backend.services.objects import MAX_OBJECTS_PRESENT, describe_objects_for
+from backend.services.world import apply_operations, render_world_for_character
 from backend.snapshot import SnapshotManager
 from backend.utils.llm import estimate_tokens
 from backend.utils.logger import get_logger
@@ -64,6 +67,7 @@ EnvironmentCallback = Callable[[DialogueTurn, DialogueTurn | None], Awaitable[No
 # 刻意是同步回调：异步回调意味着调用点存在挂起可能，而这里要的恰恰是
 # "从告知到快照可见之间没有任何调度间隙"。
 AfterSnapshotCallback = Callable[[str], None] | None
+WorldCommitCallback = Callable[[WorldEvent, Scene], Awaitable[WorldRevision]] | None
 
 # 解析格式：*动作*、[内心独白]、其余为对白。
 # 独白认半角与全角方括号：格式规范写的是半角，模型时常写成全角，认漏了独白就留在对白里公开。
@@ -122,17 +126,28 @@ class SceneEngine:
         objects: Sequence[WorldObject] | None = None,
         environment_mode: str = EnvironmentMode.OFF.value,
         adjudicator: EnvironmentAgent | None = None,
+        world_revision: WorldRevision | None = None,
+        world_commit: WorldCommitCallback = None,
     ):
         self.scene = scene
         self.config = scene_config
         self.agents = character_agents
         self.snapshot_manager = snapshot_manager
+        self.world_revision = world_revision
+        self._world_commit = world_commit
+        if world_revision is not None:
+            state_labels = {identifier for fact in world_revision.facts.values()
+                            for identifier in (fact.attribute, fact.label) if identifier}
+            conflicts = state_labels.intersection(scene_config.initial_conditions)
+            if conflicts:
+                raise InvalidRequestError("场景条件不能覆盖世界属性，请在世界面板修改：" + "、".join(sorted(conflicts)))
+            self.scene.world_revision_id = world_revision.revision_id
         # 分支级世界变量（工单07）。开场即冻结、整场不变，因此可以安全地进 system
         # 消息而不破坏 prefix cache（契约3 补充条款）。场景内会变的环境状态归工单20，
         # 那条通道必须走 user 消息，两者不得混用。
         # 走构造参数而非 SceneConfig 字段：SceneConfig 是导演的规划产物，
         # 世界变量是运行期注入的，混进去会让 /scenes/plan 多返回一个恒空字段。
-        self.world_variables = self._reject_reserved(world_variables)
+        self.world_variables = self._reject_reserved(world_variables) if world_revision is None else {}
         # 分镜稿（工单18）只为让前/后置快照带上时点副本。**绝不**并进 scene_context
         # 或任何角色/selector 可见的上下文（红线 R1）：它含导演对全部角色
         # unknown_facts 的安排，泄漏出去角色就"知道剧本"了（契约1）。
@@ -166,6 +181,14 @@ class SceneEngine:
                             scene.scene_id, agent.name, "、".join(dropped),
                         )
                     self._object_briefs[agent.character_id] = brief
+
+        if self.world_revision is not None:
+            # Immutable definitions are selected by branch revision, including on forks.
+            present = self._cap_objects(objects or [])
+            self._objects = {obj.object_id: obj for obj in present}
+            for agent in character_agents:
+                brief, _ = describe_objects_for(present, agent.character_id)
+                self._object_briefs[agent.character_id] = brief
 
     def interrupt(self) -> None:
         """外部请求中断（如导演/暂停）。"""
@@ -241,6 +264,7 @@ class SceneEngine:
                 label=f"before:{self.config.name}",
                 story_history=self.scene.inherited_story_history,
                 world_state_variables=self.world_variables,
+                **({"world_revision_id": self.world_revision.revision_id} if self.world_revision else {}),
                 storyboard=self.storyboard,
             )
             self.scene.snapshot_id_before = snap_before.snapshot_id
@@ -375,6 +399,7 @@ class SceneEngine:
             # 本场评估产生的 world_state_delta 此刻还不存在（评估在后置快照之后），
             # 由 orchestrator 在 delta 落盘后经 record_world_state 补写（工单07 B3）。
             world_state_variables=self.world_variables,
+            **({"world_revision_id": self.world_revision.revision_id} if self.world_revision else {}),
             snapshot_id=after_snapshot_id,
             # 本场导演对分镜稿的调整同样在评估之后才有，由 orchestrator 补写
             storyboard=self.storyboard,
@@ -477,6 +502,16 @@ class SceneEngine:
     # ---- 环境裁决（工单20 PR-2a）----
     def _respond_extras(self, agent: CharacterAgent) -> dict:
         """adjudicate 档给角色多传的三样东西；其余档位为空，角色 prompt 与之前逐字相同。"""
+        if self.world_revision is not None:
+            return {
+                "objects_brief": self._object_briefs.get(agent.character_id, ""),
+                "attempt_only": self._adjudicate,
+                "environment": render_world_for_character(
+                    self.world_revision, agent.character_id, list(self._objects),
+                    location_id=self.config.location,
+                    character_names={a.character_id: a.name for a in self.agents},
+                ),
+            }
         if not self._adjudicate:
             return {}
         names = {oid: obj.name for oid, obj in self._objects.items()}
@@ -503,6 +538,9 @@ class SceneEngine:
         `_remember` 与周期固化（R6、陷阱 9），不另开记忆写入口。
         失败：动作置 failed、不生成环境回合 —— 绝不补一句"毫无反应"（设计单 §5.7）。
         """
+        if self.world_revision is not None:
+            await self._adjudicate_world_pending(source, turns, transcript, on_persist, on_environment)
+            return
         for intent in source.actions:
             if intent.status != ActionStatus.PENDING.value:
                 continue
@@ -579,6 +617,103 @@ class SceneEngine:
             if on_environment:
                 await on_environment(source, env)
 
+    async def _adjudicate_world_pending(
+        self, source: DialogueTurn, turns: list[DialogueTurn], transcript: list[str],
+        on_persist: PersistCallback, on_environment: EnvironmentCallback,
+    ) -> None:
+        for intent in source.actions:
+            if intent.status != ActionStatus.PENDING.value:
+                continue
+            if self._interrupt:
+                return
+            event_id = environment_turn_id(source.turn_id, intent.index)
+            if any(t.turn_id == event_id for t in turns):
+                intent.status = ActionStatus.RESOLVED.value
+                source.revision += 1
+                continue
+            obj = self._objects.get(intent.object_id)
+            actor = next((a for a in self.agents if a.character_id == source.character_id), None)
+            result = None
+            if obj is not None:
+                material = ""
+                if actor is not None:
+                    memories = await actor.retrieve_relevant_memory(intent.text, top_k=settings.MEMORY_TOP_K)
+                    material = "\n".join([
+                        *actor.card.known_facts, *actor.memory.short_term.recent(), *memories,
+                    ])
+                result = await self._adjudicator.adjudicate_world(
+                    obj, source.character_id, source.character_name, intent, self.world_revision,
+                    reveals=self.scene.environment_script.get(obj.object_id, []),
+                    actor_material=material, allowed_object_ids={obj.object_id},
+                )
+            if result is not None:
+                try:
+                    # Check the complete command before accepting its narration as a fact.
+                    apply_operations(self.world_revision, result.operations, event_id,
+                                     self.scene.participating_characters, source="environment",
+                                     allowed_objects={intent.object_id})
+                except InvalidRequestError as exc:
+                    logger.warning("环境变化校验失败：%s", exc)
+                    result = None
+            source.revision += 1
+            if result is None:
+                intent.status = ActionStatus.FAILED.value
+                self.scene.dialogue_log = list(turns)
+                if on_environment:
+                    await on_environment(source, None)
+                continue
+            env = DialogueTurn(
+                turn_id=event_id, scene_id=self.scene.scene_id, turn_number=len(turns) + 1,
+                kind=TurnKind.ENVIRONMENT.value, character_name=ENVIRONMENT_SPEAKER,
+                narration=result.narration, private_detail=result.private_detail or None,
+                perceived_by=[source.character_id] if source.character_id else [],
+                source_turn_id=source.turn_id, source_action_index=intent.index,
+                world_event_id=event_id,
+            )
+            event = WorldEvent(
+                event_id=event_id, project_id=self.scene.project_id, branch_id=self.scene.branch_id,
+                base_revision_id=self.world_revision.revision_id, source="environment",
+                source_id=f"{source.turn_id}#{intent.index}", scene_id=self.scene.scene_id,
+                operations=result.operations, observers=list(self.scene.participating_characters),
+                narration=result.narration,
+            )
+            intent.status = ActionStatus.RESOLVED.value
+            turns.append(env)
+            self.scene.dialogue_log = list(turns)
+            self.scene.turns_completed = len(turns)
+            try:
+                if self._world_commit is None:
+                    raise InvalidRequestError("统一环境运行需要原子世界提交入口")
+                revision = await self._world_commit(event, self.scene)
+            except InvalidRequestError as exc:
+                # Admission failures (for example an unknown entity reference) are terminal
+                # for this action; retrying the same invalid result cannot repair it.
+                turns.pop()
+                intent.status = ActionStatus.FAILED.value
+                self.scene.dialogue_log = list(turns)
+                self.scene.turns_completed = len(turns)
+                logger.warning("世界提交拒绝环境结果：%s", exc)
+                if on_environment:
+                    await on_environment(source, None)
+                continue
+            except BaseException:
+                # Pending action remains retryable; failed IO never invents a committed reaction.
+                turns.pop()
+                source.revision -= 1
+                intent.status = ActionStatus.PENDING.value
+                self.scene.dialogue_log = list(turns)
+                self.scene.turns_completed = len(turns)
+                raise
+            self.world_revision = revision
+            self.scene.world_revision_id = revision.revision_id
+            env.world_revision_id = revision.revision_id
+            transcript.append(self._turn_line(env))
+            await self._remember(env)
+            if self._should_consolidate(len(turns)):
+                await self._consolidate_all(len(turns), on_persist)
+            if on_environment:
+                await on_environment(source, env)
+
     # ---- 发言者选择 ----
     async def _select_speaker(
         self, transcript: list[str], turns: list[DialogueTurn]
@@ -591,7 +726,11 @@ class SceneEngine:
         if mode == SpeakerMode.SELECTOR.value and turns:
             if self._selector is None:
                 self._selector = ScoringSpeakerSelector(self.agents)
-            agent, trace = await self._selector.select(transcript, turns)
+            agent, trace = await self._selector.select(
+                transcript, turns,
+                **({"environments": {a.character_id: self._respond_extras(a)["environment"] for a in self.agents}}
+                   if self.world_revision else {}),
+            )
             return agent, _selector_notice(trace)
         if mode not in _KNOWN_SPEAKER_MODES and not self._unknown_mode_warned:
             # 只警告一次，避免每轮刷屏；数据来源可能是绕过 API 写入的历史脏数据

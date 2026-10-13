@@ -83,6 +83,7 @@ class CreateSceneRequest(BaseModel):
     location: str = ""
     # 本场在场物件的 ID（工单24）；条数上限与存在性在业务层校验（422）
     objects_present: list[str] = Field(default_factory=list, max_length=50)
+    environment_script: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
     initial_conditions: dict = Field(default_factory=dict)
     max_turns: int = 12
     opening_narration: str = ""
@@ -193,3 +194,21 @@ class OutputRequest(BaseModel):
     format: str  # web_novel | screenplay | stage_play | summary | raw
     branch_id: str | None = None
     scene_ids: list[str] = Field(default_factory=list)
+
+
+class WorldCommandRequest(BaseModel):
+    request_id: str = Field(..., min_length=1, max_length=128)
+    revision_id: str = Field(..., min_length=1)
+    operations: list[dict] = Field(default_factory=list, max_length=32)
+    observers: list[str] = Field(default_factory=list, max_length=100)
+
+
+class WorldDefinitionsRequest(BaseModel):
+    request_id: str = Field(..., min_length=1, max_length=128)
+    revision_id: str = Field(..., min_length=1)
+
+
+class WorldMigrationRequest(BaseModel):
+    request_id: str = Field(..., min_length=1, max_length=128)
+    preview_revision: str = Field(..., min_length=1)
+    branches: dict[str, list[dict]] = Field(default_factory=dict)

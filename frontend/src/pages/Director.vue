@@ -10,6 +10,7 @@ import type { Scene, SceneConfig, WorldObject } from '@/types'
 import DirectorPanel from '@/components/DirectorPanel.vue'
 import CharacterInspector from '@/components/CharacterInspector.vue'
 import StoryboardPanel from '@/components/StoryboardPanel.vue'
+import WorldPanel from '@/components/WorldPanel.vue'
 import BranchRail from '@/components/director/BranchRail.vue'
 import StageView from '@/components/director/StageView.vue'
 import SceneComposer from '@/components/director/SceneComposer.vue'
@@ -45,7 +46,7 @@ const forkNotes = ref('')
 // 舞台处于"开演前"：写本场意图 → 导演规划 → 就地改草稿 → 开演
 const composing = ref(false)
 // 右侧检查器：当前标签页；窄屏下它是抽屉，inspOpen 控制显隐
-const inspTab = ref<'eval' | 'decide' | 'board' | 'snaps'>('eval')
+const inspTab = ref<'eval' | 'decide' | 'board' | 'world' | 'snaps'>('eval')
 const inspOpen = ref(false)
 // 首次加载期间不让 branchId 的 watcher 推翻刚从 URL 恢复出来的场景
 let bootstrapped = false
@@ -61,6 +62,7 @@ const INSP_TABS = [
   { key: 'eval', label: '评估' },
   { key: 'decide', label: '决策' },
   { key: 'board', label: '分镜稿' },
+  { key: 'world', label: '世界' },
   { key: 'snaps', label: '快照' },
 ] as const
 
@@ -256,6 +258,7 @@ async function startScene() {
       participating_characters: draft.value.participating_characters,
       location: draft.value.location,
       objects_present: draft.value.objects_present || [],
+      environment_script: draft.value.environment_script || {},
       initial_conditions: draft.value.initial_conditions,
       max_turns: draft.value.max_turns,
       opening_narration: draft.value.opening_narration,
@@ -569,6 +572,12 @@ async function stopAutopilot() {
             <div v-show="inspTab === 'board'">
               <!-- 本场评估到达时刷新：导演的路线图调整随评估一起落盘 -->
               <StoryboardPanel :project-id="props.projectId" :branch-id="branchId" :refresh-key="sceneStore.evaluation" />
+            </div>
+            <div v-show="inspTab === 'world'">
+              <WorldPanel :project-id="props.projectId" :branch-id="branchId"
+                :characters="charStore.characters" :objects="objects" :busy="sceneStore.running"
+                :refresh-key="sceneStore.turns.length"
+                @migrated="projectStore.selectProject(props.projectId)" />
             </div>
             <div v-show="inspTab === 'snaps'">
               <p v-if="!branchSnapshots.length" class="dim small">还没有快照。每场推演会自动生成开场前与结束后两份。</p>

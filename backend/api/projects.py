@@ -20,6 +20,7 @@ async def create_project(req: CreateProjectRequest) -> ApiResponse:
         description=req.description,
         narrative_goal=req.narrative_goal,
         ending_criteria=req.ending_criteria,
+        world_schema_version=2,
     )
     await repository.save_project(project)
     return ApiResponse.ok(to_dict(project))

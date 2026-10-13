@@ -18,6 +18,7 @@ import type {
   WorldObject,
   WorldObjectCreate,
   WorldObjectUpdate,
+  WorldRevision, LegacyWorldState, WorldEvent, WorldOperation, WorldMigrationPreview,
 } from '@/types'
 
 const API_BASE = '/api/v1'
@@ -55,6 +56,20 @@ async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T>
 }
 
 export const api = {
+  getWorldState: (pid: string, bid: string) =>
+    unwrap<WorldRevision | LegacyWorldState>(http.get(`/projects/${pid}/branches/${bid}/world-state`)),
+  getWorldEvents: (pid: string, bid: string) =>
+    unwrap<WorldEvent[]>(http.get(`/projects/${pid}/branches/${bid}/world/events`)),
+  worldCommand: (pid: string, bid: string, payload: {
+    request_id: string; revision_id: string; operations: WorldOperation[]; observers: string[]
+  }) => unwrap<WorldRevision>(http.post(`/projects/${pid}/branches/${bid}/world/commands`, payload)),
+  adoptWorldDefinitions: (pid: string, bid: string, payload: { request_id: string; revision_id: string }) =>
+    unwrap<WorldRevision>(http.post(`/projects/${pid}/branches/${bid}/world/adopt-definitions`, payload)),
+  previewWorldMigration: (pid: string) =>
+    unwrap<WorldMigrationPreview>(http.get(`/projects/${pid}/world/migration-preview`)),
+  migrateWorld: (pid: string, payload: { request_id: string; preview_revision: string; branches: Record<string, WorldOperation[]> }) =>
+    unwrap<Record<string, string>>(http.post(`/projects/${pid}/world/migrate`, payload)),
+
   // 项目
   listProjects: () => unwrap<Project[]>(http.get('/projects')),
   createProject: (payload: {

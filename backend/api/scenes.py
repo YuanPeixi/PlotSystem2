@@ -13,6 +13,7 @@ from backend.config import settings
 from backend.exceptions import SceneNotFoundError
 from backend.models import Scene, SceneStatus, new_id
 from backend.services import events, orchestrator, repository
+from backend.services.environment import normalize_environment_script
 from backend.utils.serializer import to_dict
 
 # 场景创建/规划挂在项目下，控制类接口用独立前缀
@@ -65,6 +66,7 @@ async def create_scene(project_id: str, req: CreateSceneRequest) -> ApiResponse:
         participating_characters=req.participating_characters,
         location=req.location,
         objects_present=objects_present,
+        environment_script=normalize_environment_script(req.environment_script, set(objects_present)),
         initial_conditions=initial,
         max_turns=req.max_turns,
         speaker_mode=req.speaker_mode or settings.DEFAULT_SPEAKER_MODE,

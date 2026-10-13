@@ -18,17 +18,26 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 
 from backend.config import settings
-from backend.exceptions import LLMError
-from backend.models import ActionIntent, LLMPurpose, RevealEntry, WorldObject
+from backend.exceptions import InvalidRequestError, LLMError
+from backend.models import (
+    ActionIntent,
+    LLMPurpose,
+    RevealEntry,
+    WorldAdjudication,
+    WorldObject,
+    WorldRevision,
+)
 from backend.services.environment import (
     ENVIRONMENT_ATTR_CHARS,
     Adjudication,
     normalize_reveals,
     parse_adjudication,
 )
+from backend.services.world import object_state, parse_operations
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
@@ -140,3 +149,108 @@ class EnvironmentAgent:
             logger.warning("环境裁决（物件 %s）有 %d 处被规整：%s",
                            obj.name, len(result.rejected), "；".join(result.rejected))
         return result
+
+
+    async def adjudicate_world(
+        self, obj: WorldObject, actor_id: str, actor_name: str, intent: ActionIntent,
+        revision: WorldRevision, *, reveals: Sequence[RevealEntry] = (),
+        actor_material: str = "", allowed_object_ids: set[str] | None = None,
+    ) -> WorldAdjudication | None:
+        allowed = allowed_object_ids or {obj.object_id}
+        entries = normalize_reveals(reveals)
+        # Related state is allowed; unrelated definitions and all character secrets are absent.
+        payload = {
+            "actor": {"id": actor_id, "name": actor_name}, "action": intent.text,
+            "target": {"id": obj.object_id, "name": obj.name, "description": obj.public_description,
+                       "hidden_rules": obj.hidden_rules},
+            "allowed_objects": [{"id": oid, "name": revision.definitions[oid].name,
+                                 "state": object_state(revision, oid)}
+                                for oid in sorted(allowed) if oid in revision.definitions],
+            "reveals": [{"index": i, "condition": r.condition} for i, r in enumerate(entries, 1)],
+        }
+        try:
+            raw = await chat_safe(
+                [{"role": "user", "content": _UNIFIED_PROMPT.format(payload=json.dumps(payload, ensure_ascii=False))}],
+                temperature=self.temperature, model=self.model, max_tokens=1800, purpose=LLMPurpose.ADJUDICATE,
+            )
+            parsed = parse_world_adjudication(raw, allowed)
+            if parsed is None:
+                logger.warning("统一环境裁决输出不可用（物件 %s）", obj.name)
+                return None
+            result, index, effect = parsed
+            if index:
+                if index > len(entries):
+                    return None
+                result.private_detail = entries[index - 1].content
+            elif effect and actor_material:
+                # Separate call: it receives no hidden rules, script or other characters' information.
+                try:
+                    reveal = await chat_safe(
+                        [{"role": "user", "content": "只根据当事人已知材料生成私密揭示，不编造新事实。"
+                          "材料不足只写可感知现象。只输出一小段文字。\n效果：投射当事人自己已知的一段记忆。"
+                          + "\n当事人材料：\n" + actor_material}],
+                        temperature=self.temperature, model=self.model, max_tokens=300, purpose=LLMPurpose.ADJUDICATE,
+                    )
+                    result.private_detail = reveal.strip()
+                except LLMError as exc:
+                    # Public adjudication remains valid even when its private reveal cannot be generated.
+                    logger.warning("私密揭示生成失败，保留已裁决的公开结果：%s", exc)
+            return result
+        except LLMError as exc:
+            logger.warning("统一环境裁决失败（物件 %s）：%s", obj.name, exc)
+            return None
+
+
+_UNIFIED_PROMPT = """你是剧情推演的环境裁决者。只按给定规则裁决一次尝试。
+输入数据：
+{payload}
+
+要求：
+- executable 表示物理上能否执行；triggered 只按隐藏规则判定，不创造规则。
+- narration 只写所有在场者能观察到的现象，不泄露隐藏规则、秘密或内心。
+- operations 是已发生的物件属性变化，不是言论、猜测或知情声明。
+- 只改变本次允许的物件。每项给稳定 attribute（重复动作复用既有属性标识），可选中文 label。
+- 持有者、位置等实体引用使用 {{"kind":"character|object|location","id":"稳定ID"}}。
+- bool 和数字保持类型；set 写值，unset 清除属性；不根据公开描述推翻已有属性。
+- 每项 subject_kind 固定 object，visibility=observable 只放现场能看出的变化；不可观察的内部状态用 hidden，
+  不在 narration 中透露隐藏属性名或值。最多 32 项。不因展示预算省略事实。
+- reveal_index 只选择匹配的预制揭示编号，未匹配给 0。你看不到揭示内容。
+- reveal_effect 只有触发当事人记忆揭示时给固定代码 actor_memory，否则空串。禁止任何自由文本或秘密。
+输出一个 JSON 对象：
+{{"executable":true,"triggered":false,"narration":"…","reveal_index":0,"reveal_effect":"",
+"operations":[{{"op":"set","subject_kind":"object","subject_id":"ID","attribute":"open",
+"label":"开启","value":true,"visibility":"observable"}}]}}
+"""
+
+
+def parse_world_adjudication(raw: str, allowed_objects: set[str]) -> tuple[WorldAdjudication, int, str] | None:
+    try:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return None
+        executable = data.get("executable")
+        triggered = data.get("triggered")
+        narration = data.get("narration")
+        if type(executable) is not bool or type(triggered) is not bool:
+            return None
+        if not isinstance(narration, str) or not narration.strip() or len(narration) > 2000:
+            return None
+        operations = parse_operations(data.get("operations", []))
+        if not executable and (triggered or operations):
+            return None
+        if any(o.subject_kind != "object" or o.subject_id not in allowed_objects
+               or o.visibility not in {"observable", "hidden"} for o in operations):
+            return None
+        index = data.get("reveal_index", 0)
+        effect = data.get("reveal_effect", "")
+        if type(index) is not int or index < 0 or not isinstance(effect, str) or effect not in {"", "actor_memory"}:
+            return None
+        if not triggered and (index or effect):
+            return None
+        return WorldAdjudication(executable=executable, triggered=triggered,
+                                 narration=" ".join(narration.split()), operations=operations), index, effect
+    except (ValueError, TypeError, KeyError, InvalidRequestError):
+        return None

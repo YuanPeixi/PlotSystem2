@@ -13,6 +13,7 @@ import re
 from collections import Counter
 
 from backend.config import settings
+from backend.exceptions import InvalidRequestError
 from backend.knowledge_graph import GraphManager
 from backend.models import (
     MAX_UNRESOLVED_THREADS,
@@ -29,10 +30,13 @@ from backend.models import (
     StoryBeat,
     Storyboard,
     StoryboardPatch,
+    WorldObject,
     goal_revision,
 )
 from backend.services import inspection
+from backend.services.environment import normalize_environment_script
 from backend.services.storyboard import describe_storyboard, single_line
+from backend.services.world import parse_operations
 from backend.services.world_state import (
     describe_world_state,
     merge_world_variables,
@@ -411,6 +415,7 @@ class DirectorAgent:
         prior_synopses: list[str] | None = None,
         prior_threads: list[str] | None = None,
         storyboard: Storyboard | None = None,
+        available_objects: list[WorldObject] | None = None,
     ) -> SceneConfig:
         """规划下一场。
 
@@ -432,6 +437,12 @@ class DirectorAgent:
             threads="\n".join(f"- {t}" for t in threads) or "（暂无）",
             world_state=describe_world_state(world_state),
         )
+        if available_objects is not None:
+            prompt += "\n【可选物件，仅导演可见】\n" + "\n".join(
+                f"{obj.object_id}：{obj.name}；规则：{'；'.join(obj.hidden_rules)}" for obj in available_objects
+            ) + "\nJSON 另给 objects_present（物件ID列表）、environment_script（物件ID映射到"
+            "condition/content 揭示列表）。揭示内容只给执行者，不放入 initial_conditions 或开场白。"
+            "initial_conditions 只放本场提示，不覆盖已有世界属性；宏观变化在场间命令中提出。"
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_PLAN_TEMPERATURE),
@@ -451,7 +462,13 @@ class DirectorAgent:
             chosen_ids = self._fallback_characters(available_characters, history_scenes)
             logger.warning("导演未选出任何有效角色，按最近出场频次兜底为：%s", chosen_ids)
 
+        allowed = {obj.object_id for obj in available_objects or []}
+        raw_objects = data.get("objects_present")
+        selected = list(dict.fromkeys(oid for oid in (raw_objects if isinstance(raw_objects, list) else [])
+                                     if isinstance(oid, str) and oid in allowed))[:10]
         return SceneConfig(
+            objects_present=selected,
+            environment_script=normalize_environment_script(data.get("environment_script"), set(selected)),
             name=data.get("name", "未命名场景"),
             description=data.get("description") or scene_intent or narrative_goal,
             participating_characters=chosen_ids,
@@ -475,6 +492,7 @@ class DirectorAgent:
         prior_synopses: list[str] | None = None,
         world_state: dict[str, str] | None = None,
         storyboard: Storyboard | None = None,
+        unified_world: bool = False,
     ) -> SceneEvaluation:
         transcript = await self._build_transcript(dialogue_log)
         # 没有主线目标就没有"推进到哪"：自评数字照收，会在单调钳制下一路爬向一个不存在的终点
@@ -505,6 +523,18 @@ class DirectorAgent:
             storyboard_header=_STORYBOARD_HEADER,
             storyboard=describe_storyboard(storyboard, narrative_goal),
         )
+        if unified_world:
+            begin = prompt.index("- world_state_delta")
+            end = prompt.index("- 结局判定", begin)
+            prompt = prompt[:begin] + (
+                "- 本场物件变化已经由环境事务提交，不能在评估中重写。\n"
+                "- world_operations 只提出下一场开始前的宏观世界变化。角色言论、推测、"
+                "本场才揭示给在场者的信息不能提升成全世界已知事实。\n"
+                "- 每项：op=set/unset，subject_kind=world，subject_id=world，attribute 使用稳定标识，"
+                "label 为中文名，value 保留标量类型，visibility=global 仅限确定可广泛传播的事实。\n"
+                "- 没有确定变化给 []，world_state_delta 恒为 {}。\n"
+            ) + prompt[end:]
+            prompt += '\n输出另含 "world_operations": []。这是场间提案，尚未应用。'
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_EVAL_TEMPERATURE),
@@ -572,9 +602,21 @@ class DirectorAgent:
             unresolved_threads=_normalize_threads(
                 data.get("unresolved_threads"), fallback=prior
             ),
-            world_state_delta=normalize_world_delta(data.get("world_state_delta")),
+            world_state_delta={} if unified_world else normalize_world_delta(data.get("world_state_delta")),
+            world_operations=self._world_proposals(data.get("world_operations")) if unified_world else [],
             storyboard_patch=parse_storyboard_patch(data.get("storyboard_patch")),
         )
+
+    @staticmethod
+    def _world_proposals(raw: object) -> list:
+        try:
+            operations = parse_operations(raw or [])
+            if any(o.subject_kind != "world" or o.visibility != "global" for o in operations):
+                raise InvalidRequestError("导演场间提案只许修改可广泛传播的世界层属性")
+            return operations
+        except InvalidRequestError as exc:
+            logger.warning("导演世界提案无效，未应用：%s", exc)
+            return []
 
     @staticmethod
     def _fit_synopses(synopses: list[str]) -> str:

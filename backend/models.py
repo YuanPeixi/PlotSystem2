@@ -398,6 +398,7 @@ class Project:
     # 又允许被评方改写的话，导演会把目标改成自己刚演出来的东西，度量归零。
     narrative_goal: str = ""
     ending_criteria: str = ""  # 可选：结局判定标准（自然语言）
+    world_schema_version: int = 1  # Explicit migration preserves existing projects.
     created_at: datetime = field(default_factory=now)
     updated_at: datetime = field(default_factory=now)
 
@@ -418,6 +419,87 @@ class WorldState:
     branch_id: str = ""
     variables: dict[str, str] = field(default_factory=dict)
     updated_at: datetime = field(default_factory=now)
+
+
+@dataclass
+class WorldFact:
+    """A typed, addressed fact. Visibility never implies historical knowledge."""
+
+    subject_kind: str = "world"
+    subject_id: str = "world"
+    attribute: str = ""
+    label: str = ""
+    value: str | bool | int | float | dict | None = None
+    visibility: str = "hidden"  # global / observable / hidden
+    source_event_id: str = ""
+    source_branch_id: str = ""
+
+
+@dataclass
+class WorldObservation:
+    """What a character learned at a particular revision, including deletions."""
+
+    fact: WorldFact = field(default_factory=WorldFact)
+    event_id: str = ""
+    deleted: bool = False
+
+
+@dataclass
+class WorldOperation:
+    """Explicit set/unset; null is a value, never an implicit deletion."""
+
+    op: str = "set"
+    subject_kind: str = "world"
+    subject_id: str = "world"
+    attribute: str = ""
+    label: str = ""
+    value: str | bool | int | float | dict | None = None
+    visibility: str = "hidden"
+
+
+@dataclass
+class WorldRevision:
+    """Immutable branch-world version; definitions and observations travel with it."""
+
+    revision_id: str = field(default_factory=new_id)
+    project_id: str = ""
+    parent_revision_id: str = ""
+    schema_version: int = 2
+    facts: dict[str, WorldFact] = field(default_factory=dict)
+    removed_facts: dict[str, WorldFact] = field(default_factory=dict)
+    observations: dict[str, dict[str, WorldObservation]] = field(default_factory=dict)
+    definitions: dict[str, WorldObject] = field(default_factory=dict)
+    legacy_records: dict[str, str] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=now)
+
+
+@dataclass
+class WorldEvent:
+    """Durable command and its result; event_id is also the idempotency key."""
+
+    event_id: str = ""
+    project_id: str = ""
+    branch_id: str = ""
+    base_revision_id: str = ""
+    revision_id: str = ""
+    source: str = "user"  # environment / director / user / definitions / migration
+    source_id: str = ""
+    scene_id: str = ""
+    operations: list[WorldOperation] = field(default_factory=list)
+    observers: list[str] = field(default_factory=list)
+    narration: str = ""
+    created_at: datetime = field(default_factory=now)
+
+
+@dataclass
+class WorldAdjudication:
+    """Validated environment result, independent of prompt display budgets."""
+
+    executable: bool = True
+    triggered: bool = False
+    narration: str = ""
+    private_detail: str = ""
+    operations: list[WorldOperation] = field(default_factory=list)
 
 
 @dataclass
@@ -630,6 +712,8 @@ class DialogueTurn:
     source_action_index: int = -1
     #: 服务端每改写一次**已落盘**的轮次就 +1。SSE `turn_update` 靠它判新旧（设计单 §5.2）
     revision: int = 0
+    world_event_id: str = ""
+    world_revision_id: str = ""
 
 
 @dataclass
@@ -674,6 +758,8 @@ class Scene:
     #: 值为 None = 本场清除了该属性（跨场延续时据此删除，PR-2b）。
     #: 只许放所有在场角色都能感知的公开状态（契约1），私密结果只进 private_detail
     environment_state: dict[str, dict[str, str | None]] = field(default_factory=dict)
+    world_revision_id: str = ""  # Unified authoritative state; legacy environment_state is unused in v2.
+    environment_script: dict[str, list[RevealEntry]] = field(default_factory=dict)
 
 
 @dataclass
@@ -702,6 +788,7 @@ class SceneConfig:
     participating_characters: list[str] = field(default_factory=list)
     location: str = ""
     objects_present: list[str] = field(default_factory=list)
+    environment_script: dict[str, list[RevealEntry]] = field(default_factory=dict)
     initial_conditions: dict = field(default_factory=dict)
     max_turns: int = 20
     speaker_mode: str = SpeakerMode.ROUND_ROBIN.value
@@ -752,6 +839,7 @@ class SceneEvaluation:
     # 本场对世界变量的增量修改（工单07）。值为 None 表示"该变量不再成立，删除它"，
     # 因此反序列化必须保留 None，不能当成空串。空 dict = 本场没有改变世界层事实。
     world_state_delta: dict[str, str | None] = field(default_factory=dict)
+    world_operations: list[WorldOperation] = field(default_factory=list)
     # 本场评估是针对哪个结束态快照给出的。`evaluations` 以 scene_id 为主键且
     # INSERT OR REPLACE，一场只留最新一份：continue 续跑会覆盖掉旧评估。
     # 归属戳随历史副本保留用于追溯；分叉实际继承快照的历史副本（空 = 旧记录）。
@@ -864,6 +952,7 @@ class Snapshot:
     # 该时点的世界变量副本（工单07）。分叉据此让新分支继承世界状态 ——
     # 世界状态是分支级文件，不随快照目录走，不冻结进来就会"一分叉世界重置"。
     world_state_variables: dict[str, str] = field(default_factory=dict)
+    world_revision_id: str = ""  # Immutable world version, including rules and observation history.
     # 时点化的导演评估副本。不能通过 scene_id 回读后来被 continue 覆盖的评估。
     story_history: list[StoryRecord] | None = None
     # 时点化的分镜稿副本（工单18）。None = 本功能上线前的旧快照，分叉时以空稿起步，

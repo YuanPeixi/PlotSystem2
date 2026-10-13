@@ -19,6 +19,7 @@ from backend.exceptions import (
     ConflictError,
     InvalidRequestError,
     PlotSystemError,
+    ProjectNotFoundError,
     SceneNotFoundError,
     SnapshotNotFoundError,
 )
@@ -58,6 +59,7 @@ from backend.models import (
 )
 from backend.scene_engine import SceneEngine
 from backend.services import autopilot, events, inspection, repository
+from backend.services.environment import normalize_environment_script
 from backend.services.objects import (
     MAX_OBJECTS_PRESENT,
     MAX_PROJECT_OBJECTS,
@@ -74,6 +76,7 @@ from backend.services.storyboard import (
     is_goal_stale,
     merge_storyboard_patch,
 )
+from backend.services.world import capture_current_observations, director_variables
 from backend.services.world_state import merge_world_variables
 from backend.snapshot import SnapshotManager
 from backend.utils.logger import get_logger
@@ -237,6 +240,7 @@ async def reconcile_stale_scenes() -> None:
     前端会永远显示"模拟中"且无法再次启动。这里只改状态、不自动重跑 LLM，
     已产生的轮次都已逐轮落盘，用户可以显式续跑。
     """
+    await repository.reconcile_world_executions()
     stale = await repository.list_scenes_by_status(SceneStatus.RUNNING.value)
     for scene in stale:
         scene.status = SceneStatus.PAUSED.value
@@ -382,6 +386,15 @@ async def _load_inherited_states(
 # ---------------------------------------------------------------------------
 
 
+async def _unified_world(project_id: str, branch_id: str):
+    revision = await repository.get_branch_world(project_id, branch_id)
+    if revision is None:
+        revision = await repository.initialize_branch_world(
+            project_id, branch_id, definitions=await repository.list_objects(project_id)
+        )
+    return revision
+
+
 async def plan_scene(
     project_id: str,
     branch_id: str,
@@ -408,6 +421,7 @@ async def plan_scene(
     if anchor is not None:
         _, threads, synopses = await _story_context(anchor, goal, sm=sm)
     world = await repository.get_world_state(project_id, branch_id)
+    unified = await _unified_world(project_id, branch_id) if project.world_schema_version == 2 else None
     storyboard = await repository.get_storyboard(project_id, branch_id)
     director = DirectorAgent(project_id, GraphManager(project_id), sm)
     return await director.plan_scene(
@@ -418,7 +432,8 @@ async def plan_scene(
         history_scenes=recent,
         scene_intent=scene_intent,
         # 看不见世界状态的导演会排出自相矛盾的场次（例如把已被烧毁的城池设为地点）
-        world_state=world.variables,
+        world_state=director_variables(unified) if unified else world.variables,
+        **({"available_objects": list(unified.definitions.values())} if unified else {}),
         prior_synopses=synopses,
         prior_threads=threads,
         storyboard=storyboard,
@@ -578,6 +593,7 @@ async def create_scene_from_config(
         participating_characters=config.participating_characters,
         location=config.location,
         objects_present=list(config.objects_present),
+        environment_script=normalize_environment_script(config.environment_script, set(config.objects_present)),
         initial_conditions=initial_conditions,
         max_turns=config.max_turns,
         speaker_mode=config.speaker_mode,
@@ -616,8 +632,24 @@ async def run_scene(scene_id: str) -> None:
     final_status: dict | None = None
     # 评估连同世界变量/分镜稿补写全部成功才非空，AutoPilot 据此判断能否往下走
     evaluated: SceneEvaluation | None = None
+    world_execution_token = ""
+    schema_lock = None
+    unified = None
     try:
         scene = await repository.get_scene(scene_id)
+        initialization_lock = _branch_lock(scene.project_id, "__world_schema__")
+        await initialization_lock.acquire()
+        schema_lock = initialization_lock
+        project = await repository.get_project(scene.project_id)
+        if project.world_schema_version == 2:
+            if scene.dialogue_log and not scene.world_revision_id:
+                raise ConflictError("旧场景历史未迁入新世界，请从快照分叉后继续推演")
+            unified = await _unified_world(scene.project_id, scene.branch_id)
+            world_execution_token = await repository.acquire_world_execution(
+                scene.project_id, scene.branch_id, scene.scene_id
+            )
+            if scene.world_revision_id and scene.world_revision_id != unified.revision_id:
+                raise ConflictError("本场起点之后分支世界已推进；请从该场快照分叉后续跑")
         # continue 的多段累加在场景已有的计数上
         meter.seed(scene.llm_usage)
 
@@ -638,6 +670,7 @@ async def run_scene(scene_id: str) -> None:
             participating_characters=scene.participating_characters,
             location=scene.location,
             objects_present=list(scene.objects_present),
+            environment_script=deepcopy(scene.environment_script),
             initial_conditions=scene.initial_conditions,
             max_turns=scene.max_turns,
             speaker_mode=scene.speaker_mode,
@@ -656,13 +689,26 @@ async def run_scene(scene_id: str) -> None:
         # 同一场的前后两段可能处于不同档位
         environment_mode = settings.ENVIRONMENT_MODE
         present_objects = (
-            await _present_objects(scene)
-            if environment_mode != EnvironmentMode.OFF.value
-            else []
+            [unified.definitions[oid] for oid in scene.objects_present if oid in unified.definitions]
+            if unified else (await _present_objects(scene) if environment_mode != EnvironmentMode.OFF.value else [])
         )
+
+        async def _commit_world(event, current_scene):
+            _sync_usage()
+            target = next((a.object_id for t in current_scene.dialogue_log for a in t.actions
+                           if f"{t.turn_id}#{a.index}" == event.source_id), "")
+            return await repository.commit_world_event(
+                scene.project_id, scene.branch_id, event_id=event.event_id,
+                expected_revision_id=event.base_revision_id, operations=event.operations,
+                source=event.source, source_id=event.source_id, observers=event.observers,
+                narration=event.narration, scene=current_scene, execution_token=world_execution_token,
+                allowed_objects={target},
+            )
+
         engine = SceneEngine(
             scene, config, agents, sm,
             world_variables=world.variables, storyboard=opening_board,
+            **({"world_revision": unified, "world_commit": _commit_world} if unified else {}),
             objects=present_objects, environment_mode=environment_mode,
             # 裁决器由这里构造后注入（R8）；每场一个实例，用导演模型
             adjudicator=(
@@ -671,6 +717,15 @@ async def run_scene(scene_id: str) -> None:
                 else None
             ),
         )
+        if unified is not None:
+            staged = deepcopy(unified)
+            if capture_current_observations(staged, scene.participating_characters, scene.objects_present, scene.location):
+                unified = await repository.commit_world_event(
+                    scene.project_id, scene.branch_id, event_id=f"perception:{scene.scene_id}:{unified.revision_id}",
+                    expected_revision_id=unified.revision_id, operations=[], source="observation",
+                    source_id=scene.scene_id, scene=scene, execution_token=world_execution_token,
+                )
+                engine.world_revision = unified
         # continue 续跑：注入历史 transcript，让角色知道之前说了什么
         if scene.dialogue_log:
             engine.inject_history(scene.dialogue_log)
@@ -681,6 +736,8 @@ async def run_scene(scene_id: str) -> None:
         scene.status = SceneStatus.RUNNING.value
         _sync_usage()
         await repository.save_scene(scene)
+        schema_lock.release()
+        schema_lock = None
         await events.publish(scene_id, "status", {"status": "running"})
 
         async def _persist_scene() -> None:
@@ -697,7 +754,8 @@ async def run_scene(scene_id: str) -> None:
             # 一次落盘提交整个裁决结果（环境回合 + 动作状态 + 来源 revision + 物件状态），
             # 之后才推送（R5）。先推 turn_update 再推 turn：前端按 turn_id 去重，已推过的
             # 来源轮次只能以"更新"的形式送达（设计单 §5.2）
-            await _persist_scene()
+            if unified is None or env_turn is None:
+                await _persist_scene()
             await events.publish(scene_id, "turn_update", to_dict(source))
             if env_turn is not None:
                 await events.publish(scene_id, "turn", to_dict(env_turn))
@@ -759,7 +817,8 @@ async def run_scene(scene_id: str) -> None:
                         prior_progress=prior_progress,
                         prior_threads=prior_threads,
                         prior_synopses=prior_synopses,
-                        world_state=world.variables,
+                        world_state=director_variables(engine.world_revision) if unified else world.variables,
+                        **({"unified_world": True} if unified else {}),
                         storyboard=board_seen,
                     )
                 evaluation.llm_usage = eval_meter.snapshot()
@@ -778,7 +837,8 @@ async def run_scene(scene_id: str) -> None:
                         "message": "后置快照历史补写失败；从该快照分叉可能缺少本场评估。",
                         "fatal": False,
                     })
-                await _apply_world_delta(scene, evaluation, result.snapshot_id_after, sm)
+                if unified is None:
+                    await _apply_world_delta(scene, evaluation, result.snapshot_id_after, sm)
                 # 同在 _pending_world_patch 守卫的窗口内：补写完成前该快照不可分叉
                 await _apply_storyboard_patch(
                     scene, evaluation, board_seen, seen_revision, result.snapshot_id_after, sm
@@ -805,6 +865,11 @@ async def run_scene(scene_id: str) -> None:
         # 失败也要落库：否则场景永远停在 running，前端既显示"模拟中"又收不到任何进展
         if scene is not None:
             try:
+                if unified is not None:
+                    persisted = await repository.get_scene(scene.scene_id)
+                    if persisted.world_revision_id != scene.world_revision_id:
+                        # A commit may have succeeded before its response failed. Preserve its result.
+                        scene = persisted
                 scene.status = SceneStatus.PAUSED.value
                 scene.llm_usage = meter.snapshot()
                 await repository.save_scene(scene)
@@ -817,6 +882,10 @@ async def run_scene(scene_id: str) -> None:
     finally:
         _running_engines.pop(scene_id, None)
         _active_scenes.discard(scene_id)
+        if schema_lock is not None:
+            schema_lock.release()
+        if scene is not None and world_execution_token:
+            await repository.release_world_execution(scene.project_id, scene.branch_id, world_execution_token)
         usage_deactivate(usage_token)
 
     if final_status is None:
@@ -1217,13 +1286,21 @@ async def fork_from_snapshot(
     await sm.clone_collections_for_branch(snapshot_id, branch_id)
     # 世界变量同理（I3）：先落盘，失败就不该留下一条"世界被重置"的分支。
     # 空变量也照写，好让这条分支的起点是显式的空，而不是"文件还没建"。
-    await repository.save_world_state(
-        WorldState(
-            project_id=project_id,
-            branch_id=branch_id,
-            variables=dict(snap.world_state_variables),
+    try:
+        project = await repository.get_project(project_id)
+        unified_fork = project.world_schema_version == 2
+    except ProjectNotFoundError:
+        # Legacy snapshots can outlive project metadata; their existing fork behavior remains valid.
+        unified_fork = bool(snap.world_revision_id)
+    if unified_fork:
+        await repository.initialize_branch_world(
+            project_id, branch_id, from_revision_id=snap.world_revision_id,
+            legacy_records=snap.world_state_variables,
         )
-    )
+    else:
+        await repository.save_world_state(
+            WorldState(project_id=project_id, branch_id=branch_id, variables=dict(snap.world_state_variables))
+        )
     # 分镜稿同理（工单18 §3.5）：失败就不该留下一条"导演失忆"的分支。
     # 分叉说明走确定性模板，不调 LLM（红线 R4）
     if snap.storyboard is None:
@@ -1269,6 +1346,7 @@ async def fork_from_snapshot(
         location=src.location if src else "",
         # 不核对存在性：分叉只读来源，悬空 ID 由消费方跳过（同 clamp_objects_present）
         objects_present=list(src.objects_present) if src else [],
+        environment_script=deepcopy(src.environment_script) if src else {},
         initial_conditions={**base_conditions, **(conditions or {})},
         max_turns=src.max_turns if src else 20,
         # 漏传会让 selector 场景静默退回轮询（CLAUDE.md §4.2 陷阱 3）
@@ -1436,6 +1514,17 @@ async def apply_decision(
             decision.next_scene_id = scene_id
 
         elif decision.decision_type == DecisionType.NEXT_SCENE.value:
+            project = await repository.get_project(scene.project_id)
+            if project.world_schema_version == 2:
+                proposal = await repository.get_evaluation(scene.scene_id)
+                if proposal and proposal.world_operations:
+                    head = await _unified_world(scene.project_id, scene.branch_id)
+                    await repository.commit_world_event(
+                        scene.project_id, scene.branch_id,
+                        event_id=f"transition:{scene.scene_id}:{scene.snapshot_id_after}",
+                        expected_revision_id=head.revision_id, operations=proposal.world_operations,
+                        source="director", source_id=scene.scene_id,
+                    )
             # 下一场：让导演根据历史自动规划新场景，人工可在提交前覆盖
             # 参与角色/地点/初始条件（均为 None 时保持 AI 自动规划的结果，工单13）。
             # 用户填的"下一场目标"是本场意图（第三层），不是主线目标：把它当 goal 传

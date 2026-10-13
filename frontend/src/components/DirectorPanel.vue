@@ -73,6 +73,7 @@ const showEval = computed(() => props.mode !== 'decide')
 const showDecide = computed(() => props.mode !== 'eval')
 // 世界变量增量：值为 null 表示该变量已被收束删除
 const worldDelta = computed(() => Object.entries(props.evaluation?.world_state_delta || {}))
+const worldProposals = computed(() => props.evaluation?.world_operations || [])
 
 function decide(type: string) {
   if (locked.value) return
@@ -194,6 +195,17 @@ function confirmRollback() {
           <ul class="bullets">
             <li v-for="t in evaluation.unresolved_threads" :key="t">{{ t }}</li>
           </ul>
+        </template>
+
+        <template v-if="worldProposals.length">
+          <div class="section-title">下一场的世界变化提案</div>
+          <p class="dim small">进入下一场时提交；本场快照保留结束时的事实。</p>
+          <dl class="kv">
+            <template v-for="operation in worldProposals" :key="operation.attribute">
+              <dt>{{ operation.label || operation.attribute }}</dt>
+              <dd>{{ operation.op === 'unset' ? '清除' : operation.value }}</dd>
+            </template>
+          </dl>
         </template>
 
         <template v-if="worldDelta.length">
