@@ -156,13 +156,27 @@ class EnvironmentAgent:
         revision: WorldRevision, *, reveals: Sequence[RevealEntry] = (),
         actor_material: str = "", allowed_object_ids: set[str] | None = None,
     ) -> WorldAdjudication | None:
+        """裁决角色对物件的尝试。
+
+        Args:
+            revision: 当前世界版本，包含全部世界层事实和物件状态。
+            allowed_object_ids: 本次裁决允许作用的物件（通常只有目标物件本身）。
+        """
         allowed = allowed_object_ids or {obj.object_id}
         entries = normalize_reveals(reveals)
-        # Related state is allowed; unrelated definitions and all character secrets are absent.
+        # 世界层公开事实：裁决器需要知道"宫门封锁中""已入冬"这类全局状态来判断可行性。
+        # 只给 global 的，hidden 和 observable 的世界事实不进裁决器（目标 2）。
+        world_facts = {
+            fact.label or fact.attribute: _serialize_fact_value(fact.value)
+            for fact in revision.facts.values()
+            if fact.subject_kind == "world" and fact.visibility == "global"
+        }
+        # 物件相关状态：本次允许作用的物件定义和状态。
         payload = {
             "actor": {"id": actor_id, "name": actor_name}, "action": intent.text,
             "target": {"id": obj.object_id, "name": obj.name, "description": obj.public_description,
                        "hidden_rules": obj.hidden_rules},
+            "world_facts": world_facts,
             "allowed_objects": [{"id": oid, "name": revision.definitions[oid].name,
                                  "state": object_state(revision, oid)}
                                 for oid in sorted(allowed) if oid in revision.definitions],
@@ -207,6 +221,7 @@ _UNIFIED_PROMPT = """你是剧情推演的环境裁决者。只按给定规则�
 
 要求：
 - executable 表示物理上能否执行；triggered 只按隐藏规则判定，不创造规则。
+- 可行性判断时参考 world_facts（世界层公开事实，如季节、势力态度、公开事件）。
 - narration 只写所有在场者能观察到的现象，不泄露隐藏规则、秘密或内心。
 - operations 是已发生的物件属性变化，不是言论、猜测或知情声明。
 - 只改变本次允许的物件。每项给稳定 attribute（重复动作复用既有属性标识），可选中文 label。
@@ -221,6 +236,19 @@ _UNIFIED_PROMPT = """你是剧情推演的环境裁决者。只按给定规则�
 "operations":[{{"op":"set","subject_kind":"object","subject_id":"ID","attribute":"open",
 "label":"开启","value":true,"visibility":"observable"}}]}}
 """
+
+
+def _serialize_fact_value(value):
+    """将世界事实的值序列化成裁决器可读的形式。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, dict) and value.get("kind") in {"character", "object", "location"}:
+        return value
+    return str(value)
 
 
 def parse_world_adjudication(raw: str, allowed_objects: set[str]) -> tuple[WorldAdjudication, int, str] | None:

@@ -152,7 +152,10 @@ backend/
 ├── services/           ★★ 编排层：找业务逻辑先看这里
 │   ├── orchestrator.py   唯一跨模块编排点（构建/规划/运行/决策/输出/对账）
 │   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON + 分支世界变量 / 分镜稿 JSON）
-│   ├── world_state.py    世界变量的规范化/预算/渲染（纯函数，无 IO；读写两侧共用）
+│   ├── world.py          统一世界的领域规则（纯函数，无 IO；工单24/20 schema 2）
+│   ├── world_repository.py  世界版本/事件的持久化（经 repository 暴露）
+│   ├── world_access.py   用户命令处理、规则采用和迁移（工单24/20 schema 2）
+│   ├── world_state.py    世界变量的规范化/预算/渲染（纯函数，无 IO；schema 1 兼容层）
 │   ├── storyboard.py     导演分镜稿的预算/渲染/patch 合并/用户编辑/分叉（纯函数，工单18）
 │   ├── objects.py        物件的预算/可见性规整/用户编辑/角色可见的【在场物件】（纯函数，工单24/20）
 │   ├── environment.py    场景物件状态的预算/渲染、裁决输出解析、环境回合额度（纯函数，工单20）
@@ -216,6 +219,7 @@ frontend/src/
 ├── pages/       Workspace.vue（项目+图谱） / Director.vue（导演台） / BranchMap.vue（分支图） / Output.vue
 ├── components/  DialogLog.vue（剧本格式台词）、DirectorPanel.vue、StoryboardPanel.vue、
 │                CharacterInspector.vue、CharacterCard.vue、ObjectsPanel.vue（物件编辑器）、
+│                WorldPanel.vue（世界状态管理，工单24/20）、
 │                GraphViewer.vue、GraphViewer2.vue
 │   ├── director/  BranchRail.vue（左栏：当前谱系+场景）、StageView.vue（舞台）、SceneComposer.vue（开演前规划）、
 │   │              AutoPilotControl.vue（舞台底栏的自动推演开关）
@@ -808,9 +812,10 @@ frontend/src/
 
 > 这一节是最容易写出静默 bug 的地方，改数据相关代码前必读。
 
-### 5.1 SQLite（`data/projects.db`，7 张表）
+### 5.1 SQLite（`data/projects.db`，10 张表）
 
-`projects` / `branches` / `scenes` / `snapshots` / `evaluations` / `decisions` / `outputs`
+`projects` / `branches` / `scenes` / `snapshots` / `evaluations` / `decisions` / `outputs` / 
+`world_revisions` / `world_heads` / `world_events`（后三张为工单24/20 schema 2 新增）
 
 **【契约】统一模式：每张表的 `data_json` 列存放整个 dataclass 的 JSON，是唯一真相源；
 `name` / `status` / `branch_id` / `created_at` 等列仅用于索引、过滤与 CAS。**
@@ -864,7 +869,8 @@ build_status.json                 构建进度（供重启后对账）
 2. **同步改 `services/repository.py` 里对应的 `_deserialize_*`**（`_deserialize_card` /
    `_deserialize_scene` / `deserialize_story_history` / `deserialize_storyboard` /
    `_deserialize_object` / `_deserialize_actions` / `_deserialize_turn` / 快照的 `_deserialize_character_state`，
-   以及场景与评估共用的 `usage.deserialize_usage`、场景物件状态的 `environment.clamp_environment_state`）——漏这步字段会静默丢失；
+   以及场景与评估共用的 `usage.deserialize_usage`、场景物件状态的 `environment.clamp_environment_state`、
+   世界版本的 `world_repository.deserialize_revision`）——漏这步字段会静默丢失；
 3. 评估是否需要新增 SQL 列（只有需要索引/过滤/CAS 时才加，普通字段靠 `data_json` 自动携带）。
 
 前端有对应类型时，同步改 `frontend/src/types/index.ts`。
@@ -1216,7 +1222,12 @@ embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区
 | POST | `/projects/{project_id}/autopilot` | 开启自动推演：`scene_id`、可选 `max_steps` / `max_consecutive_rollbacks`（缺省取 `.env`），`request_id` 必填（幂等键，同键重放返回同一会话）。已有进行中的会话 409；越界、起点已有生效决策、起点已完成但评估不可用或已抵达结局 422。起点在跑→等它跑完；pending/paused→替用户开演；completed→立即决策 |
 | DELETE | `/projects/{project_id}/autopilot` | 停止自动推演：不再往下接，正在演的这一场照常演完（要立刻中断另调 pause） |
 | GET | `/projects/{project_id}/branches` | 分支树 |
-| GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404 |
+| GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404。schema 2 项目返回完整世界版本 |
+| POST | `/projects/{project_id}/branches/{branch_id}/world/commands` | schema 2：提交世界命令（带 request_id / revision_id / operations / observers） |
+| POST | `/projects/{project_id}/branches/{branch_id}/world/adopt-definitions` | schema 2：采用项目物件规则（显式更新分支世界版本的物件定义） |
+| GET | `/projects/{project_id}/branches/{branch_id}/world/events` | schema 2：查看最近已提交的世界事件（含分叉起点前的继承来源） |
+| GET | `/projects/{project_id}/world/migration-preview` | schema 2：预览 schema 1 → 2 迁移（分类及内容指纹，不调 LLM） |
+| POST | `/projects/{project_id}/world/migrate` | schema 2：执行迁移（接受显式选中的事实，事务内切换全项目所有分支） |
 | GET | `/projects/{project_id}/branches/{branch_id}/storyboard` | 分支导演分镜稿（工单18）。无记录返回空分镜稿而非 404；附 `goal_stale`（路线图基于旧版主线目标）与这一刻的 `narrative_goal` / `current_goal_revision` |
 | PUT | `/projects/{project_id}/branches/{branch_id}/storyboard` | 用户整份替换 `outline` / `memo`，带读取时的 `revision`：不匹配 409；超预算、引用不存在的 `beat_id` 422（不截断）；`request_id` 为幂等键，命中已生效的编辑视为重放（200、不写），同键不同内容 422；与当前内容完全相同视为无操作。`confirm_goal` 显式确认已按目标重排，须同时带回读取时的 `goal_revision_seen`（缺失 422），写回的就是它。分支不存在 404。`goal_revision` / `fork_origin` / `changelog` / `revision` 由后端维护 |
 | GET | `/projects/{project_id}/objects` | 物件列表（工单24，含隐藏规则：面向用户/导演，同角色卡返回 `unknown_facts`） |
@@ -1526,7 +1537,7 @@ Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【�
 
 | 设想 | 想解决什么 | 工单 / 状态 |
 |------|-----------|------------|
-| **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen**。⚠️ 两条已定的线：裁决结果若要沉淀成世界变量，必须先过契约1 的"公开可见"判据（裁决天然带私密性）；场景**进行中**变化的环境状态必须走 user 消息块，不得塞回 system（契约3 补充条款） | `11-...`；会改动 SceneEngine 对话循环本身，建议作为独立大提案最后做 |
+| **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen**。⚠️ 两条已定的线：裁决结果若要沉淀成世界变量，必须先过契约1 的"公开可见"判据（裁决天然带私密性）；场景**进行中**变化的环境状态必须走 user 消息块，不得塞回 system（契约3 补充条款） | ✅ 工单 24/20 已落地（schema 2）；裁决器看得到世界层公开事实；物件状态按可见性渲染，能跨场延续；环境回合进记忆与对话；预制揭示与生成揭示分离；导演产出 objects_present 和 environment_script |
 | **私有内心 OS** | 角色输出前的自适应思考，**不入档**——与现在会落档的 `inner_thought` 是两回事 | 未立项 |
 | **MCTS / 多结局** | 当前"每次只生成一场 + 采纳导演建议" ≈ 已默认剪枝的单条路径；多结局靠人工从快照分叉。场景评价与分镜稿（工单18）都已持久化，可在其上做真正的搜索 | 未立项 |
 

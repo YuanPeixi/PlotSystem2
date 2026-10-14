@@ -375,7 +375,7 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   "is_ending_reached": true|false,
   "ending_reason": "若已抵达结局，说明理由，否则空字符串",
   "unresolved_threads": ["未收束的线索1", "未收束的线索2"],
-  "world_state_delta": {{"某势力态度": "敌对", "已失效的变量": null}},
+  <!-- WORLD_DELTA_SECTION -->"world_state_delta": {{"某势力态度": "敌对", "已失效的变量": null}},
   "storyboard_patch": {{"add": [{{"title": "新节拍", "description": "打算怎么走"}}], "complete": ["b1"]}},
   "recommended_decision": "continue|next_scene|rollback",
   "rollback_reason": "若建议回滚，说明原因，否则空字符串"
@@ -524,17 +524,30 @@ class DirectorAgent:
             storyboard=describe_storyboard(storyboard, narrative_goal),
         )
         if unified_world:
-            begin = prompt.index("- world_state_delta")
-            end = prompt.index("- 结局判定", begin)
-            prompt = prompt[:begin] + (
-                "- 本场物件变化已经由环境事务提交，不能在评估中重写。\n"
-                "- world_operations 只提出下一场开始前的宏观世界变化。角色言论、推测、"
-                "本场才揭示给在场者的信息不能提升成全世界已知事实。\n"
-                "- 每项：op=set/unset，subject_kind=world，subject_id=world，attribute 使用稳定标识，"
-                "label 为中文名，value 保留标量类型，visibility=global 仅限确定可广泛传播的事实。\n"
-                "- 没有确定变化给 []，world_state_delta 恒为 {}。\n"
-            ) + prompt[end:]
-            prompt += '\n输出另含 "world_operations": []。这是场间提案，尚未应用。'
+            # 用标记而不是字符串切片：措辞改动不会让评估系统性崩溃。
+            # 标记必须与下面 _EVAL_PROMPT 里的注释行完全一致。
+            DELTA_MARKER = "<!-- WORLD_DELTA_SECTION -->"
+            ENDING_MARKER = "- 结局判定"
+            if DELTA_MARKER not in prompt or ENDING_MARKER not in prompt:
+                logger.error(
+                    "评估 prompt 缺少必要的标记（DELTA=%s, ENDING=%s），world_operations 说明未能插入",
+                    DELTA_MARKER in prompt, ENDING_MARKER in prompt
+                )
+            else:
+                try:
+                    begin = prompt.index(DELTA_MARKER)
+                    end = prompt.index(ENDING_MARKER, begin)
+                    prompt = prompt[:begin] + (
+                        "- 本场物件变化已经由环境事务提交，不能在评估中重写。\n"
+                        "- world_operations 只提出下一场开始前的宏观世界变化。角色言论、推测、"
+                        "本场才揭示给在场者的信息不能提升成全世界已知事实。\n"
+                        "- 每项：op=set/unset，subject_kind=world，subject_id=world，attribute 使用稳定标识，"
+                        "label 为中文名，value 保留标量类型，visibility=global 仅限确定可广泛传播的事实。\n"
+                        "- 没有确定变化给 []，world_state_delta 恒为 {}。\n"
+                    ) + prompt[end:]
+                    prompt += '\n输出另含 "world_operations": []。这是场间提案，尚未应用。'
+                except ValueError as exc:
+                    logger.error("评估 prompt 标记定位失败：%s", exc)
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_EVAL_TEMPERATURE),

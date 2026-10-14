@@ -72,9 +72,16 @@ async def initialize_branch_world(
     branch_id: str,
     *,
     definitions: list[WorldObject] = (),
-    from_revision_id: str = "",
+    from_revision_id: str | None = None,
     legacy_records: dict | None = None,
 ) -> WorldRevision:
+    """初始化分支的世界状态，已初始化则返回当前版本。
+
+    Args:
+        from_revision_id: 从某个已有版本分叉。None 表示空世界起步。
+        definitions: 空世界起步时采用的物件定义。
+        legacy_records: 旧世界变量，记为 legacy_records 而不猜测成事实。
+    """
     async with db.connect() as conn:
         await conn.execute("BEGIN IMMEDIATE")
         head = await _head(conn, project_id, branch_id)

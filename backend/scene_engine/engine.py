@@ -136,11 +136,25 @@ class SceneEngine:
         self.world_revision = world_revision
         self._world_commit = world_commit
         if world_revision is not None:
-            state_labels = {identifier for fact in world_revision.facts.values()
-                            for identifier in (fact.attribute, fact.label) if identifier}
+            # 场景条件只能补充上下文、不能覆盖已有的世界事实。
+            # 同名时移除场景条件而不是让场景无法开演：否则一个 pending 场景只要撞上一次
+            # 就再也开不了，只能删掉重建。移除的内容走世界状态获得，不影响场景本意。
+            # 检查时要排除 hidden 事实（用户根本看不到它的名字）和保留字（是场景固有键、不会冲突）。
+            state_labels = {
+                identifier
+                for fact in world_revision.facts.values()
+                if fact.visibility != "hidden"
+                for identifier in (fact.attribute, fact.label)
+                if identifier and identifier not in RESERVED_SCENE_CONTEXT_KEYS
+            }
             conflicts = state_labels.intersection(scene_config.initial_conditions)
             if conflicts:
-                raise InvalidRequestError("场景条件不能覆盖世界属性，请在世界面板修改：" + "、".join(sorted(conflicts)))
+                logger.warning(
+                    "场景 %s 的 initial_conditions 与世界属性冲突：%s；已移除冲突条目",
+                    scene.scene_id, "、".join(sorted(conflicts))
+                )
+                for key in conflicts:
+                    scene_config.initial_conditions.pop(key, None)
             self.scene.world_revision_id = world_revision.revision_id
         # 分支级世界变量（工单07）。开场即冻结、整场不变，因此可以安全地进 system
         # 消息而不破坏 prefix cache（契约3 补充条款）。场景内会变的环境状态归工单20，

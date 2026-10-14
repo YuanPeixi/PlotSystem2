@@ -1293,10 +1293,27 @@ async def fork_from_snapshot(
         # Legacy snapshots can outlive project metadata; their existing fork behavior remains valid.
         unified_fork = bool(snap.world_revision_id)
     if unified_fork:
-        await repository.initialize_branch_world(
-            project_id, branch_id, from_revision_id=snap.world_revision_id,
-            legacy_records=snap.world_state_variables,
-        )
+        # 旧快照没有 world_revision_id，分叉时以空世界起步。如果项目已迁移，允许
+        # 从迁移基线继承事实（见下方 legacy_records）。definitions 取迁移后的项目定义，
+        # 否则新分支连物件规则都没有、无法裁决。
+        if snap.world_revision_id:
+            await repository.initialize_branch_world(
+                project_id, branch_id, from_revision_id=snap.world_revision_id,
+            )
+        else:
+            # 旧快照：以空世界起步，但如果项目已迁移且快照里有旧世界变量，把它们作为
+            # legacy_records 传入，让新分支能从迁移基线继承已选中的事实（不重新猜测）。
+            # 这样迁移后的旧剧情至少能从"下一场"和"手动分叉"两条路径延续。
+            # 同时需要采用项目定义，否则新分支连物件规则都没有、无法裁决。
+            logger.warning(
+                "快照 %s 没有统一世界版本，新分支从空世界起步；旧世界变量记为 legacy_records",
+                snapshot_id
+            )
+            await repository.initialize_branch_world(
+                project_id, branch_id, from_revision_id=None,
+                definitions=await repository.list_objects(project_id),
+                legacy_records=snap.world_state_variables,
+            )
     else:
         await repository.save_world_state(
             WorldState(project_id=project_id, branch_id=branch_id, variables=dict(snap.world_state_variables))
