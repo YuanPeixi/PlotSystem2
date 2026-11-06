@@ -153,8 +153,11 @@ class SceneEngine:
                     "场景 %s 的 initial_conditions 与世界属性冲突：%s；已移除冲突条目",
                     scene.scene_id, "、".join(sorted(conflicts))
                 )
-                for key in conflicts:
-                    scene_config.initial_conditions.pop(key, None)
+                # 只在本次运行的副本上移除：config 的 dict 与 scene.initial_conditions 是同一个对象，
+                # 就地 pop 会随下一次 save_scene 落库，分叉（I5）与续跑都永久丢掉这个条件
+                scene_config.initial_conditions = {
+                    k: v for k, v in scene_config.initial_conditions.items() if k not in conflicts
+                }
             self.scene.world_revision_id = world_revision.revision_id
         # 分支级世界变量（工单07）。开场即冻结、整场不变，因此可以安全地进 system
         # 消息而不破坏 prefix cache（契约3 补充条款）。场景内会变的环境状态归工单20，
@@ -659,6 +662,8 @@ class SceneEngine:
                     obj, source.character_id, source.character_name, intent, self.world_revision,
                     reveals=self.scene.environment_script.get(obj.object_id, []),
                     actor_material=material, allowed_object_ids={obj.object_id},
+                    participants=[(a.character_id, a.name) for a in self.agents],
+                    location=self.config.location,
                 )
             if result is not None:
                 try:

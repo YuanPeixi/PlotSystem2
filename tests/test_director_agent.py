@@ -87,6 +87,20 @@ async def test_eval_prompt_contains_character_profiles(monkeypatch):
     assert "金銮殿" in prompt and "夜色沉沉" in prompt  # 场景预设与开场白
 
 
+@pytest.mark.parametrize("unified", [False, True])
+async def test_eval_prompt_world_section_matches_schema(monkeypatch, unified):
+    """世界层说明按 schema 二选一：schema 2 要 world_operations、不再要 world_state_delta，
+    且两种 prompt 都不能带内部标记（JSON 示例里混进注释，模型照抄就解析失败）。"""
+    sink: list = []
+    _patch_chat(monkeypatch, json.dumps({"synopsis": "x"}), sink)
+    await da.DirectorAgent("p1").evaluate_scene(_scene(), _log(), unified_world=unified)
+    prompt = sink[0][0]["content"]
+    assert "<!--" not in prompt
+    assert ('"world_operations"' in prompt) is unified
+    assert ("world_state_delta" in prompt) is not unified
+    assert "- 结局判定" in prompt
+
+
 async def test_eval_without_characters_still_works(monkeypatch):
     _patch_chat(monkeypatch, json.dumps({"synopsis": "x", "narrative_goal_score": 8}))
     agent = da.DirectorAgent("p1")
@@ -290,6 +304,42 @@ async def test_plan_prompt_keeps_goal_and_intent_separate(monkeypatch):
     prompt = sink[0][0]["content"]
     assert "扳倒丞相" in prompt
     assert "让公主试探王子" in prompt
+
+
+async def test_plan_prompt_ties_object_outcomes_to_rules_and_parses_script(monkeypatch):
+    """有可选物件时，规划要求结果可由隐藏规则推出、不得在开场写出触发结果，并给出预制揭示的格式；
+    返回的 environment_script 只保留本场在场物件的条目。"""
+    from backend.models import WorldObject
+
+    crown = WorldObject(object_id="crown", name="玻璃王冠", public_description="一顶玻璃王冠",
+                        hidden_rules=["佩戴时读取佩戴者的记忆"])
+    reply = {
+        "name": "加冕", "participating_characters": ["王子"],
+        "objects_present": ["crown", "ghost"],
+        "environment_script": {
+            "crown": [{"condition": "王子戴上它", "content": "王子看见自己幼时的宫墙"}],
+            "ghost": [{"condition": "x", "content": "y"}],
+        },
+    }
+    sink: list = []
+    _patch_chat(monkeypatch, json.dumps(reply, ensure_ascii=False), sink)
+    config = await da.DirectorAgent("p1").plan_scene("b1", "扳倒丞相", _cards(), available_objects=[crown])
+
+    prompt = sink[0][0]["content"]
+    assert "佩戴时读取佩戴者的记忆" in prompt and "一顶玻璃王冠" in prompt
+    assert "必须能由它的隐藏规则推出" in prompt
+    assert "不得在 opening_narration 或 initial_conditions 里写物件已被触发" in prompt
+    assert '"environment_script": {"物件ID"' in prompt
+    assert config.objects_present == ["crown"]
+    assert list(config.environment_script) == ["crown"]
+    assert config.environment_script["crown"][0].content == "王子看见自己幼时的宫墙"
+
+
+async def test_plan_prompt_without_objects_has_no_object_section(monkeypatch):
+    sink: list = []
+    _patch_chat(monkeypatch, json.dumps({"name": "夜谈", "participating_characters": ["王子"]}), sink)
+    await da.DirectorAgent("p1").plan_scene("b1", "扳倒丞相", _cards(), available_objects=[])
+    assert "可选物件" not in sink[0][0]["content"]
 
 
 async def test_story_progress_does_not_regress(monkeypatch):

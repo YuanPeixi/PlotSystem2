@@ -114,6 +114,12 @@ def _clamp_score(value: object) -> float:
         return 0.0
 
 
+def _environment_block(environments: dict[str, str] | None, character_id: str) -> str:
+    """该角色可感知的【当前环境】；没有可感知内容时不加空标题。"""
+    text = (environments or {}).get(character_id, "")
+    return f"\n【当前环境】\n{text}" if text else ""
+
+
 def detect_addressed(text: str, names: dict[str, str]) -> set[str]:
     """找出文本中被直呼其名的角色 ID。
 
@@ -154,8 +160,8 @@ class ScoringSpeakerSelector:
         user_msg = self._build_user(transcript)
 
         raw_scores = await asyncio.gather(
-            *(self._score_one(agent, user_msg + ("\n【当前环境】\n" + environments.get(agent.character_id, "")
-                                              if environments else "")) for agent in self.agents)
+            *(self._score_one(agent, user_msg + _environment_block(environments, agent.character_id))
+              for agent in self.agents)
         )
         trace = self._combine(raw_scores, addressed, penalties)
         chosen = self._pick(trace)

@@ -155,12 +155,16 @@ class EnvironmentAgent:
         self, obj: WorldObject, actor_id: str, actor_name: str, intent: ActionIntent,
         revision: WorldRevision, *, reveals: Sequence[RevealEntry] = (),
         actor_material: str = "", allowed_object_ids: set[str] | None = None,
+        participants: Sequence[tuple[str, str]] = (), location: str = "",
     ) -> WorldAdjudication | None:
         """裁决角色对物件的尝试。
 
         Args:
             revision: 当前世界版本，包含全部世界层事实和物件状态。
             allowed_object_ids: 本次裁决允许作用的物件（通常只有目标物件本身）。
+            participants: 在场角色 (id, 名字)。只有名字与 ID，不含任何角色视图（R1 / R2）；
+                没有它，持有者、佩戴者这类实体引用写不出来，交接动作就记不进世界。
+            location: 本场地点标识，位置属性引用它。
         """
         allowed = allowed_object_ids or {obj.object_id}
         entries = normalize_reveals(reveals)
@@ -174,6 +178,8 @@ class EnvironmentAgent:
         # 物件相关状态：本次允许作用的物件定义和状态。
         payload = {
             "actor": {"id": actor_id, "name": actor_name}, "action": intent.text,
+            "participants": [{"id": cid, "name": name} for cid, name in participants],
+            "location": location,
             "target": {"id": obj.object_id, "name": obj.name, "description": obj.public_description,
                        "hidden_rules": obj.hidden_rules},
             "world_facts": world_facts,
@@ -222,8 +228,12 @@ _UNIFIED_PROMPT = """你是剧情推演的环境裁决者。只按给定规则�
 要求：
 - executable 表示物理上能否执行；triggered 只按隐藏规则判定，不创造规则。
 - 可行性判断时参考 world_facts（世界层公开事实，如季节、势力态度、公开事件）。
-- narration 只写所有在场者能观察到的现象，不泄露隐藏规则、秘密或内心。
-- operations 是已发生的物件属性变化，不是言论、猜测或知情声明。
+- narration 只写物件本身的反应与可观察的状态变化，一两句，第三人称；不泄露隐藏规则、秘密或内心。
+  不要复述执行者的神态、目光、语气或台词，那些角色自己已经写过。没触发时写物件的实际反应
+  （例如"冰凉，毫无动静""王冠已在她手中"），不要写成旁白。
+- operations 是已发生的物件属性变化，不是言论、猜测或知情声明。持有者、佩戴者、位置、开合等
+  可观察状态一旦因本次动作改变，必须写成 operation（即使没有触发隐藏规则），否则下一轮无人知道它变了。
+  引用人物只用 participants 里的 id，地点用 location。
 - 只改变本次允许的物件。每项给稳定 attribute（重复动作复用既有属性标识），可选中文 label。
 - 持有者、位置等实体引用使用 {{"kind":"character|object|location","id":"稳定ID"}}。
 - bool 和数字保持类型；set 写值，unset 清除属性；不根据公开描述推翻已有属性。
@@ -266,7 +276,8 @@ def parse_world_adjudication(raw: str, allowed_objects: set[str]) -> tuple[World
             return None
         if not isinstance(narration, str) or not narration.strip() or len(narration) > 2000:
             return None
-        operations = parse_operations(data.get("operations", []))
+        # null 是模型常用的"没有变化"写法，不是格式错误
+        operations = parse_operations(data.get("operations") or [])
         if not executable and (triggered or operations):
             return None
         if any(o.subject_kind != "object" or o.subject_id not in allowed_objects

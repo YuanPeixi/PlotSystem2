@@ -45,8 +45,9 @@ async def get_world_state(project_id: str, branch_id: str) -> ApiResponse:
     """读取分支的世界变量（工单07）。分支没有记录时返回空变量，不是 404 ——
     "这条分支还没积累世界层事实"是正常状态，不是资源不存在。
     """
-    project = await world_access.check_branch(project_id, branch_id)
+    project = await repository.get_project(project_id)
     if project.world_schema_version == 2:
+        # schema 2 才校验分支归属；schema 1 维持"无记录返回空变量"的既有约定
         return ApiResponse.ok(to_dict(await world_access.branch_world(project_id, branch_id)))
     state = await repository.get_world_state(project_id, branch_id)
     return ApiResponse.ok(to_dict(state))

@@ -159,6 +159,8 @@ def apply_operations(
             out.facts[key] = fact
             out.removed_facts.pop(key, None)
         # Knowledge is an observation of this version, never a subscription to future values.
+        # 在场者目睹 observable 变化即"发现"该物件（含 private）：同一结果的公开叙述本就进全场
+        # transcript，观察与叙述必须一致。不想让旁人发现的变化应裁决为 hidden
         informed = [] if source == "environment" and operation.visibility == "hidden" else observers
         for observer in informed:
             out.observations.setdefault(observer, {})[key] = WorldObservation(

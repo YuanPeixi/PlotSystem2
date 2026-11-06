@@ -11,6 +11,7 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Sequence
 
 from backend.config import settings
 from backend.exceptions import InvalidRequestError
@@ -308,6 +309,40 @@ _PLAN_PROMPT = """你是一位影视导演。请为剧情推演规划下一个�
 }}
 """
 
+# 只在有可选物件时追加。用 replace 而不是 format 填入：下面的 JSON 示例保持单花括号
+_PLAN_OBJECTS_SECTION = """
+【可选物件（仅导演可见，含角色不知道的隐藏规则）】
+{objects}
+
+物件使用要求：
+- 选进 objects_present 的物件，在场角色能看见、能对它做尝试；结果由环境裁决严格按隐藏规则判定，
+  规划里替它定下的结果不会生效。
+- description 与 opening_narration 里凡依赖物件的结果，必须能由它的隐藏规则推出。例如规则是
+  "读取佩戴者的记忆"，就不能期望它显出另一个人的记忆；推不出时改写本场走向，或改由规则适用的人去用它。
+- 不得在 opening_narration 或 initial_conditions 里写物件已被触发、已产生的结果（如"王冠落下，
+  光芒溢出……"）。要让它发生，就把它写进 description，作为角色本场要做的尝试，留给环境裁决。
+- 触发后需要具体内容（显出什么画面、暗格里有什么）时，用 environment_script 预制：condition 写
+  触发情形（谁对它做什么，必须与隐藏规则一致），content 写只交给执行者本人的私密内容；
+  在场其他人只看到裁决给出的可观察现象。content 不得写进 description、initial_conditions 或开场白。
+- 本场用不到物件时 objects_present 给 []，environment_script 给 {}。
+
+JSON 另含以下两个键：
+  "objects_present": ["物件ID"],
+  "environment_script": {"物件ID": [{"condition": "某角色戴上它", "content": "执行者看到/得知的内容"}]}
+"""
+
+
+def _describe_plan_objects(objects: Sequence[WorldObject]) -> str:
+    lines = []
+    for obj in objects:
+        rules = "；".join(" ".join(r.split()) for r in obj.hidden_rules if r.strip()) or "（无特殊规则）"
+        lines.append(
+            f"- {obj.object_id}：{obj.name}（可见性 {obj.visibility}）。公开描述："
+            f"{' '.join(obj.public_description.split()) or '（无）'}；隐藏规则：{rules}"
+        )
+    return "\n".join(lines)
+
+
 _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场景。
 
 【主线目标（用户设定，不可更改）】
@@ -347,12 +382,7 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   本场开始前的推进度；本场没有实质推进时给与之相同的值；
 - unresolved_threads 请输出**更新后的完整列表**：保留仍未收束的旧线索、删去本场已收束的、
   追加本场新开的，最近提及的排在前面；
-- world_state_delta 只记录本场对**世界层**造成的持续性改变（季节推移、某势力的公开态度、
-  某公开事件是否已发生）。三条硬要求：
-  1. **只能写所有在场角色都能感知的公开事实**。它会被注入到之后每一场、每个角色的设定里，
-     把只有部分角色知道的秘密写进去，等于向全体角色泄密，破坏本系统的信息不对称；
-  2. 角色个人的情绪/位置/目标不属于世界层，不要写进来；
-  3. 某条变量不再成立时，把它的值设为 null 表示删除。本场没有改变世界层时给 {{}}；
+{world_rules}
 - 结局判定只看【结局判定标准】与【主线目标】，并对照【前情提要】确认条件是否真的已在
   前面的场次里完成（多条件的结局往往跨场次达成）；不得把本场演出来的任意告一段落
   当成故事结局；
@@ -375,12 +405,31 @@ _EVAL_PROMPT = """你是一位影视导演，正在评估刚刚模拟完的场�
   "is_ending_reached": true|false,
   "ending_reason": "若已抵达结局，说明理由，否则空字符串",
   "unresolved_threads": ["未收束的线索1", "未收束的线索2"],
-  <!-- WORLD_DELTA_SECTION -->"world_state_delta": {{"某势力态度": "敌对", "已失效的变量": null}},
+  {world_output}
   "storyboard_patch": {{"add": [{{"title": "新节拍", "description": "打算怎么走"}}], "complete": ["b1"]}},
   "recommended_decision": "continue|next_scene|rollback",
   "rollback_reason": "若建议回滚，说明原因，否则空字符串"
 }}
 """
+
+# 世界层的说明与输出示例按项目 schema 二选一，作为 format 参数整段填入（不再对成品做字符串切片）。
+# 填入的值不会被再次 format，单花括号即可
+_LEGACY_WORLD_RULES = """- world_state_delta 只记录本场对**世界层**造成的持续性改变（季节推移、某势力的公开态度、
+  某公开事件是否已发生）。三条硬要求：
+  1. **只能写所有在场角色都能感知的公开事实**。它会被注入到之后每一场、每个角色的设定里，
+     把只有部分角色知道的秘密写进去，等于向全体角色泄密，破坏本系统的信息不对称；
+  2. 角色个人的情绪/位置/目标不属于世界层，不要写进来；
+  3. 某条变量不再成立时，把它的值设为 null 表示删除。本场没有改变世界层时给 {}；"""
+_LEGACY_WORLD_OUTPUT = '"world_state_delta": {"某势力态度": "敌对", "已失效的变量": null},'
+
+_UNIFIED_WORLD_RULES = """- 本场物件变化已经由环境事务提交，不能在评估中重写。
+- world_operations 只提出下一场开始前的宏观世界变化（这是场间提案，尚未应用）。角色言论、推测、
+  本场才揭示给在场者的信息不能提升成全世界已知事实。
+- world_operations 每项：op=set/unset，subject_kind=world，subject_id=world，attribute 使用稳定标识，
+  label 为中文名，value 保留标量类型，visibility=global 仅限确定可广泛传播的事实。没有确定变化给 []。
+  单项格式：{"op": "set", "subject_kind": "world", "subject_id": "world", "attribute": "...", "label": "...", "value": ..., "visibility": "global"}；"""
+# 输出示例给空数组：带具体值的示例会被模型照抄，next_scene 时就成了一条真实提交的世界事实
+_UNIFIED_WORLD_OUTPUT = '"world_operations": [],'
 
 
 class DirectorAgent:
@@ -437,12 +486,8 @@ class DirectorAgent:
             threads="\n".join(f"- {t}" for t in threads) or "（暂无）",
             world_state=describe_world_state(world_state),
         )
-        if available_objects is not None:
-            prompt += "\n【可选物件，仅导演可见】\n" + "\n".join(
-                f"{obj.object_id}：{obj.name}；规则：{'；'.join(obj.hidden_rules)}" for obj in available_objects
-            ) + "\nJSON 另给 objects_present（物件ID列表）、environment_script（物件ID映射到"
-            "condition/content 揭示列表）。揭示内容只给执行者，不放入 initial_conditions 或开场白。"
-            "initial_conditions 只放本场提示，不覆盖已有世界属性；宏观变化在场间命令中提出。"
+        if available_objects:
+            prompt += _PLAN_OBJECTS_SECTION.replace("{objects}", _describe_plan_objects(available_objects))
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_PLAN_TEMPERATURE),
@@ -522,32 +567,9 @@ class DirectorAgent:
             world_state=describe_world_state(world_state),
             storyboard_header=_STORYBOARD_HEADER,
             storyboard=describe_storyboard(storyboard, narrative_goal),
+            world_rules=_UNIFIED_WORLD_RULES if unified_world else _LEGACY_WORLD_RULES,
+            world_output=_UNIFIED_WORLD_OUTPUT if unified_world else _LEGACY_WORLD_OUTPUT,
         )
-        if unified_world:
-            # 用标记而不是字符串切片：措辞改动不会让评估系统性崩溃。
-            # 标记必须与下面 _EVAL_PROMPT 里的注释行完全一致。
-            DELTA_MARKER = "<!-- WORLD_DELTA_SECTION -->"
-            ENDING_MARKER = "- 结局判定"
-            if DELTA_MARKER not in prompt or ENDING_MARKER not in prompt:
-                logger.error(
-                    "评估 prompt 缺少必要的标记（DELTA=%s, ENDING=%s），world_operations 说明未能插入",
-                    DELTA_MARKER in prompt, ENDING_MARKER in prompt
-                )
-            else:
-                try:
-                    begin = prompt.index(DELTA_MARKER)
-                    end = prompt.index(ENDING_MARKER, begin)
-                    prompt = prompt[:begin] + (
-                        "- 本场物件变化已经由环境事务提交，不能在评估中重写。\n"
-                        "- world_operations 只提出下一场开始前的宏观世界变化。角色言论、推测、"
-                        "本场才揭示给在场者的信息不能提升成全世界已知事实。\n"
-                        "- 每项：op=set/unset，subject_kind=world，subject_id=world，attribute 使用稳定标识，"
-                        "label 为中文名，value 保留标量类型，visibility=global 仅限确定可广泛传播的事实。\n"
-                        "- 没有确定变化给 []，world_state_delta 恒为 {}。\n"
-                    ) + prompt[end:]
-                    prompt += '\n输出另含 "world_operations": []。这是场间提案，尚未应用。'
-                except ValueError as exc:
-                    logger.error("评估 prompt 标记定位失败：%s", exc)
         raw = await chat_safe(
             [{"role": "user", "content": prompt}],
             temperature=self._temp(settings.DIRECTOR_EVAL_TEMPERATURE),

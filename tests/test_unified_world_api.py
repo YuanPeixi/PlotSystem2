@@ -64,6 +64,9 @@ async def test_legacy_api_preview_does_not_switch_or_broadcast_until_explicit_mi
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         base = f"/api/v1/projects/{pid}"
+        # schema 1 维持既有约定：没有记录的分支返回空变量，不是 404
+        unknown = await client.get(base + "/branches/no-such-branch/world-state")
+        assert unknown.status_code == 200 and unknown.json()["data"]["variables"] == {}
         preview = (await client.get(base + "/world/migration-preview")).json()["data"]
         assert (await repository.get_project(pid)).world_schema_version == 1
         migrated = await client.post(

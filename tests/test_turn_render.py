@@ -306,3 +306,13 @@ async def test_selector_local_signals_skip_environment_turns(monkeypatch):
     await sel.select(["甲: 乙，你来", ENV_PUBLIC], [spoken, _env_turn(narration="乙的身影映在王冠上")])
     assert seen["addressed"] == [spoken]
     assert seen["penalties"] == [spoken]
+
+
+def test_selector_environment_block_skips_empty_text():
+    """没有可感知内容的角色不加空的【当前环境】标题。"""
+    from backend.scene_engine.speaker_selector import _environment_block
+
+    envs = {"c1": "- 王冠·佩戴者：甲", "c2": ""}
+    assert _environment_block(envs, "c1") == "\n【当前环境】\n- 王冠·佩戴者：甲"
+    assert _environment_block(envs, "c2") == ""
+    assert _environment_block(None, "c1") == ""

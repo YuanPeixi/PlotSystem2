@@ -76,6 +76,48 @@ def test_private_current_state_and_historical_observation_are_separate():
     assert object_state(second, "niche") == {"open": False}
 
 
+def test_world_conflicts_are_dropped_for_the_run_only(tmp_path):
+    """与世界属性同名的场景条件只在本次运行中让位，不得改写 scene.initial_conditions：
+    run_scene 传进来的是同一个 dict，就地删除会随下一次 save_scene 落库。"""
+    revision = apply_operations(
+        root(), [WorldOperation(attribute="weather", label="天气", value="雪", visibility="global")],
+        "e1", [],
+    )
+    conditions = {"天气": "晴", "氛围": "紧张"}
+    scene = Scene(project_id="p", branch_id="b", initial_conditions=conditions)
+    config = SceneConfig(initial_conditions=scene.initial_conditions)
+    engine = SceneEngine(scene, config, [], SnapshotManager("p"), world_revision=revision)
+    assert scene.initial_conditions == {"天气": "晴", "氛围": "紧张"}
+    assert engine.config.initial_conditions == {"氛围": "紧张"}
+
+
+def test_operations_null_means_no_change():
+    parsed = parse_world_adjudication(
+        '{"executable":true,"triggered":false,"narration":"冰凉，毫无动静。","operations":null}',
+        {"crown"},
+    )
+    assert parsed is not None and parsed[0].operations == []
+
+
+@pytest.mark.asyncio
+async def test_adjudication_payload_lists_participants_and_location(monkeypatch):
+    """交接类动作（递给谁、谁戴着）需要在场角色的 ID 才写得成实体引用。"""
+    seen = []
+
+    async def llm(messages, **kwargs):
+        seen.append(messages[0]["content"])
+        return '{"executable":true,"triggered":false,"narration":"王冠到了她手里。","operations":[]}'
+
+    monkeypatch.setattr("backend.agents.environment_agent.chat_safe", llm)
+    await EnvironmentAgent().adjudicate_world(
+        CROWN, "a", "A", ActionIntent(text="把王冠递给B"), root(),
+        participants=[("a", "A"), ("b", "B")], location="大厅",
+    )
+    payload = json.loads(seen[0].split("输入数据：\n", 1)[1].split("\n\n要求：", 1)[0])
+    assert payload["participants"] == [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]
+    assert payload["location"] == "大厅"
+
+
 def test_unset_is_an_observation_and_never_the_same_as_false_or_unknown():
     first = apply_operations(root(), [op(value=False)], "e1", ["a"])
     second = apply_operations(first, [op(op="unset")], "e2", ["a"])
