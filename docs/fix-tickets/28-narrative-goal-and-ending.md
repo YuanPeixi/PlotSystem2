@@ -111,3 +111,25 @@ CLAUDE.md §1.4 的设计信条是"导演宏观、角色微观"，而导演现�
 3. **偏离度有意义**：人为构造一场完全跑题的对白，`plot_deviation_score` 应显著升高
    （改动前它对此无感知）。
 4. `story_progress` 在连续两次评估中给出更低值时不回退。
+
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="t15-details"></a>
+### 陷阱 15：为什么目标只有用户能写
+自评系统的典型失效模式是把目标改成自己刚演出来的东西，然后分数变高。因此写入口只留 `POST /projects` 与 `PATCH /projects/{id}`；导演侧只能写第二层（分支路线图，见工单 18）。next_scene 也曾用 `f"延续上一场…"` 冒充目标传给规划，连跑几场后只剩动量、没有引力，`plot_deviation_score` 失去参照物；现改为目标恒为 `project.narrative_goal`，用户填的描述作为 `scene_intent` 单独传入。
+
+<a id="t16-details"></a>
+### 陷阱 16：story_progress 四重约束的推演
+- `-1` 与"进度 0"必须区分：当 0 参与钳制/停滞判定会误报停滞。它不进 `is_evaluation_unavailable()`，因为该函数语义是整份评估作废，LLM 漏返一个键不应连带把决策打成保守默认。
+- 单调钳制的动机：自评噪声大，进度条来回抖，基于它的决策规则跟着抖。落库 `max(自评, 历史最高)`，原始值存 `story_progress_raw`。
+- 只在同一 `goal_revision` 内钳制：旧目标下的 0.9 会把新目标的真实进度永久钳到顶。旧记录 revision 为空串，与任何现行目标都不相等，故不参与继承。
+- `goal_missing`（NOTES#goal-missing）：目标为空时单调钳制会让进度一路爬向不存在的终点，所以不度量；有了分镜稿后导演自拟路线图最容易被当目标自评，评估 prompt 明确禁止。字段上线前的记录按 `goal_revision == goal_revision("")` 回填；空目标版本不能设成空串，因为空串是"旧记录"标记，撞上会互相继承进度。
+
+<a id="t18-nan"></a>
+### 陷阱 18：NaN 的来历
+`max(0.0, min(1.0, nan))` 返回上界；`json.loads` 默认接受裸 `NaN`/`Infinity`；`float(True)==1.0`；超大整数 `float()` 抛 `OverflowError` 而非 `ValueError`，漏接会穿过 `_extract_json` 把本可解析的评估废在编排层兜底里。统一走 `_parse_number()`。
+
+<a id="t17-details"></a>
+### 陷阱 17：线索合并的三处易错
+LLM 漏返键 ≠ 线索全收束；最近一份评估的空列表是权威值（否则已收束线索复活并被 prompt 要求保留），类型化后由 `StoryRecord.threads_known` 区分；限条数不等于限预算，继承来的旧列表也要过 `_normalize_threads`。

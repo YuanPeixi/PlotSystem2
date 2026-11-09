@@ -157,3 +157,15 @@
    system prompt / 场景上下文能看到这个变化。
 3. 若启用图谱联动：验证场景结束后 Kuzu 图谱中出现了模拟过程中产生的新增
    实体/关系，而不仅是 GraphRAG 构建阶段的静态内容。
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="trap3-history"></a>
+**陷阱 3 的来历（speaker_mode 链）**：工单11 打通前 `SceneConfig.speaker_mode` 与 `Scene.speaker_mode` 是两个互不相通的字段，
+selector 只在导演规划返回里"看起来生效"。打通后链路为 `settings.DEFAULT_SPEAKER_MODE` →
+`CreateSceneRequest` / `DirectorAgent.plan_scene` → `Scene` → `run_scene` → `SceneConfig`。
+最易漏的是 `apply_decision` 的 rollback 分支，它手工构造重演场景，漏传会让 selector 场景静默退回轮询，前端看不出来。
+
+**selector 独立评分的动机**：旧实现把所有候选名字排成一列问 LLM 选谁，模型系统性偏向列表首项（位置偏见）。
+改为每个候选一次并行打分调用，整轮延迟仍是一个 RTT；打分结果再叠加两个纯本地信号（被点名加分、重复发言惩罚）。
+`SELECTOR_TEMPERATURE>0` 时 softmax 采样，默认 0 = argmax。

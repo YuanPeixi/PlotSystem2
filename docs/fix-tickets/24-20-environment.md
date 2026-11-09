@@ -524,3 +524,41 @@ PR-2b 的设计重议不受影响。
   `reconcileLog`；`StageView` 的轮次进度；
 - **易漏同步项**：`_deserialize_scene`（新字段）、`types/index.ts`、CLAUDE.md §8 SSE 事件表、
   `CharacterAgent` 格式规范、`make_decision` 不受影响（不加 LLM 调用，陷阱 22）。
+
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+> 规则本体在 `.claude/rules/world-environment.md`（陷阱 25 / 27、契约 3 补充条款）。本节记被压缩的理由，以及 schema 2 对 PR-2a 时代规则的取代关系。
+
+<a id="trap25-27-reasoning"></a>
+### 陷阱 25 / 27 的补充理由
+
+- **动作段与 `turn.action` 同源**（PR-2a 评审 P1）：抽取若拿原始回复重跑动作正则，独白里的 `*戴上王冠*`（想做、没做）与没闭合的 `[` 之后的星号
+  都会被当成尝试，adjudicate 档把角色心里的打算裁决成全场可见的环境回合。
+- **抽取 prompt 只放命中段、先剥 `[...]`**：角色把独白格式写坏时独白会混进对白或动作段，而 `text` / `detail` 会交给裁决器、产出公开叙述。
+- **"不进记忆"是设计保证不是现状**：用例逐字比对 off 与 record 两档；PR-2 想让环境结果进角色视野，走环境回合，不要把 `detail` 渲染进 `_turn_line`。
+- **失败不伪造**：同评估 `-1` 分的教训（陷阱 14）——旧实现在解析失败时给全部维度填 5.0，静默污染决策。裁决失败补一句"毫无反应"是同类错误。
+- **额度要预占 pending**：否则续跑补裁决后超限。
+- **续跑补裁决与 A27**：continue 时档位已不是 adjudicate，日志里的 pending 原样保留、仍占额度；改成 skipped 则不可恢复。
+- **可见性三条线的来历**：裁决器同时看着隐藏规则，让它写私密细节会夹带秘密；让它从自由文本里摘录又能把所有分支整段交出去，
+  所以预制揭示按条存（A31），裁决器只回答命中第几条。
+- **角色侧 prompt 的 golden 用例**：`test_off_and_record_character_prompts_are_byte_identical_to_before`（`tests/test_environment_engine.py`）只用 schema 1 引擎构造
+  （无 `world_revision`）。schema 2 的引擎无论档位都会渲染可见的【在场物件】与【当前环境】（`engine.py:202-208`、`522-531`），所以该用例**不保护 schema 2 的 off / record 档**。
+  这是 2026-11-09 核实的文档与代码偏差：原 CLAUDE.md 陷阱 27 第 6 条"角色侧只在 adjudicate 档变化"在 schema 2 下不成立，已按代码改正。
+
+### schema 2 对 PR-2a 规则的取代关系（2026-11-09 逐条核对）
+
+| PR-2a 时代的规则 | schema 2 下 |
+|------------------|------------|
+| 物件状态存于 `Scene.environment_state`，**只在本场有效**；不要并进 `WorldState`（陷阱 27 第 7 条；A5 / A26 / A32） | **被取代**。物件状态是世界事实，按 `object_id` 存在分支世界版本里，跨场延续，按可见性投影；`environment_state` 不用。当年"不并进世界变量"的理由（世界变量进全体 system、private / hidden 泄露；名称为键改名断链）在 schema 2 由可见投影 + 稳定 ID 解决。上面 §9 末尾"PR-2b 待重议"即此结论 |
+| 一次 `save_scene` 原子提交环境回合 + 动作状态 + 物件状态（第 1 条） | **改写**为 `commit_world_event` 单事务（世界版本 + 事件 + scene data_json）；失败语义：准入失败 → failed，IO 失败 → 回 pending 并抛 |
+| 角色侧只在 adjudicate 档变化、off / record 逐字不变（A24 / 第 6 条） | **仅 schema 1 成立**（见上） |
+| 裁决器只读本场状态（A32）、读世界变量 `物件名·` 前缀（A26） | **被取代**：schema 2 裁决器读版本内规则 + 目标物件状态 + 世界层 global 事实 |
+| `environment_delta_applied` / 对账时补写物件状态进世界变量（A28 / §5.6） | schema 1 路径的历史设想，schema 2 不需要场末补写；原 §5.6 的"场末沉淀"由世界版本取代 |
+| 其余（失败不伪造、额度预占、续跑补裁决 A34 / A35、三条可见性线、`perceived_by` 固定执行者 A25、预制揭示按条 A31、物件不得重名 A33） | **两套 schema 通用**，仍成立 |
+
+### 原 §13 设想表"环境智能体"一行（已落地）
+
+原文：裁决介于"角色动作"与"环境变量"之间的判定；实现走 OpenAI 原生 function calling，不需要 AutoGen；两条已定的线——
+裁决结果沉淀成世界变量必须先过契约 1 的"公开可见"判据（裁决天然带私密性）；场景进行中变化的环境状态必须走 user 消息块，不得塞回 system（契约 3 补充条款）。
+这两条线已进规则（契约 1 细则 / 契约 3 补充条款）。落地情况见本文开头"2026-10-14 落地情况"。

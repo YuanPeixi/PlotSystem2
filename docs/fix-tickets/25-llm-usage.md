@@ -112,3 +112,19 @@
 - 归属边界：`orchestrator.run_scene`（含 `_autopilot_after_scene` 在运行锁释放后执行）；
 - **易漏同步项**：`repository._deserialize_scene` 与评估的反序列化（CLAUDE.md §5.4）、
   `frontend/src/types/index.ts`、CLAUDE.md §4.1 模型表与 §10.3 脚本清单、`docs/fix-tickets/README.md`。
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="trap26-detail"></a>
+**陷阱 26 的推演**：
+- 计数点唯一：只有 `utils/llm.py`（及 embedding 例外）计数，才能保证"每个调用点都标了用途"可被 AST 扫描一次钉住。
+- 为什么用 ContextVar 而非参数：`create_task` / `gather` 的子任务、`asyncio.to_thread` 都会复制上下文，
+  selector 的并发打分、线程里的 embedding 调用无需逐层传参就归到同一场。
+- 为什么推送 evaluation 之后不能再 `save_scene`：用户收到评估事件就能提交决策；`continue` 会改写这一场，
+  此后再整份覆盖 `data_json` 就把决策的改动抹掉。所以评估调用装在**内层计数器**，记在 `SceneEvaluation.llm_usage`；
+  场景的计数随既有逐轮落盘带走，最后一次落盘发生在评估之前。
+- 为什么 `run_scene` 要自装、自撤计数器：AutoPilot 的自动 continue 是在上一轮 `run_scene` 里 `create_task` 出来的，
+  复制了上一轮的上下文；不重装则两轮计数混在一起，不撤下则收尾阶段（AutoPilot 决策、下一场规划）的调用记到已落库的那场上。
+  continue 多段在场景已有计数上累加（`UsageMeter.seed`）。
+- 导演历史副本里清掉评估的计数，与 `storyboard_patch` 同理：副本随谱系复制进每个快照，带着就是复制 N 遍。
+- token 记的是计费量：拿到响应却判失败的尝试（空正文）也计 token，但不计成功调用（工单30 引入）。

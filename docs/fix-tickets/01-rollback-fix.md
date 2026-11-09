@@ -141,3 +141,10 @@ Code Review 指出：最初的实现在构造回滚重演的新 `Scene` 时，�
 
 修复：新场景创建时 `snapshot_id_before` 留空（`""`），让 `SceneEngine.run()` 在真正开始重演时
 基于恢复后（并应用 `new_initial_conditions`）的状态自行创建一份新的快照。
+
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="rollback-snapshot-fields"></a>
+### 回滚场景的快照字段分工
+`snapshot_id_before` 为空是信号：只有它为空，`SceneEngine.run()` 才建前置快照，回滚重演场景必须留空，否则跳过快照、丢掉新初始条件。`restore_snapshot_id` 管"从哪回填运行时记忆"，`snapshot_id_before` 管"要不要打快照"，不可合并（契约 2 / 4）。回滚后来被改为条件为空的分叉，走 `fork_from_snapshot`（工单 08），不再 `restore_snapshot()`。

@@ -310,3 +310,25 @@
     §13 删掉"分镜稿"一行并升格到正文
   - 新增配置项（预算上限等）同步 `.env.example`
   - `NOTES.md#t18` 记录落地结论与 review 教训
+
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="t16-history"></a>
+### 导演历史冻结（陷阱 16）的演进
+- 历史副本最初是 `list[dict]`，工单 18 D1 改成类型化 `list[StoryRecord]`，反序列化统一走 `repository.deserialize_story_history`（场景与快照共用）。旧 dict 当场读回、不写迁移；坏条目跳过并 warning（一条坏记录不能让 `list_scenes` 返回 500）；整个容器不是列表按权威空历史 `[]` 处理，因为 `None` 会触发回溯、去读当前来源快照，越过分叉边界。
+- `StoryRecord.threads_known`：`SceneEvaluation` 默认 `[]`，不单独记这一位就会把"缺键"压成"已清空"；它随记录序列化，否则读出再存一次就判错。
+- D2：回溯查询次数与谱系长度无关——`list_scene_lineage`（SQL `json_extract` 只取谱系字段，不读对白）走因果链，再一次批量 `get_evaluations`。`SceneLineage` 是只读投影，拿去 `save_scene` 会抹掉整场对白。
+- D3：`snapshots` 表只存列表投影，`meta.json` 才是权威（整份快照随谱系增长，列表接口曾 O(N²)）。
+- 冻结副本与回溯间要去重（`_merge_story_records`）：场景冻结进副本后被 continue 续跑并重新评估，再分叉时两边各出现一次，回溯得到的更新故胜出。
+- continue 不动 `inherited_story_history`：置 None 等于把有权威边界的分支降格成旧数据，来源快照已删则历史归零、来源后补评估则越界读入。本场评估无需清副本即可刷新（副本 `include_current=False`，`save_evaluation` 是 `INSERT OR REPLACE`）。
+- `created_at` 曾每次读都换成 `now()`，使"读出改一改再存回"的路径（如 `record_story_history`）把记录重排到时间线末尾；现 `_deserialize_scene` 与 `get_snapshot` 都还原，损坏值降级 `now()` + warning。不在调用点重读文件打补丁（TOCTOU，且每个新调用方都要复制一遍）。
+
+<a id="t21-details"></a>
+### 分镜稿八条语义（陷阱 21）的推演
+- **patch 前提校验**：用户 v2 覆盖后导演基于 v1 的改写不得再覆盖。重排要求当前计划中节拍的顺序（不只是集合）等于导演所读，否则用户刚调的顺序被旧稿无痕覆盖；已是目标顺序按幂等处理，重排先于其余操作。不采用"修订号不一致就整个丢弃"，因为同分支并发两场时后完成者改另一节拍也会被整个丢掉。
+- **goal_revision 确认**：写回确认者实际看到的版本（导演=评估 prompt 版，用户=读取响应的 `current_goal_revision`，PUT 必须带 `goal_revision_seen`）。导演确认在预算淘汰之后判定；`StoryboardPatch.rejected` 记录解析器丢掉的格式无效操作（缺 `beat_id`、`reorder` 非列表），否则只剩 `goal_realigned` 的 patch 看起来像"没改路线图、确认已适配"；`goal_realigned` 走 `_parse_bool`，`"false"` 不能变 True。
+- **PUT 幂等键**：首次保存时新节拍会得到后端分配的 ID，响应丢失的客户端拿不到，原样重发永远与当前稿不等，只会误报 409，所以"内容相同=无操作"代替不了 `request_id`；摘要记在用户 changelog 条目上，在分支锁内查找。
+- **预算**：写入侧先淘汰最早了结的节拍再从末尾淘汰计划中的；用户 PUT 超限 422 不截断；读取侧 `clamp_storyboard` 只压不写回，ID 确定性补发；渲染塌单行，备忘存储保留换行（前端多行文本框）。
+- **继承**：`fork_from_snapshot` 写入 `snap.storyboard` + 模板生成的 `fork_origin`（红线 R4：分叉不调 LLM）；旧快照无副本时空稿起步，不回读来源当前稿（分叉后才写的）。历史副本里 `_story_record` 清掉 patch，否则整段备忘改写被复制到每个快照。分镜稿不进 `make_decision`（红线 R3/R5）。
+- 分支临界区与 schema 1 世界变量共用 `_branch_lock`，只能有一把。

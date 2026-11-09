@@ -126,3 +126,23 @@
 - 写入与降级：`backend/memory/long_term.py`
 - **易漏的同步项**：新增配置项要同步 `.env.example`（配置唯一真值）；
   修完删掉 `CLAUDE.md` §12.1 的"场景内自动固化绕过水位线"一行，并核对 §4.2 陷阱 9 与 §6.2
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="watermark-reasoning"></a>
+### 水位线各条约束的推演（原陷阱 9）
+
+- **同一次落盘**：固化在 `run()` 内完成，而后置快照要拷贝几十兆的 kuzu/chroma；若水位线等方法返回、由 orchestrator 再存，进程在拷贝窗口被硬杀
+  （走不到 orchestrator 的 `except`）就会整场二次写入。故 `on_persist` 钩子把水位线与固化放进同一次落盘，且 `_consolidate_all` 的推进早于 `on_turn`（落盘先于推 SSE）。
+- **触发权只在引擎**：`MemoryManager.add_experience` 曾在缓冲写满时自行 `consolidate()`，跑满一个缓冲后崩溃，水位线没推，续跑整段二次写入。
+- **周期与容量耦合**：长期记忆唯一入口是短期缓冲（定长 deque）。固化跨度 >= 容量时，超出部分在到达 `consolidate()` 前就被挤出队列而水位线照推，
+  结果是"宣称已入库、实际永久丢失"，且无脚本可查。`周期=0` 时跨度是整场 `max_turns`；`prime()` 回填让缓冲开跑即非空，所以光靠配置校验不够，
+  运行时 `_buffer_under_pressure` 按占用率强制固化。
+- **重放的两个起点**：`prime()` 载入的事件摘要取决于命中的快照——正常 continue 命中 `snapshot_id_after`（全含）、崩溃续跑命中 `snapshot_id_before`（全不含）、
+  continue 半途再崩（只含前半段）。逐轮 append 在第一种情况会把整段追加第二遍，而 `_events` 只保留末 10 条，更早场次的重要事件被挤出窗口；
+  episodic 不落盘、无脚本可查，挤掉即永久丢失。"判断快照来源再二分"在第三种情况两边都不对，所以改为整批 + 按正文去重（`EpisodicMemory.replay`）。
+- **事件摘要单行**：`dump`/`load` 以 `\n` 切分；动作正则 `re.DOTALL` 让跨行 `*动作*` 产出含换行的 `action`（对白已规整，只有动作没有）。
+  含换行的条目会"存进去 1 条、读出来 2 条"，与重放生成的单条对不上，去重失效并多占保留窗口。
+- **按正文内容寻址**：`long_term.memory_id`（sha256）；先 `get` 判存在再 `upsert`，因为 `upsert` 会重算 embedding（远程计费）。
+- **跨库无事务的取舍**：Chroma 与 SQLite 之间的窗口无法消除，故选择失衡方向——固化前先单独落一次 `dialogue_log`，崩溃后状态是"日志有、水位线旧"，
+  续跑重放撞幂等兜底收敛；反方向（角色记得日志里没有的台词）无法收敛。因此不要把固化挪到 `on_turn` 之后（SSE 推送会插进固化与落盘之间）。

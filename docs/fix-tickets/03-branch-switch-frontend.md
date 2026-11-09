@@ -106,3 +106,10 @@ h('div', { class: 'branch-pill', onClick: () => emit('select', node.branch.branc
    - 确认中间区域/新增列表区域展示了该分支下实际发生过的场景，且切换分支后内容确实变化；
    - 点击某个历史场景后能重新查看该场景的对话日志。
 3. `GET /api/v1/projects/{id}/scenes?branch_id=xxx` 手动用浏览器或 curl 验证返回结果只包含该分支的场景。
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="branch-switch-history"></a>
+### 切分支联动的由来
+
+规则本身见 `.claude/rules/frontend.md` 第 6 节。早期实现里 `watch(branchId)` 只刷新场景列表，当前场景、日志与决策面板跨分支残留；rollback 把新场景建到新分支后，若不同步 `branchId`，"让导演规划"和场景列表仍按旧分支走。`onDecision` 同步分支时必须先抑制 watcher，否则 watcher 会把刚建好的当前场景改写成新分支的最后一场。刷新恢复链（`?scene=` → 该分支最后一场；评估与决策分别 GET 回填）也是这一轮补的。

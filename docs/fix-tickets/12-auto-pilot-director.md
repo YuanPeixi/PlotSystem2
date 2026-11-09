@@ -56,3 +56,15 @@
 `services/autopilot.py`（纯函数）、`orchestrator.start_autopilot / _autopilot_after_scene`、
 `api/director.py` 的 `project_router`、`stores/scenes.ts`、`components/director/AutoPilotControl.vue`。
 易漏：`DirectorDecision.source` 的反序列化、`.env.example` 的三个 `AUTOPILOT_*`。
+
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="t22-details"></a>
+### AutoPilot 六条语义（陷阱 22）的推演
+- **会话为何不落库**：`PATCH /projects` 是整份读-改-写，逐步写计数会与用户编辑主线目标互相抹掉；落库后重启对账会让它无人值守地继续烧 LLM，因此重启即结束是刻意的；按项目登记是因为自动回滚会换分支。
+- **锁内的查重-校验-登记**：查已有会话与登记间隔着读项目、读场景等 await；不锁则同 `request_id` 并发重放各开一个会话各开演一次，不同起点会两场都开演而项目只记得后登记的一个。停止在同一把锁内，否则夹在开启 await 之间的停止读到"还没有会话"，会话随后登记，停止被吞。
+- **决策点位置**：早于释放运行锁，continue 的新 `run_scene` 被 `_active_scenes` 守卫静默丢掉；晚于终态帧，前端流已关、无从得知下一场。自动 continue 不发终态帧，以免迟到的 completed 把新一轮判成已结束。
+- **回滚上限**：按连续次数计，不能按"回滚到同一快照"（重演场景重打前置快照，目标 ID 每次不同）；在执行前判，依赖 `make_decision` 不调 LLM。
+- **开演权**：`apply_decision(start_continue=False)`；若让它内部起续跑，决策期间的停止事后拦不住，白烧一整轮。`is_running` 检查与自行开演之间不得有 await。
+- **更严的停止条件**：评估不可用/补写失败（`evaluated is None`）、抵达结局、`导演中断`（`termination.INTERRUPTED_REASON`）。pause 走正常终止路径，场景照样 completed（CLAUDE 原 §12.1 已知缺陷）。

@@ -313,3 +313,14 @@ return ApiResponse.ok({"branch": to_dict(branch), "scene": to_dict(scene)})
 | `Branch.scenes` 写回 | 归工单 03 可选目标 6，与本单正交 |
 | 改 `continue` 分支 | 按 0.3 结论 2，它不是分叉 |
 | 分叉后自动开跑新场景 | fork 是探索性操作，不该有隐式的整场 LLM 成本 |
+
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="fork-details"></a>
+### 分叉原语的补充推理
+- **I2 的代价**：Chroma `PersistentClient` 打开时会维护文件，只能打开 checkpoint 的临时副本，权威快照目录不能直接打开；代价是分叉期间向量库磁盘占用峰值翻倍，向量库变大后可再优化。
+- **I3 复制范围**：搬来源分支的**全部**角色集合而非本场参演名单——缺席者一分叉就失忆；分页读 + 按客户端 `max_batch_size` 分批写；分支级初始化文件封住"快照时该角色尚无 collection"与"Chroma 缺失、正确起点就是空"，否则角色首次登场会把分叉后的共享记忆灌进历史分支，再次分叉继续泄漏。
+- **顺序**：记忆先搬、分支后建（预生成 `branch_id`），失败不留无记忆孤儿分支；世界与分镜稿落盘同理。Chroma 已安装且快照库存在但复制失败则中止，缺失则按契约 6 降级。
+- **补写窗口**：两套实现分叉过一次；评估窗口内分叉曾被允许（story_history 当时被视为"冻结语义"可接受），评审后发现对 world_state 是无迹可查的静默丢失，与 story_history 本质同一竞态，统一堵住整个窗口。窗口起点是快照写入 `snapshots` 表（fork 不看 `scene.status`），故标记由引擎在 `create_snapshot` 之前经 `on_after_snapshot` 挂上，而非 `run()` 返回后或 `save_scene` 后。
+- **restore_snapshot 的危害**：rmtree 后拷回，抹掉快照之后所有分支的长期记忆与图谱，不恢复分支级世界变量，状态半对；工单 07 加了 `confirm_destructive=True` 路障。

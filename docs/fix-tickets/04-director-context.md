@@ -211,3 +211,10 @@ char_desc = "\n".join(
 - `tests/test_director_agent.py`（新建）
 - CLAUDE.md §4.2 增补一条陷阱：`opening_narration` 的权威载体是 `initial_conditions`，
   `SceneConfig` 的同名字段只是规划期载体，**新增建场景路径必须搬运**
+
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="t13-details"></a>
+### 陷阱 13 的发现经过
+工单 04 D1 发现 `create_scene_from_config` 漏搬 `opening_narration`，导致导演自写的开场白在 next_scene 自动路径上永不生效，而手动建场景路径正常——这类"两条路径只有一条对"的 bug 前端发现不了。后来 `objects_present`（工单 24）、`environment_script`（工单 20）同样要在手建、`create_scene_from_config`、next_scene 人工覆盖、`fork_from_snapshot` 四条路径搬运，由 `tests/test_objects_present.py` 逐条钉住；写入侧校验存在性与上限，读取侧只去重截断（悬空 ID 由消费方跳过）。

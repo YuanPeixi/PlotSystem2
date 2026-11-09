@@ -71,3 +71,15 @@
 `graphrag_pipeline/world_rules.py`、`graphrag_pipeline/pipeline.py`、
 `services/orchestrator.py::run_graphrag`、`agents/character_agent.py::_select_lore`、
 `scripts/`（迁移脚本，参考 `check_memory_dupes.py` 的写法）。
+
+## 附：自 CLAUDE.md 迁出的推理（2026-11-09）
+
+<a id="evidence-truncation"></a>
+### 分类器证据裁剪的评审推演
+
+评审第二轮发现：`_describe_characters` 为控制 prompt 长度裁剪每个角色的 `unknown_facts`（条数 `_MAX_FACTS`、单条 `_FACT_CHARS`）。某角色"不知道"某事，靠的正是那条 unknown_fact 出现在证据里——被裁掉后分类器在两个方向上都可能判错：
+(a) 本该私有的设定判成 `public`（找不到任何人"不知道"的反证）；
+(b) 本不该知情的角色被错判进某条 `private` 的 `known_by`（恰好是它自己那条反证被裁）。
+因此最初只收紧 public 的做法不够，`classify()` 改为：检测到任一角色 unknown_facts 被裁，本轮 public 与 private 全部收紧为不发；`hidden` 不发给任何人、结构上已最安全，不受影响；`known_facts` 被裁只会让知情者名单偏少（方向安全），不连带收紧。
+同一轮还发现送进分类 prompt 的设定正文也被裁剪（`_ENTRY_CONTENT_CHARS`）：秘密藏在裁剪点之后时，分类器看到的只有公开的前半段，而分发用的是完整正文。处理为按条独立收紧。
+结论：固定阈值总会被超过，调大 `_MAX_FACTS` / `_FACT_CHARS` / `_ENTRY_CONTENT_CHARS` 都不是修复，必须保留结构性兜底。旧实现的 `endswith` scope 匹配（`character:x-{id}` 也能混入）与"拿不准退回 global"的写法，均属本工单修掉的缺陷。
