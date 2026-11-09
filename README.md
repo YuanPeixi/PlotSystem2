@@ -155,13 +155,25 @@ cd frontend && npm run build
 | `/director/:projectId` | 规划场景、查看对话、推进或回滚剧情分支 |
 | `/output/:projectId` | 选择分支并导出网文、剧本、舞台剧或报告 |
 
+## 设计来源
+
+PlotSystem 站在两个方向的肩膀上，也有明确的取舍：
+
+| 来源 | 学到了什么 | 抛弃了什么 |
+| --- | --- | --- |
+| **MiroFish**（原基座，多智能体群体模拟） | 多层记忆设计、实体抽取 → 图谱 → 智能体的整体流水线 | 强依赖 Zep（付费昂贵）；一切实体被拍平成"社交账号"（游戏剧情里的天灾也变成发帖账号）；快照/分支难做 |
+| **SillyTavern**（角色扮演） | 角色卡（persona / speech_style）、lorebook 按关键词动态注入、持续上下文工程 | — |
+| **"GPT 接入原神"类项目** | 长线任务与具体角色都由 AI 驱动，而非脚本 | — |
+
+因此本项目的形态是：用户给大方向 → 导演做宏观调控 → 角色自然演绎。不是剧本执行器，也不是社交模拟器。
+
 ## 技术栈
 
 - **Frontend**：Vue 3、Vite、Pinia、AntV G6
 - **Backend**：FastAPI、Uvicorn
 - **Agents**：DirectorAgent、CharacterAgent、SummaryAgent
-- **Memory & Graph**：LlamaIndex、ChromaDB、Kuzu
-- **Optional pipeline**：Microsoft GraphRAG
+- **Memory & Graph**：ChromaDB、Kuzu（自研抽取与场景引擎，未使用 LlamaIndex）
+- **Optional pipeline**：Microsoft GraphRAG（可选依赖，默认不在运行路径上）
 
 ## 项目结构
 
@@ -173,5 +185,5 @@ tests/         后端与场景行为测试
 docs/          设计说明、fixture 与修复记录
 ```
 
-完整的工程约定和实现说明见 [`CLAUDE.md`](./CLAUDE.md)。
+完整的工程约定和实现说明见 [`CLAUDE.md`](./CLAUDE.md)（常驻地图与契约）与 `.claude/rules/`（按路径载入的规则细则）。
 
