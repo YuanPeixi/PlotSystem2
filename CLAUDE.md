@@ -1,16 +1,14 @@
 # CLAUDE.md — PlotSystem 根文档
 
-> **本文件是 AI 编程助手进入本仓库的第一入口。**
-> 它不是设计愿景书，而是一份**与代码对齐的地图 + 契约清单**。
-> 当文档与代码冲突时，**以代码为准**，并顺手把本文档改对。
+> **本文件是 AI 编程助手进入本仓库的第一入口，常驻载入。**
+> 它是一份与代码对齐的**地图 + 契约清单**，不是设计愿景书。细则按路径拆在 `.claude/rules/`。
+> 当文档与代码冲突时，**以代码为准**，并顺手把文档改对。
 
 ---
 
 ## 0. 阅读与使用约定
 
 ### 0.1 三类标记
-
-全文所有描述必须落在以下三类之一，写新内容时也请沿用：
 
 | 标记 | 含义 | 你该怎么做 |
 |------|------|-----------|
@@ -22,20 +20,16 @@
 
 ### 0.2 文档体系
 
-| 文件 | 面向 | 内容 |
-|------|------|------|
-| `CLAUDE.md`（本文件） | AI 助手 + 开发者 | 代码地图、数据契约、红线约束、已知缺陷、设想清单 |
-| `README.md` | 人类 | 项目介绍、截图、快速启动 |
-| `docs/fix-tickets/` | AI 助手 | 在途工单，每单自包含、可并行；索引 `README.md`、流程规则 `CONVENTIONS.md`、排期理由与 PR 结论 `NOTES.md` |
-| `.env.example` | 全体 | **配置项的唯一真值**，本文档不复制其内容 |
-| `backend/models.py` | 全体 | **数据模型的唯一定义源**，本文档只讲语义与陷阱 |
+`CLAUDE.md`（常驻：地图、契约精简版、陷阱索引、缺陷）· `.claude/rules/*.md`（**按路径载入**，frontmatter `paths`；契约细则与陷阱正文）·
+`docs/fix-tickets/`（工单库：推理与历史；`README.md` 索引、`CONVENTIONS.md` 流程；`NOTES.md` **已冻结**）· `README.md`（给人类）·
+`.env.example`（**配置项唯一真值**）· `backend/models.py`（**数据模型唯一定义源**）。
 
 ### 0.3 给 AI 助手的硬性要求
 
-1. 改代码前先看第 7 节【契约】，那 9 条是本系统的承重墙。
-2. 改数据模型必须走第 5.4 节的三步 checklist，否则字段会静默丢失。
-3. 第 12 节列出的"已知缺陷与 dead code"里的东西**不要顺手修**——除非工单要求，否则先问。
-4. 不要为了"补齐文档"新建 md 文件；改动落到本文件对应章节即可。
+1. 改代码前先看第 7 节【契约】，那 9 条是承重墙；动到某目录时留意随之载入的规则文件。
+2. 改数据模型必须走 `.claude/rules/persistence.md` 的三步 checklist，否则字段会静默丢失。
+3. 第 12 节列出的"已知缺陷与 dead code"**不要顺手修**——除非工单要求，否则先问。
+4. 新内容按第 14 节的落位规则写进根文件 / 规则文件 / 工单，不要新建零散 md。
 5. 不新增核心依赖；确需新增，先在第 2 节登记。
 
 ---
@@ -46,97 +40,49 @@
 
 PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项目）。
 
-用户上传非结构化种子文本（小说 / 剧本 / 世界观设定），系统抽取实体建立知识图谱，
-生成一批带**信息不对称**的角色智能体；随后由**导演智能体**按场次组织推演，
-每场结束后评估并决策（继续 / 下一场 / 回滚）；全程以场次为单位自动打快照，
+用户上传种子文本（小说 / 剧本 / 世界观设定），系统抽取实体建立知识图谱，生成一批带**信息不对称**的
+角色智能体；**导演智能体**按场次组织推演，每场结束后评估并决策（继续 / 下一场 / 回滚）；每场自动打快照，
 用户可从任意快照分叉出 IF 线；最后由总结智能体产出小说 / 剧本 / 报告。
+形态是：用户给大方向 → 导演宏观调控 → 角色自然演绎。不是剧本执行器，也不是社交模拟器。
+设计来源（MiroFish / SillyTavern 的取舍）见 `README.md`「设计来源」。
 
-### 1.2 血统与取舍（理解设计动机用）
-
-| 来源 | 学到了什么 | 抛弃了什么 |
-|------|-----------|-----------|
-| **MiroFish**（原基座，多智能体群体模拟） | 多层记忆设计、实体抽取 → 图谱 → 智能体的整体流水线 | 强依赖 Zep（付费昂贵）；一切实体被拍平成"社交账号"（游戏剧情里的天灾也变成发帖账号）；快照/分支难做 |
-| **SillyTavern**（角色扮演） | 角色卡（persona / speech_style）、lorebook 按关键词动态注入、持续上下文工程 | — |
-| **"GPT 接入原神"类项目** | 长线任务与具体角色都由 AI 驱动，而非脚本 | — |
-
-**因此本项目的形态是**：用户给大方向 → 导演做宏观调控 → 角色自然演绎。
-不是剧本执行器，也不是社交模拟器。
-
-> 【实况】CLAUDE.md 早期版本把 AutoGen / LlamaIndex / microsoft-graphrag 写成核心实现，
-> 实际开发中三者均未接入运行路径（详见第 2 节）。这是开发期的技术选型演进结果，
-> 不影响最终能力，**不要试图"修复"回去**。
-
-### 1.3 真实工作流
+### 1.2 真实工作流
 
 ```
 ① 上传种子文本  POST /projects/{id}/seed
 ② 触发构建      POST /projects/{id}/build   （后台任务）
-        ↓  自研 LLM 抽取（非 microsoft/graphrag）
-   实体 + 关系 → Kuzu 图谱
-   角色实体     → CharacterCard（含 known_facts / unknown_facts）
-   世界规则     → LoreEntry
-   并创建 main 分支
+        ↓  自研 LLM 抽取 → 实体+关系写 Kuzu；角色卡（known/unknown_facts）；LoreEntry；物件；main 分支
 ③ 导演规划场景  POST /projects/{id}/scenes/plan  → SceneConfig（建议，不落库）
 ④ 创建场景      POST /projects/{id}/scenes       → Scene（落库，pending）
 ⑤ 开始模拟      POST /scenes/{id}/start          （后台任务 + SSE）
-        ↓  前置快照 → 轮询发言 → 解析三态 → 终止判定 → 后置快照 → 记忆固化
+        ↓  前置快照 → 选人发言 → 解析三态 → 终止判定 → 后置快照 → 记忆固化
 ⑥ 自动评估      DirectorAgent.evaluate_scene → evaluations 表 → SSE 推送
-⑦ 导演决策      POST /scenes/{id}/decision
-        ├─ continue   同场加轮次重跑
-        ├─ next_scene 规划并创建新场景（可人工覆盖角色/地点/条件）
-        └─ rollback   恢复快照 + 新建"回滚重演"场景
-   （或开启 AutoPilot：POST /projects/{id}/autopilot，由导演按规则自动决策、连跑多场，见 4.2 陷阱 22）
+⑦ 导演决策      POST /scenes/{id}/decision：continue / next_scene / rollback（或 AutoPilot：POST /projects/{id}/autopilot 自动连跑多场）
 ⑧ 生成输出      POST /projects/{id}/output  → 网文 / 剧本 / 舞台剧 / 报告 / 原始日志
 ```
 
-### 1.4 设计信条
+### 1.3 设计信条
 
-- **信息不对称是第一性的**：角色只能看到自己的 `known_facts`。公主不在朝堂，
-  就该在与王子对话后才自然地表现出惊讶。这是本项目区别于普通群聊模拟的核心。
-  与之互补的是 **`WorldState`（分支级世界变量）**：信息不对称管"不该知道的不知道"，
-  世界状态管"该传播的能传播"——季节、势力态度这类**所有人都能感知**的世界层事实，
-  跨场次持续演进并注入每个在场角色。两者的边界就是"这件事是不是公开的"。
-- **快照不追求确定性重放**：LLM 有随机性，回到快照重跑不会 100% 复现。
-  快照的目的是 **"我能回到这里分叉 IF 线"** 和 **"演得不好能回来调"** ，不是版本控制。
+- **信息不对称是第一性的**：角色只能看到自己的 `known_facts`。与之互补的是**世界层**：新项目默认 schema 2
+  （统一世界，事实与观察分离，角色只经"可见投影"获得世界信息；见契约 1）。边界是"这件事是不是公开 / 在场可感知"。
+- **快照不追求确定性重放**：目的是"能回到这里分叉 IF 线"，不是版本控制。
 - **导演宏观、角色微观**：导演不写台词，只搭场景、选人、评估、决策。
-- **本地优先 / 优雅降级**：kuzu、chromadb、autogen 全部缺失时系统仍可跑（见【契约6】）。
-- **编排集中**：所有跨模块调用只允许发生在 `backend/services/orchestrator.py`。
+- **本地优先 / 优雅降级**：kuzu、chromadb、autogen 缺失时应仍可跑（契约 6；chromadb 缺失目前有已知缺陷，见第 12 节）。
+- **编排集中**：所有跨模块调用只发生在 `backend/services/orchestrator.py`。
 
 ---
 
 ## 2. 技术栈实况
 
-| 层次 | 实际使用 | 状态 | 说明 / 真实实现位置 |
-|------|---------|------|--------------------|
-| LLM 接入 | OpenAI 兼容 SDK + tenacity | ✅ 已接入 | `backend/utils/llm.py` 是**唯一出口** |
-| 实体抽取 | 自研 LLM + JSON 提示词 | ✅ 已接入 | `graphrag_pipeline/entity_extractor.py` |
-| 知识图谱 | Kuzu（嵌入式，Cypher） | ✅ 已接入 | `knowledge_graph/graph_manager.py`；缺失时降级为空图 |
-| 向量记忆 | chromadb 原生 client + 远程 embedding | ✅ 已接入 | `memory/long_term.py` + `memory/embeddings.py` |
-| 场景引擎 | **自研**手写对话循环 | ✅ 已接入 | `scene_engine/engine.py` |
-| 后端 | FastAPI + Uvicorn + sse-starlette | ✅ 已接入 | `backend/main.py` |
-| 持久化 | aiosqlite + JSON 文件树 | ✅ 已接入 | `utils/db.py` + `services/repository.py` |
-| 前端 | Vue 3 + Vite + Pinia + Axios | ✅ 已接入 | `frontend/src/` |
-| 图谱可视化 | AntV G6 | ✅ 已接入 | `GraphViewer.vue` / `GraphViewer2.vue` |
-| 衬线字体 | `@fontsource/noto-serif-sc`（思源宋体 400/600） | ✅ 已接入 | `main.ts` 引入。对白、开场白、输出预览用；自托管、按 unicode-range 分片，离线可用，只下载页面上出现过的字 |
-| 图标 | Lucide 图标的 SVG 路径（内联，不是依赖） | ✅ 已接入 | `components/ui/icons.ts`，取自 lucide-static v1.48.0（ISC）；fork / snapshot 两个自绘 |
-| **AutoGen** (`autogen-agentchat`) | 仅 `base_agent.py` 与 `CharacterAgent.get_autogen_agent()` | 🚫 **已评估，倾向不引入** | 无调用方。GroupChat 编排会打破【契约3】的 system 静态 / user 动态结构；未来的"角色动作交由环境智能体裁决"用 OpenAI 原生 function calling 即可，不需要 AutoGen |
-| **LlamaIndex** | 无 | 🚫 **已评估，暂不引入** | 全仓库零 import。它对长期记忆的真实增量价值 = 时间衰减权重 + 混合检索(BM25) + 分层索引，这三项可在现有 Chroma 封装上手写，不必引入整个框架 |
-| **microsoft/graphrag** | 无 | ❌ **未使用** | 已移入 `[project.optional-dependencies].graphrag` |
+| 层次 | 实际使用 | 说明 |
+|------|---------|------|
+| LLM 接入 | OpenAI 兼容 SDK + tenacity | `backend/utils/llm.py` 是**唯一出口**；四路异构模型与温度约定见 `.claude/rules/llm.md` |
+| 抽取 / 图谱 / 向量 | 自研 LLM + JSON 提示词；Kuzu（缺失降级为空图）；chromadb + 远程 embedding | `graphrag_pipeline/entity_extractor.py`、`knowledge_graph/graph_manager.py`、`memory/long_term.py` + `embeddings.py` |
+| 引擎 / 后端 / 持久化 | 自研手写对话循环；FastAPI + Uvicorn + sse-starlette；aiosqlite + JSON 文件树 | `scene_engine/engine.py`、`backend/main.py`、`utils/db.py` + `services/repository.py` |
+| 前端 | Vue 3 + Vite + Pinia + Axios；图谱 AntV G6；思源宋体自托管（`@fontsource/noto-serif-sc`）；图标为内联 Lucide SVG 路径（`components/ui/icons.ts`，非依赖） | `frontend/src/` |
+| 未采用 | **AutoGen**（仅 `base_agent.py` 封装、无调用方，GroupChat 会破坏契约 3）、**LlamaIndex**（零 import）、**microsoft/graphrag**（已移入 optional-dependencies） | 早期文档曾写成核心实现，是选型演进结果，**不要试图"修复"回去** |
 
-> 改 RAG 检索请改 `memory/long_term.py`；改实体抽取请改 `entity_extractor.py` 的提示词；
-> 改发言顺序请改 `scene_engine/engine.py` 与 `scene_engine/speaker_selector.py`。
-> **不要去找 GroupChat 或 settings.yaml。**
-
-### 2.1 四路异构模型
-
-`settings.director_model / character_model / summary_model / selector_model` 分别读
-`LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY / SELECTOR`，留空回退 `LLM_MODEL_NAME`。四者均已生效。
-
-温度约定：角色 0.8（创意）、导演 0.3（一致）、总结 0.7（平衡）、选择器 0.2（判断）。
-
-selector 另有独立的 `LLM_SELECTOR_BASE_URL / LLM_SELECTOR_API_KEY`（留空复用主配置），
-用于把"发言者打分"这种短输入短输出的判断任务挂到本地小模型上。透传路径仍是
-`utils/llm.py` 的 `chat()/chat_safe()` 的 `base_url` / `api_key` 参数，**契约7 未破**。
+改 RAG 检索改 `memory/long_term.py`；改实体抽取改 `entity_extractor.py`；改发言顺序改 `scene_engine/`。**不要去找 GroupChat 或 settings.yaml。**
 
 ---
 
@@ -145,1423 +91,190 @@ selector 另有独立的 `LLM_SELECTOR_BASE_URL / LLM_SELECTOR_API_KEY`（留空
 ```
 backend/
 ├── models.py           ★ 所有领域 dataclass 的唯一定义处
-├── config.py           ★ pydantic-settings 单例 + 派生路径 + 三路模型属性
+├── config.py           ★ pydantic-settings 单例 + 派生路径 + 四路模型属性
 ├── exceptions.py       业务异常树（ConflictError→409，InvalidRequestError→422，其余 PlotSystemError→404）
-├── main.py             FastAPI 装配 + 全局异常处理 + lifespan（init_db / 构建对账）
-│
+├── main.py             FastAPI 装配 + 全局异常处理 + lifespan（init_db / 启动对账）
 ├── services/           ★★ 编排层：找业务逻辑先看这里
-│   ├── orchestrator.py   唯一跨模块编排点（构建/规划/运行/决策/输出/对账）
-│   ├── repository.py     唯一持久化出口（SQLite + 角色卡 JSON + 分支世界变量 / 分镜稿 JSON）
-│   ├── world.py          统一世界的领域规则（纯函数，无 IO；工单24/20 schema 2）
-│   ├── world_repository.py  世界版本/事件的持久化（经 repository 暴露）
-│   ├── world_access.py   用户命令处理、规则采用和迁移（工单24/20 schema 2）
-│   ├── world_state.py    世界变量的规范化/预算/渲染（纯函数，无 IO；schema 1 兼容层）
-│   ├── storyboard.py     导演分镜稿的预算/渲染/patch 合并/用户编辑/分叉（纯函数，工单18）
-│   ├── objects.py        物件的预算/可见性规整/用户编辑/角色可见的【在场物件】（纯函数，工单24/20）
-│   ├── environment.py    场景物件状态的预算/渲染、裁决输出解析、环境回合额度（纯函数，工单20）
-│   ├── autopilot.py      AutoPilot 会话的停止判定与记账（纯函数，工单12；调度在 orchestrator）
+│   ├── orchestrator.py   唯一跨模块编排点（构建/规划/运行/决策/输出/对账/AutoPilot 调度）
+│   ├── repository.py     唯一持久化出口（SQLite + 角色卡/分支世界变量/分镜稿/物件 JSON）
+│   ├── world.py / world_repository.py / world_access.py   统一世界 schema 2（领域规则纯函数 / 持久化 / 命令·采用·迁移）；world_state.py 为 schema 1 兼容层
+│   ├── storyboard.py / objects.py / environment.py / autopilot.py   分镜稿 / 物件 / 场景环境状态与裁决解析 / AutoPilot 停止判定（均纯函数）
 │   ├── inspection.py     ★ 角色内部状态的唯一只读查询层（面板/导演/总结共用）
-│   └── events.py         SSE 内存事件总线（asyncio.Queue）
-│
+│   └── events.py         SSE 内存事件总线
 ├── api/                路由层：只做参数校验 → 调 services → to_dict
 │   projects / characters / scenes / director / branches / objects / output / graph / schemas
-│
-├── agents/
-│   ├── character_agent.py  角色演绎（prompt 构建 + 记忆检索 + chat_safe）
-│   ├── director_agent.py   plan_scene / evaluate_scene / make_decision
-│   ├── summary_agent.py    5 种格式输出
-│   ├── environment_agent.py 环境裁决器：按物件隐藏规则裁决角色的尝试（工单20，由 orchestrator 注入引擎）
-│   └── base_agent.py       AutoGen 模型客户端封装（⚠️ 无调用方）
-│
-├── scene_engine/
-│   ├── engine.py           手写对话循环 + 三态解析 + 快照编排
-│   ├── speaker_selector.py selector 模式的独立评分选人（工单11）
-│   ├── action_intents.py   动作意图：本地预过滤 + 一轮至多一次的意图抽取（工单24）
-│   ├── continuation.py     角色回复的续写截断（解析之前，工单30，见 4.2 陷阱 28）
-│   ├── termination.py      终止条件判定
-│   └── scene_config.py     仅从 models.py 再导出
-│
-├── memory/
-│   ├── memory_manager.py 三层门面
-│   ├── short_term.py     deque 对话缓冲（纯内存）
-│   ├── long_term.py      ChromaDB 向量库（可降级为字符重叠伪检索）
-│   ├── episodic.py       关键词启发式的事件摘要（纯内存）
-│   └── embeddings.py     RemoteEmbeddingFunction（替换 Chroma 默认本地 onnx 模型）
-│
-├── knowledge_graph/
-│   ├── graph_manager.py  Kuzu 操作（同步 API 的 async 包装）
-│   ├── schema.py         DDL
-│   └── queries.py        ⚠️ dead code，零 import
-│
-├── snapshot/
-│   ├── snapshot_manager.py 快照创建/恢复/删除 + 分支 fork + 分支记忆复制 + 分支树
-│   ├── branch_tree.py      树结构组装
-│   └── models.py           仅从 models.py 再导出
-│
-├── graphrag_pipeline/
-│   ├── pipeline.py        分块 → 抽取 → 写图 → 生成角色卡 → 提取世界规则
-│   ├── entity_extractor.py
-│   ├── persona_builder.py
-│   └── world_rules.py
-│
-└── utils/
-    ├── fileio.py      ★ 原子写文件的唯一实现（临时名唯一且不长于目标名）
-    ├── llm.py         ★ LLM 唯一出口（chat / chat_safe / estimate_tokens），也是调用计数的唯一计数点
-    ├── usage.py       LLM 调用计数器与按上下文归属（工单25，见 4.2 陷阱 26）
-    ├── context.py     ★ 统一上下文压缩管线（fit_lines / compact_lines，4 种策略）
-    ├── turns.py       ★ 轮次的统一渲染 / 感知判定 / 计数口径（render_turn / perceive / character_turns）
-    ├── db.py          SQLite DDL + 连接
-    ├── serializer.py  to_dict（dataclass → JSON 安全字典）
-    ├── logger.py
-    └── init_db.py     `python -m backend.utils.init_db`
+├── agents/             character_agent / director_agent / summary_agent / environment_agent
+│                       （base_agent.py 是 AutoGen 封装，无调用方）
+├── scene_engine/       engine.py（对话循环+三态解析+快照编排）/ speaker_selector.py / action_intents.py /
+│                       continuation.py（续写截断）/ termination.py / scene_config.py（仅再导出）
+├── memory/             memory_manager（三层门面）/ short_term / long_term（Chroma，可降级）/ episodic / embeddings
+├── knowledge_graph/    graph_manager / schema / queries.py（⚠️ dead code）
+├── snapshot/           snapshot_manager（快照+分支+记忆复制）/ branch_tree / models.py（仅再导出）
+├── graphrag_pipeline/  pipeline / entity_extractor / persona_builder / world_rules（另含设定可见性与物件抽取，见 lore-build 规则）
+└── utils/              fileio ★原子写 / llm ★LLM 唯一出口 / usage 调用计数 / context 上下文压缩 /
+                        turns 轮次渲染·感知·计数 / branch_memory 分支记忆初始化凭据 / db / serializer / logger / init_db
 
 frontend/src/
-├── pages/       Workspace.vue（项目+图谱） / Director.vue（导演台） / BranchMap.vue（分支图） / Output.vue
-├── components/  DialogLog.vue（剧本格式台词）、DirectorPanel.vue、StoryboardPanel.vue、
-│                CharacterInspector.vue、CharacterCard.vue、ObjectsPanel.vue（物件编辑器）、
-│                WorldPanel.vue（世界状态管理，工单24/20）、
-│                GraphViewer.vue、GraphViewer2.vue
-│   ├── director/  BranchRail.vue（左栏：当前谱系+场景）、StageView.vue（舞台）、SceneComposer.vue（开演前规划）、
-│   │              AutoPilotControl.vue（舞台底栏的自动推演开关）
-│   └── ui/        Icon.vue + icons.ts（内联 SVG 图标）、PageHeader.vue
-├── composables/ theme.ts（亮/暗主题 + 给 G6 取 CSS 变量）
-├── utils/       branches.ts（分支配色、谱系、分支图布局，纯函数）、turns.ts（turn_update 合并、角色轮次计数）、
-│                decision.ts（舞台底栏的导演建议高亮）
-├── stores/      project.ts / characters.ts / scenes.ts / director.ts
-├── router/index.ts、api/client.ts、types/index.ts、styles/global.css（设计变量的唯一定义处）
+├── pages/ Workspace / Director / BranchMap / Output；components/（DialogLog、DirectorPanel、StoryboardPanel、ObjectsPanel、WorldPanel、CharacterInspector、
+│   GraphViewer(2)、director/*、ui/*）；stores/ composables/ utils/（branches / turns / decision）；api/client.ts；types/index.ts；styles/global.css（设计变量唯一定义处）
+
+scripts/（run_demo、各类只读/修复脚本）　tests/（后端 pytest；`frontend/tests` 前端 node:test）
 ```
 
-**入口速查**：
-- 想改「一场戏怎么演」→ `scene_engine/engine.py`
-- 想改「角色说什么」→ `agents/character_agent.py`
-- 想改「谁来演、演完怎么办」→ `services/orchestrator.py`
-- 想改「存了什么」→ `services/repository.py` + `utils/db.py`
-- 想加 API → `api/*.py`（**业务逻辑不要写在这层**）
+**入口速查**：一场戏怎么演 → `engine.py`；角色说什么 → `character_agent.py`；谁来演、演完怎么办 → `orchestrator.py`；存了什么 → `repository.py` + `db.py`；
+加 API → `api/*.py`（**业务逻辑不要写在这层**）。
 
 ---
 
 ## 4. 数据模型
 
-> **唯一定义源：`backend/models.py`。** 这里只讲语义与陷阱，不复制字段清单。
-
-### 4.1 模型总览
-
-| 模型 | 作用 | 存放位置 |
-|------|------|---------|
-| `Project` | 推演项目（含**主线目标锚点** `narrative_goal` / `ending_criteria`） | SQLite `projects` |
-| `CharacterCard` | 角色卡（persona + 信息不对称 + 关系 + 当前状态） | **文件** `characters/{cid}.json` |
-| `CharacterState` | 角色在某时刻的快照态（含短期缓冲 / 事件摘要） | 快照目录 JSON |
-| `CharacterInspection` | Inspection 层的只读组装结果（**不落库**） | 运行时 |
-| `LoreEntry` | 世界观条目（keywords 触发、scope 控制可见范围、priority 排序） | 内嵌于角色卡 |
-| `WorldState` | schema 1 的分支级世界变量，供旧项目兼容 | 文件 `world_state/{branch_id}.json` |
-| `WorldRevision` / `WorldFact` / `WorldObservation` | schema 2 的不可变世界版本：客观属性、角色历史观察、时点物件定义；按稳定对象 ID 定位 | SQLite `world_revisions`；快照引用版本 ID |
-| `WorldOperation` / `WorldEvent` | 显式 set/unset 命令和已提交事件；来源、幂等键、观察者、结构化变化 | SQLite `world_events` |
-| `Storyboard` / `StoryBeat` / `ForkOrigin` | **分支级**导演分镜稿：路线图（带稳定 `beat_id` 的节拍）+ 长期备忘 + 分叉说明 + changelog + 修订号。**只进导演 prompt** | **文件** `storyboard/{branch_id}.json`，快照带时点副本 |
-| `StoryboardPatch` | 导演随评估产出的分镜稿修改（相对导演读到的那一版） | 内嵌于 `SceneEvaluation` |
-| `StoryboardView` | 分镜稿 + 当前主线目标原文/版本 + `goal_stale`（GET/PUT 的响应，**不落库**） | 运行时 |
-| `Scene` / `DialogueTurn` | 场景与对话轮次（`Scene.objects_present` 为本场在场物件，`Scene.environment_state` 为本场物件公开状态；轮次带 `kind`：角色轮次 / 环境回合，见陷阱 24 / 27；环境回合带 `narration` / `private_detail` / `perceived_by` / 来源，轮次带 `revision`） | SQLite `scenes`（轮次内嵌） |
-| `ActionIntent` | 一个 `*动作*` 段的意图（物件 / 动词 / 细节 / `status` + `skip_reason`），挂在 `DialogueTurn.actions`，**只给导演与用户看**（见陷阱 25）；adjudicate 档的 pending / resolved / failed 见陷阱 27 | 随轮次内嵌 |
-| `LLMUsageStat` | 某一用途的 LLM 调用计数（次数 / 失败 / 重试 / token / 估算次数 / 耗时）。`Scene.llm_usage` 记运行期间的、`SceneEvaluation.llm_usage` 记评估的（见陷阱 26） | 随场景 / 评估内嵌 |
-| `WorldObject` | **项目级**物件：公开描述 + 隐藏规则（**只进导演与环境层**）+ 可见性 `global` / `private`（配 `known_by` 名单）/ `hidden` | **文件** `objects/{object_id}.json` |
-| `SceneLineage` | 谱系回溯用的场景字段投影（不含对白，**只读、不可存回**） | 运行时 |
-| `SceneConfig` | 导演规划产物（**不落库**，运行时构造） | — |
-| `SceneEvaluation` | 四维评分 + 主线度量（推进度/目标版本/结局/未收束线索）+ 无锚点标记 `goal_missing` + 推荐决策 | SQLite `evaluations` |
-| `StoryRecord` | 导演历史的一条（场景 id + 名 + 评估 + `threads_known`），`inherited_story_history` / `story_history` 的元素 | 内嵌于场景 / 快照 |
-| `DirectorDecision` | 导演决策 + 人工覆盖字段 + 来源 `source`（human / auto） | SQLite `decisions` |
-| `AutoPilotSession` / `AutoPilotStep` | 一次自动推演会话：步数/连续回滚上限、计数、已执行的自动决策、停止原因（**不落库**） | 进程内存 |
-| `Snapshot` / `Branch` / `BranchTree` | 快照与分支 | SQLite `snapshots`/`branches` + 快照目录 |
-| `MemoryChunk` / `MemorySnapshot` | 记忆检索与序列化载体 | 运行时 |
-
-### 4.1.1 统一世界与环境（schema 2，2026-10-13）
-
-**【实况】** API 新建项目使用 `Project.world_schema_version=2`；没有该字段的旧项目按 1
-读取。下文原有 `WorldState` 文件预算、场末 delta 补写和 `Scene.environment_state` 规则
-适用于 schema 1。schema 2 使用以下规则；两种项目各只有一个权威写入路径，不双写。
-
-- `services/world.py` 是无 IO 的领域规则；`world_repository.py` 经 `repository` 暴露持久化；
-  `world_access.py` 处理用户命令、规则采用和迁移。没有新增依赖。
-- 一项事实由 `(subject_kind, subject_id, attribute)` 定位，值保留 bool、数字、文本、null
-  或实体引用类型。`set` 与 `unset` 明确区分；删除保留时点标记，使角色重新到场可观察到属性已清除；
-  显示名称不承担身份。当前地点属性的现场匹配
-  使用 `Scene.location` 标识；尚未把地点迁成独立注册表。
-- `WorldRevision` 保存完整属性、各角色的历史观察和物件定义（含隐藏规则、可见性）。
-  `world_heads` 是各分支当前版本和运行占用的索引。版本不可修改，分叉可以引用同一版本，
-  后续写入生成各自的新版本。完整版本会占用更多存储，当前不做版本回收。
-- `global` 是明确允许广泛传播的事实；`observable` 需要在现场且能感知对应物件或地点；
-  `hidden` 不直接提供给角色。曾经获知某物件状态，只留下当时的观察，不订阅后来的值。
-  在场者目睹 private 物件的 observable 变化即视为发现了它（公开叙述本就进全场 transcript，
-  观察须与叙述一致）；不想让旁人发现的变化应裁决为 hidden。
-  重新进入现场时更新观察。个人推测和言论不提升成客观世界属性，角色记忆继续独立工作。
-- 环境裁决读取版本内规则和本次允许作用的物件状态，提交显式属性变化。内部隐藏属性也能
-  保存，但不向观察者分发；可观察变化才形成现场观察。裁决输出不因
-  prompt 预算截断；非法结果整次拒绝，不保留与未接受变化对应的叙述。当前动作裁决的作用
-  范围仍是目标物件，主动环境事件和通用多物件物理模拟尚未实现。
-- 世界版本、事件、场景环境回合、动作状态及轮次 revision 在同一个 SQLite 事务提交。
-  提交完成后才写记忆和推 SSE。事务失败保持 pending，恢复时可补裁决。提示词展示预算
-  只省略显示行，不删除事实；用户用世界面板和事件接口查完整数据。
-- 角色和 selector 通过同一可见投影获得动态状态，进入 user 的【当前环境】。
-  system 不再摊入世界变量。`initial_conditions` 不能覆盖已存在的属性标识或名称。
-  它只承载本场提示；事实修改使用世界命令。
-- 场景脚本 `environment_script` 经过规划、手动创建、下一场和分叉传递，仅环境侧读取。
-  预制揭示只渲染触发条件，内容只给执行者；现场生成调用只拿当事人的 known_facts 与
-  可用记忆，拿不到隐藏规则和预制内容。生成触发只接受固定 actor_memory 代码，
-  不把裁决器自由书写的效果说明转交生成调用。生成失败保留有效的公开裁决。
-- 导演评估的 `world_operations` 是下一场前的宏观提案，只许修改世界层广泛公开属性。
-  next_scene 时经同一事务入口提交；continue 和 rollback 不应用。评估失败不撤销已经
-  提交的环境事实，后置快照无需补写世界状态。导演历史和分镜稿的既有补写守卫仍保留。
-- 前置/后置快照的 `world_revision_id` 分别引用实际起点和场末事实；物件规则随版本走。
-  编辑项目物件卡后，需要在某分支“采用当前物件规则”，旧快照保持旧规则。
-  schema 2 项目从 schema 1 快照分叉时，不猜历史物件状态和规则：只保留该快照的旧记录，
-  新分支可显式采用规则、补录属性，不回读来源分支的当前世界。
-- 每个 schema 2 分支同时只有一个场景推进世界，使用持久化占用和执行 token。
-  同分支其他场景及外部编辑被拒绝；不同分支可并行。启动时在契约 9 的单进程前提下
-  清理遗留占用，不声称支持多 worker。暂停后若该分支已经推进，原场需从快照分叉后继续。
-
-**【实况】迁移**：`GET /projects/{pid}/world/migration-preview` 只生成分类及内容指纹。
-`POST /projects/{pid}/world/migrate` 接受显式属性选择，事务内切换全项目所有分支和 schema。
-未选择的原始世界记录完整保留为 `legacy_records`，不向角色广播；不改旧文件和快照，也不
-重写角色记忆。运行/决策中的项目不能迁移，运行初始化与迁移共用项目锁。
-旧场景已有对白时不在新体系中直接续跑，需从历史快照分叉。前端导演页“世界”标签可预览
-迁移、管理事实、采用规则和查看来源；复杂迁移可直接使用命令接口。
-
-接口：`GET /branches/{bid}/world-state` 按项目 schema 返回旧变量或完整新版本；
-`POST /branches/{bid}/world/commands` 带 request_id、revision_id、operations 和 observers；
-`POST /branches/{bid}/world/adopt-definitions` 显式采用项目定义；
-`GET /branches/{bid}/world/events` 查看最近已提交事件（包含分叉起点前的继承来源，不包含
-来源分支之后的变化）。均挂在 `/projects/{pid}` 下。
-
-验收：`tests/test_unified_world.py`、`tests/test_unified_world_api.py` 与前端
-`tests/world-panel.test.mjs` 覆盖状态/观察分离、类型与删除、事务/幂等/恢复、规则和快照分叉、
-评估失败、场间提交、显式迁移，以及切分支与迟到响应隔离。
-
-### 4.2 容易踩的语义陷阱
-
-1. **`Scene.snapshot_id_before` 为空是有意义的信号**：`SceneEngine.run()` 只有在它为空时
-   才创建前置快照。回滚重演场景**必须**留空它，否则会跳过快照、丢掉新初始条件。
-2. **`Scene.restore_snapshot_id` 与上者分工**：前者管"从哪儿回填运行时记忆"，
-   后者管"要不要打快照"。两者不可合并。
-3. **`Scene.speaker_mode` 与 `SceneConfig.speaker_mode` 是同一条链**（工单11 已打通）。
-   缺省值来自 `settings.DEFAULT_SPEAKER_MODE`，由 `CreateSceneRequest` 或
-   `DirectorAgent.plan_scene` 写入 `Scene`，再由 `run_scene` 传给 `SceneConfig`。
-   **所有新建 `Scene` 的地方都要跟**——尤其是 `apply_decision` 的 rollback 分支，
-   它手工构造重演场景，漏传就会让 selector 场景静默退回轮询。
-   取值受两处校验保护：`CreateSceneRequest`（422）与 `Settings.DEFAULT_SPEAKER_MODE`
-   （启动即失败）；`SceneEngine._select_speaker` 兜底回退 round_robin 时会 warning 一次。
-4. **`DialogueTurn.selector_notice` 只在 selector 选人降级时非空**，内容是给前端
-   在角色名后显示的一句灰字（服务不可用/部分打分失败）。它是展示用信号，
-   不参与任何逻辑判断，也不进入角色 prompt。
-5. **`CharacterState.long_term_memory_snapshot` 恒为空字符串**，`_collect_states()` 不写它。
-6. **`DirectorDecision` 的 `next_*` 覆盖字段全为 `None` 时表示"保持 AI 自动规划"**，
-   不要用空字符串/空列表当默认值。
-7. **四维评分语义**：`narrative_goal` / `dramatic_tension` / `character_consistency` 越高越好；
-   `plot_deviation` **越低越好**（0 = 完全贴合主线）。
-8. **`SceneStatus.PAUSED` = “跑一半断了”**：运行异常、服务重启对账（见 6.4）都会落到这个状态。
-   它不可提交决策（CAS 只接 completed），但可以再次 `POST /scenes/{id}/start` 续跑
-   （`snapshot_id_before` 已存在→不重打快照，`dialogue_log` 已逐轮落盘→注入历史续接）。
-9. **`Scene.turns_consolidated` 是记忆固化的水位线**，与 `turns_completed` 不同：
-   对话逐轮落盘，固化（`consolidate`）则按 `MEMORY_CONSOLIDATE_EVERY_TURNS` 周期发生，
-   外加场景结束时的收尾一次。崩溃/异常中断后
-   续跑时，`SceneEngine.run()` 会把 `dialogue_log[turns_consolidated:]` 重新写回各角色记忆，
-   否则就是“对话恢复了，但角色忘了这些对话”。**新增写入记忆的路径时必须跟上这个水位线**，
-   否则会造成长期记忆重复写入（长期记忆按角色+分支隔离，但不随场景状态回滚，重复只会累积）。
-   **且水位线必须与固化写入在同一次落盘内推进**（`run()` 的 `on_persist` 钩子）：
-   内存里改完、等方法返回再存是不够的 —— 中间隔着后置快照拷贝几十兆的 kuzu/chroma，
-   进程在该窗口被硬杀（走不到 orchestrator 的 `except`）就会整场二次写入。
-   **固化的触发权只在 `SceneEngine`**（工单26）：只有它同时知道"写了几轮"与"水位线该推到哪"，
-   并能把两者放进同一次 `on_persist`。`MemoryManager.add_experience` **不得**在缓冲写满时
-   自行 `consolidate()` —— 那会绕过水位线，跑满一个缓冲后崩溃就整段二次写入。
-   同理，`_consolidate_all` 的推进必须早于 `on_turn`（后者推 SSE，落盘先于推送）。
-   **重放循环也要走周期固化**：短期缓冲是定长 deque，一次补回上百轮会静默淘汰最早的内容。
-   **固化周期与缓冲容量是一条真实耦合，不是两个独立旋钮**：长期记忆的唯一入口是短期缓冲，
-   固化跨度一旦达到容量，超出部分在到达 `consolidate()` 前就被挤出队列，而水位线照推 ——
-   宣称已入库、实际**永久丢失**，且无痕（比重复写入更糟，后者至少能被脚本查出来）。
-   两道闸门缺一不可：`Settings` 校验器挡住 `周期 >= 容量` 的配置（启动即失败），
-   `SceneEngine._buffer_under_pressure` 在运行时按缓冲占用率强制固化 —— 后者不可省，
-   因为跨度不只由配置决定（`周期=0` 时跨度是整场 `max_turns`；`prime()` 回填让缓冲开跑即非空）。
-   **续跑重放的两个起点不可合并**：长期记忆从 `turns_consolidated` 起补（早于水位线的已入库，
-   重放即重复），而**事件摘要（episodic）是独立内存层，与水位线无关** —— 按水位线切会让
-   `[0, turns_consolidated)` 的重要事件在续跑后彻底消失，故该段只走 `replay_episodic`
-   （只补摘要、不写缓冲）。**该重放必须整批、且按正文去重**（`EpisodicMemory.replay`）：
-   `prime()` 可能已载入其中一部分（契约4 优先级下，正常 continue 命中的 `snapshot_id_after`
-   全含、崩溃续跑命中的 `snapshot_id_before` 全不含、continue 半途再崩只含前半段），
-   逐轮 append 会让正常 continue 把整段追加第二遍，而 `_events` 只保留末 10 条 ——
-   更早场次的重要事件就被挤出窗口。episodic 不落盘、无脚本可查，挤掉即永久丢失。
-   **不要改成"判断快照来源"再二分**：第三种情况（半途再崩）两边都不对。
-   **事件摘要的条目必须是单行**：它按"一行一条"序列化（`dump`/`load` 以 `\n` 切分），
-   而 `_parse_turn` 的动作正则带 `re.DOTALL`，跨行的 `*动作*` 会产出含换行的 `action`
-   （对白已被规整，只有动作没有）。正文带换行会让同一条事件"存进去 1 条、读出来 2 条"，
-   与重放生成的单条对不上，去重失效并多占保留窗口。`_snippet` 统一塌成空格、
-   `load` 把不以 `[重要] ` 开头的续行并回上一条（老快照因此无需迁移）。
-   兜底在写入层：长期记忆按正文内容寻址（`long_term.memory_id`，sha256），
-   同一集合内重复写入落在同一 ID 上，先 `get` 判存在再 `upsert`（`upsert` 会重算 embedding，
-   而 embedding 是远程计费调用）。代价是同一角色说出**完全相同**的一句话会合并成一条。
-   **Chroma 与 SQLite 没有跨库事务**，固化与水位线落盘之间必然有窗口，能选的只是往哪边失衡：
-   故意在固化**前**先单独落一次 `dialogue_log`，让崩溃后的状态落在"日志有、水位线旧"
-   （续跑重放 → 撞幂等兜底收敛）而非"角色记得一句日志里没有的台词"。
-   **不要为此把固化挪到 `on_turn` 之后**，那会让 SSE 推送插进固化与落盘之间。
-10. **状态的作用域不是统一的**，这是 fork/rollback 语义分歧的根源：
-
-    | 状态 | 实际作用域 | 分支隔离 |
-    |------|-----------|---------|
-    | 快照里的 `CharacterState` | 分支/时点级 | ✅ |
-    | 角色卡 `current_*` | 项目级单值（只当**展示缓存**） | ❌ |
-    | `WorldState`（`world_state/{branch_id}.json`） | 分支级（工单07） | ✅ |
-    | Chroma 长期记忆（collection = `char_{cid}__{sha256(branch_id)[:24]}`，见 `long_term.branch_suffix`） | 角色+分支级（工单08） | ✅ |
-    | Kuzu 图谱 | 项目级单文件 | ❌（只读，暂无影响；工单06 落地前必须先解决） |
-
-    因此 **`SnapshotManager.restore_snapshot()` 是破坏性操作**：它 `rmtree` 后拷回旧副本，
-    等于抹掉快照之后**所有分支**已积累的长期记忆与图谱，不可逆。
-    要让某一场从快照接上运行时记忆，**唯一正道是契约4 的懒承接**
-    （`Scene.restore_snapshot_id` + `inspection.resolve_scene_states`）。
-
-11. **`branch_id` 是长期记忆的一部分寻址信息**：`MemoryManager(cid, pid, branch_id)` 留空
-    会退回项目级共享 collection。生产构造点（`orchestrator.build_character_agents`、
-    `inspection.inspect_character`）必须传对分支，否则 IF 线会检索到主线的台词。
-    `_resolve_branch` 的优先级：**显式分支 > 显式快照所属分支 > 场景自身分支 >
-    默认时点解析出的快照所属分支**。场景查询**不得**用继承来的快照反推分支 ——
-    新分支首场的 `restore_snapshot_id` 指向的是**来源分支**的快照（契约4 懒承接），
-    按它取集合会把主线分叉后的记忆查回来；该时点之前的记忆已由 I3 复制进本分支集合。
-    **集合名受 Chroma 的 63 字符上限约束**：分支后缀取 `sha256(branch_id)` 前 24 位，
-    与 `char_` + 32 位角色 hex 恰好凑满。不要改回拼接原分支 ID（71 字符）——带分支的集合
-    会被全部拒绝，长期记忆静默降级为内存检索、分叉必然 500，而用短 ID 的单测发现不了。
-
-12. **改造前的项目级集合靠首次连接一次性承接**：`LongTermMemory._connect_sync` 发现无后缀
-    的老集合存在、而本分支集合还没打上 `LEGACY_ADOPTED_KEY` 标记时，把老记录 upsert
-    过来（原 id、原向量）并打标记。没有它，老项目升级后角色会读到空集合（数据还在，
-    但检索不到）。**判据只能是初始化凭据，不能是“集合是否为空”**：普通升级分支用集合
-    的 `LEGACY_ADOPTED_KEY` 判断可重试承接；从快照创建的分支另有分支级初始化文件，表达
-    “快照时这个角色尚无 collection”以及“Chroma 缺失、正确起点就是空”。没有后者，角色
-    首次登场会把分叉后的共享记忆灌进历史分支，再次分叉还会继续泄漏。承接失败时**不**打
-    集合标记、**不**删集合，下次连接按原 id 幂等续传；分叉复制或分支级凭据落盘失败则
-    整次 fork 失败，不能登记一条看似成功但失忆的分支。
-
-13. **`opening_narration` 的权威载体是 `Scene.initial_conditions`**，`SceneConfig` 的同名字段
-    只是导演规划期的载体。`run_scene` 重建 `SceneConfig` 时从 `initial_conditions` 取值，
-    因此**任何新增的建场景路径都必须显式搬运**（工单04 D1：`create_scene_from_config` 漏搬，
-    导致导演自己写的开场白在 `next_scene` 自动路径上永远不生效，而手动建场景路径正常——
-    这类"两条路径只有一条对"的 bug 不会被前端发现）。
-    **`Scene.objects_present`（工单24）是同一类字段**：手建、`create_scene_from_config`、
-    next_scene 的人工覆盖（`next_objects_present`）、`fork_from_snapshot`（回滚也走它）
-    四条路径都要搬，`tests/test_objects_present.py` 逐条钉住。写入侧校验存在性与上限（422），
-    读取侧只去重截断、不核对物件是否还在 —— 物件可能在建场景之后被删，悬空 ID 由消费方跳过。
-
-14. **`SceneEvaluation` 的四项分数为 `-1` 表示评估未生成**（LLM 返回内容无法解析为 JSON）。
-    不要把它当成"很低的分"参与阈值比较——旧实现在解析失败时给全部维度填 5.0，
-    产出一份看起来完全正常的评估，静默污染决策。前端按负值显式提示。
-
-15. **`Project.narrative_goal` 是只读锚点：只有用户能写**（工单28）。写入口只有
-    `POST /projects` 与 `PATCH /projects/{id}`；导演侧的任何路径都不得回写它。
-    自评系统的典型失效模式是把目标改成自己刚演出来的东西，然后分数变高。
-    第二层（分支级路线图）才是导演的可写空间，即工单18 的分镜稿（见陷阱 21）。
-
-16. **`story_progress` 的语义有四重约束**，动它之前四条都要保持：
-    - **`PROGRESS_UNAVAILABLE`（-1）表示"没度量到"**，与 `-1` 分同理，绝不能当成"进度 0"
-      参与钳制或停滞判定。但它**不进** `is_evaluation_unavailable()`：那个函数的语义是
-      "整份评估作废"，LLM 漏返回一个键不该连带把决策打成保守默认；
-    - **单调钳制**：落库值取 `max(本场自评, 谱系历史最高)`，原始自评另存
-      `story_progress_raw`，未超过历史值时置 `progress_stalled`。LLM 自评噪声大，
-      不钳制则进度条来回抖，基于它的决策规则跟着抖；
-    - **只在同一 `goal_revision` 内钳制**（`models.goal_revision()` = 主线目标的 sha256 前缀）。
-      推进度衡量的是"离这个目标还有多远"，用户改目标就是换了尺子；不比对版本的话，
-      旧目标下的 0.9 会把新目标的真实进度永久钳到顶。旧记录的 revision 为空串，
-      与任何现行目标都不相等，因此不参与继承；
-    - **没有主线目标就不度量**（`SceneEvaluation.goal_missing`，NOTES#goal-missing）：目标去空白后
-      为空时推进度记为 `PROGRESS_UNAVAILABLE`、不收自评，否则单调钳制会让它一路爬向不存在的终点；
-      其余评分照留，但"目标达成""主线偏离"没有参照 —— 前端不判红，`make_decision` 的
-      "目标达成 < 4 → 回滚"不生效（一致性规则照常）。有了分镜稿以后，导演自拟的路线图最容易
-      被当成目标、拿来给自己打分，评估 prompt 明确禁止（禁令1 的另一个入口）。字段上线前的记录按
-      `goal_revision == goal_revision("")` 回填（`repository._goal_missing`），没有版本的更老记录不猜。
-      **不要把空目标的版本改成空串来省掉这个字段**：空串是"旧记录"的标记，撞上就互相继承进度；
-    - **导演历史按快照时点冻结**（`orchestrator._story_records`）。
-      `Snapshot.story_history` 保存当时已知的评估记录；前置快照不含本场结果，
-      后置快照创建时先带此前历史，自动评估完成后补入本轮结果。
-      `Scene.inherited_story_history` 保存分叉/下一场继承副本，None 表示旧数据，
-      [] 表示权威空历史；来源续跑、删除快照都不追写已有分支。
-      分叉的 parent_scene_id 只负责溯源，不再据此回读来源的最新评估。
-      `SceneEvaluation.evaluated_snapshot_id`（评估归属的后置快照）同样只供追溯，继承边界只认快照的历史副本、不读它。
-      旧快照没有副本时明确 warning 并按空历史降级，不猜测被覆盖的过去。
-      手建场景在首次运行前冻结本分支前情。完整副本落库，提示词仍按既有梗概
-      数量及 token 预算截断。
-      **冻结副本与回溯之间必须去重**（`_merge_story_records`）：`while` 循环的
-      `seen` 只在回溯路径内生效，管不到副本。场景冻结进副本后被 continue 续跑
-      并重新评估，从它再分叉时会在两边各出现一次，回溯得到的那份更新故胜出。
-      **continue 续跑不得改写继承的过去**（`apply_decision` 刻意**不动**
-      `inherited_story_history`）：副本是分叉那一刻的既成事实，`None` 是"旧数据，
-      请回溯推断"的**哨兵**，不是"请重算"的指令。把它置 `None` 等于把一条有权威
-      边界的分支降格成旧数据，于是重新去读**当前**的 `restore_snapshot_id` ——
-      来源快照已删就整份历史归零，来源后补了评估就越过边界读进来，正是本机制
-      要堵的两个洞。祖先后来的变化**不使**已继承的历史过期；本场续跑产生的新
-      评估可以更新，但不能顺带改写继承的过去。本场评估无需清副本即可刷新：
-      副本 `include_current=False` 本就不含本场，回溯时从 `evaluations` 表现读，
-      而 `save_evaluation` 是 `INSERT OR REPLACE`。
-      **`created_at` 必须在反序列化时还原**——`repository._deserialize_scene` 与
-      `SnapshotManager.get_snapshot` 都还原，否则每次读都换一个 `now()`，任何
-      "读出来改一改再存回去"的路径（如 `record_story_history`）都会把记录重排到
-      时间线末尾。**不要在调用点重读文件打补丁**，那会让每个新调用方都复制一遍
-      workaround 并引入 TOCTOU 窗口。损坏值一律降级为 `now()` 并 warning，
-      不得抛异常——同函数其余字段都降级，创建时间不该是唯一的硬失败点。
-    - **历史副本是类型化的 `list[StoryRecord]`**（工单18 D1），反序列化统一走
-      `repository.deserialize_story_history`（场景与快照共用）。旧的 `list[dict]` 当场读回、
-      不写迁移；坏条目跳过并 warning（一条坏记录不能让 `list_scenes` 五百）；整个容器
-      不是列表按**权威空历史 `[]`** 处理而不是 `None` —— `None` 会触发回溯，去读当前来源
-      快照，越过分叉边界。副本里无效的推进度（字符串 / NaN）降级为不可用。
-    - **回溯的查询次数与谱系长度无关**（工单18 D2）：先用 `repository.list_scene_lineage`
-      （SQL 侧 `json_extract` 只取谱系字段，不读对白）走完因果链，再用 `get_evaluations`
-      一次批量取回。`SceneLineage` 是只读投影，拿去 `save_scene` 会抹掉整场对白。
-
-17. **`unresolved_threads` 的合并由导演做，后端只去重截断**：只有导演知道哪条
-    线索本场被收束了。三处易错：
-    - LLM 未返回该键时沿用上一场的列表，**不是**"线索全部收束了"；
-    - 反过来，谱系上**最近一份评估的空列表是权威值**（表示上一场把线索都收束了），
-      `_story_context` 不得因为它是空的就继续往前找 —— 那会让已收束的旧线索复活，
-      并被提示词要求模型继续保留。空列表与"还没找到评估"必须用独立标志区分；
-      **类型化之后这个区分由 `StoryRecord.threads_known` 承载**（工单18 D1）：
-      旧副本里缺键或非列表的记录记为 `False`，回溯继续往前找。`SceneEvaluation`
-      的默认值就是 `[]`，不单独记这一位就会把"缺键"压成"已清空"。它随记录一起
-      序列化 —— 只看键在不在的话，读出来再存回去一次就判错了。
-      （`_deserialize_evaluation` 把 evaluations 表里的缺键默认成 `[]` 是既有口径，未统一）；
-    - **限条数（20）不等于限预算**。线索会落库并逐场回喂，20 条超长线索一旦写进去，
-      之后每次规划与评估都拖着它；`_normalize_threads` 同时限单条与总 token，
-      且**继承进来的列表也要过一遍**（库里可能存着立预算之前写入的内容）。
-
-18. **数值解析必须挡住 NaN / Infinity / bool / 超大整数**。`max(0.0, min(1.0, nan))` 返回的是**上界**，
-    而 `json.loads` 默认接受裸 `NaN` / `Infinity`，`float(True)` 也是 `1.0` ——
-    先钳后判会把一个 NaN 静默变成"满分 10 分"或"主线 100% 完成"，再直接喂进
-    `make_decision` 的阈值规则。统一走 `_parse_number()`（拒 bool + `math.isfinite`）。
-    它捕获的异常里 **`OverflowError` 不可省**：`json.loads` 把裸的超大整数（`1` 后跟几百个
-    `0`）解析成 Python `int`，`float()` 对它抛的是 `OverflowError` 而非 `ValueError`，
-    漏接会穿过 `_extract_json` 那道防线，把一份本可解析的评估废在编排层的兜底里。
-
-19. **`WorldState` 有八条不可分割的语义**（工单07），少一条就会静默退化：
-    - **合并只发生在运行时**：`SceneEngine._scene_context()` 按
-      `{**世界变量, **scene.initial_conditions}` 合并（场景局部覆盖全局默认），
-      **绝不写回 `Scene.initial_conditions`**。写回并落库会让分叉不变量 I5 把此刻的
-      世界快照当成**场景局部条件**永久带下去，从此这条分支上的同名世界变量再也改不动；
-    - **四个场景固有键是保留字**（`models.RESERVED_SCENE_CONTEXT_KEYS` =
-      name / location / description / opening_narration）。世界变量垫在它们之下又摊在
-      同一个 dict 里，**同名就会顶掉本场的设定** —— 场景设在王城、世界里存着
-      `location=首都`，角色与导演就双双读到"地点：首都"，一条跨场次沿用的默认值
-      改掉了导演为这一场明确指定的地点。世界变量只允许**补充**场景上下文，不允许
-      改写场景是什么。三处拦截：`normalize_world_delta`（不让它落进 evaluations 表）、
-      `merge_world_variables`（清掉库里已有的）、`SceneEngine._reject_reserved`
-      （构造参数谁都能传，最后一道且不进快照）。这份名单与 `CharacterAgent._BRIEF_KEYS`
-      **必须是同一个常量**：两边漂移就会出现"拦住了却不成句"或"没拦住又被顶掉"；
-    - **预算是硬约束**，与 `unresolved_threads` 同一条教训但更紧迫：世界变量进的是
-      **每一场、每个角色、每一轮**的 system prompt。`merge_world_variables` 同时限
-      条数（`MAX_WORLD_VARIABLES`）与总 token，超限淘汰**最久未更新**的键并 warning ——
-      静默丢弃世界事实比丢弃线索更难发现，它不落在任何列表里，只表现为下一场角色
-      忽然不知道某件事了；
-    - **预算要两道闸门，读取侧那道不可省**：`merge_world_variables` 只拦得住导演写进来
-      的那条路径，而 `world_state/{branch_id}.json` 摆在项目目录里、**明确支持人工编辑**。
-      手写一条五千字的变量、或塞进三百条，都会绕过写入侧直进每一轮的 prompt。
-      因此 `repository._deserialize_world_state` 读文件时就调 `clamp_world_variables`
-      压回同一形状与预算（顺带把**键和值都**塌成单行 —— 按"一行一条"渲染，换行会让一条
-      看起来像两条。只塌值是做不全的：不变量说的是**渲染出来的行**，而键值同在
-      `f"- {k}：{v}"` 一行里，三道闸门又都只按名字判保留字、不看形状，
-      所以键的换行同样能凭空多出一条看似合法的世界变量）。
-      **只压不写回**：读路径不该因为一次读取就改掉用户手编的文件，超限内容在下次合并
-      落盘时自然收敛。这两个函数与 `describe_world_state` 住在 `services/world_state.py`，
-      拆出来的唯一理由是 import 方向：`repository → director_agent → inspection → repository` 成环；
-    - **`delta` 里 value 为 `None` = 删除该变量**，这是唯一的收束手段。没有它变量只增
-      不减，迟早占满预算，之后每一条新的世界事实都会被挤掉。空串按同义处理；
-      评估解析失败时 `world_state_delta` 必须为空 dict，绝不能让一次失败的 LLM 调用
-      伪装成一次真实的世界更新；
-    - **后置快照要补写**（`record_world_state`）：delta 出自评估，而后置快照在评估
-      之前就打好了。不补写的话，从该快照分叉出的分支会缺掉本场对世界的改动 ——
-      而它的角色状态与导演历史都已包含本场；
-    - **落盘是"读-改-写"，临界区必须从重读开始**（`orchestrator._branch_lock`，
-      按 `(project_id, branch_id)` 分桶；工单18 起世界变量与分镜稿共用这一把，只能有一把）。世界状态是**整份文件覆盖写**，而 `run_scene`
-      在开场读、在评估之后才写，中间隔着整整一场 LLM。`_active_scenes` 只挡得住同一个
-      场景被启动两次，同一分支上的**两个不同场景**照样能并发跑完：A 写下"城池已沦陷"、
-      B 随后以空 delta 收尾，世界就只剩下开场那份"冬季"。**只给写加锁救不了** ——
-      锁到了也只是把过时副本安全地写了进去，所以 `_apply_world_delta` 不接受
-      `run_scene` 那份副本，而是在锁内自己重读。锁是进程内的，同属【契约9】。
-      遗留边界：B 整场是拿着**开场的旧世界**演的（它看不见 A 中途写下的事实）。
-      这是并发本身的语义，不是数据丢失；要连它一起消掉得按分支串行整场推演，
-      那会让第二次 `/start` 阻塞几分钟，属于产品决策，未做。
-    - **后置快照存在 ≠ 世界变量已补写完成，这个窗口内必须拒绝分叉**
-      （`orchestrator._pending_world_patch` + `fork_from_snapshot` 前置检查）。
-      快照在 `create_snapshot` 把它写进 `snapshots` 表那一刻就对分叉可见（fork 只读
-      快照，既不看 `scene.status`，也不等 `run_scene` 往下走），而评估、
-      `record_story_history`、`_apply_world_delta` 都要在那之后才跑完。
-      `fork_from_snapshot` 只在分叉那一刻读一次 `snap.world_state_variables` 整份
-      拷进新分支文件，之后的补写不会再传播过去 —— 若这个窗口内分叉成功，新分支就会
-      **永久**缺失本场对世界的改动，且不像超预算淘汰那样有 warning 可查（story_history
-      同理，见 6.3.1）。因此标记必须**早于快照可见**挂上：引擎预生成后置快照 id、
-      在 `create_snapshot` **之前**经 `on_after_snapshot` 回调交给 orchestrator
-      （`SceneEngine.run`）。**不要把它挪回 `run()` 返回之后**——那之间隔着
-      `create_snapshot` 提交事务后的关连接等 await，窗口虽小但真实存在；
-      也不要改用 `save_scene` 落库作为可见性起点，可见性根本不由 scene 落库决定。
-      标记在评估+补写整个 try/finally 结束后才摘除（无论成功还是失败 —— 评估失败
-      意味着 delta 永远不会再补写，无限期挡着分叉才是真正的"漏掉本场世界变化"），
-      且 `finally` 必须罩住 `engine.run()` 本身：快照已建而引擎随后抛错时若不摘，
-      这份快照就永久不可分叉。`fork_from_snapshot` 在这期间抛 `ConflictError`（409），
-      提示调用方稍后重试（评估通常几秒到十几秒完成）。
-      与 `_active_scenes` 同属进程内状态、单进程假设。
-
-20. **角色的 system prompt 会逐条渲染 `scene_context` 里的非成句键**（工单07）。
-    旧实现只读 `name`/`location`/`description`/`opening_narration` 四个键，导演写的
-    `initial_conditions` 与世界变量都只参与 lore 关键词匹配、从不进角色视野
-    （"已入冬"存进了世界状态，角色照旧在雪地里谈论酷暑）。因此**往 `scene_context`
-    里塞任何键都等于把它公开给本场全部角色**，内部记账用的字段不要走这个 dict。
-    那四个成句的键即 `RESERVED_SCENE_CONTEXT_KEYS`，对世界变量是保留字（见陷阱 19）。
-
-21. **`Storyboard`（导演分镜稿）有八条不可分割的语义**（工单18），存放照搬 `WorldState`：
-    - **只进导演 prompt**（契约1）：它含导演对全部角色 `unknown_facts` 的安排。
-      `SceneEngine` 拿到它只为让前/后置快照带上时点副本，**绝不**并进 `scene_context`
-      （陷阱 20：进那个 dict 就等于公开给全体角色）、角色 system prompt 或 selector 打分 prompt；
-    - **节拍靠 `beat_id` 定位**：形如 `b7`、分支内唯一、只由后端分配，改名/重排/改状态
-      都不变；`next_beat_seq` 单调递增，**删除后的 ID 不复用**，否则基于旧稿的 patch 会命中
-      同名新节拍。ID 进 prompt，所以要短；分叉时沿用；
-    - **导演的 patch 是相对它读到的那一版给出的**，锁内重读只挡得住整份覆盖，挡不住
-      "导演读到 v1 → 用户改成 v2 → 导演基于 v1 的改写覆盖用户"。`run_scene` 在评估前记下
-      `board_seen`，`merge_storyboard_patch` 逐条核对前提：memo 只在当前仍等于导演读到的
-      那份时覆盖；导演没见过的 ID（`base` 里没有）一律当未知，哪怕当前稿里恰好有同名 ID；
-      重排必须是导演读到的全部计划中节拍的完整排列，且当前计划中节拍的**顺序**（不只是集合）
-      仍等于导演读到的——只比集合的话，用户刚调好的顺序会被旧稿的重排无痕覆盖；已是导演要的
-      顺序按幂等处理；重排先于其余操作应用。被跳过的写 changelog + 非致命 `scene_error`，其余照常合并。
-      用户↔导演、导演↔导演用同一套规则。**不要改成"整份修订号不一致就丢掉整个 patch"**：
-      同分支两场并发时，后完成那场改的是另一个节拍也会被整个丢掉；
-    - **`goal_revision` 的写回必须有确认**：只有导演 patch 里 `goal_realigned=true`（走
-      `_parse_bool`，`"false"` 不能变 True）或用户 PUT 带 `confirm_goal` 时才前进；写回的是
-      确认者**实际看到的**目标版本，不是写回时的最新版本 —— 导演是评估 prompt 里那版，用户是
-      读取响应里的 `current_goal_revision`（PUT 必须带回 `goal_revision_seen`，缺失 422）。
-      期间目标又被改了的话，下一场照样提示过期。导演的确认是对**它读到的那一版路线图**的判断，
-      在预算淘汰之后判定：路线图在导演读取后被他人改过、本次有操作被跳过、或计划中节拍被
-      淘汰，确认都不成立（记为跳过）——否则旧路线图会被标成已适配新目标。
-      **"被跳过"包括解析器因格式无效丢掉的操作**（`StoryboardPatch.rejected`：改写缺 `beat_id`、
-      `reorder` 不是列表等）：`parse_storyboard_patch` 丢掉的每一项都要记原因交给合并阶段，
-      否则一个只剩 `goal_realigned` 的 patch 看起来就是"没改路线图、确认已适配"。值为 null 的键
-      表示"不改"，不算格式错误。
-      空 patch / 只改 memo / 解析失败都不算确认。空路线图没有"旧版目标"，
-      首次产生节拍时盖上当次看到的版本；
-    - **用户 PUT 的幂等键是 `request_id`**（契约5），与请求摘要一起记在那条用户 changelog 上，
-      在分支锁内查找：命中且摘要相同 → 重放（200、不写），摘要不同 → 422。"内容与当前相同"
-      只是无操作判定，**代替不了幂等键**：带新节拍的请求在首次保存后当前稿里已有分配的 ID，
-      响应丢失的客户端拿不到这些 ID，原样重发永远判不等，只会误报 409；
-    - **预算两道闸门**（同陷阱 19）：写入侧合并时超限淘汰（先淘汰最早了结的节拍，再从末尾
-      淘汰计划中的，warning）、用户 PUT 超限直接 422 不截断；读取侧 `deserialize_storyboard`
-      调 `clamp_storyboard` 压回预算、ID 确定性补发，**只压不写回**。渲染时一切文本塌单行，
-      备忘在存储里保留换行（前端是多行文本框）；
-    - **继承边界**：`fork_from_snapshot` 把 `snap.storyboard` 写进新分支文件并附确定性模板
-      生成的 `fork_origin`（红线 R4：分叉不调 LLM），排在 `fork_branch` 之前。旧快照没有副本
-      （`None`）时以空稿起步并 warning，**不回读来源分支的当前分镜稿**（那是分叉之后才写的）；
-      后置快照的副本在 `_apply_storyboard_patch` 里补写，同在 `_pending_world_patch` 窗口内；
-    - **导演历史副本里不带 patch**（`_story_record` 清掉它）：副本随谱系复制进每个快照，
-      带着整段备忘改写就是把每场改稿复制 N 遍。分镜稿也**不进** `make_decision` 的阈值规则，
-      `unresolved_threads` 仍由评估逐场给出、不并入分镜稿（工单18 红线 R3 / R5）。
-
-22. **AutoPilot（工单12）的六条语义**，动任何一条都会让它静默失效或失控：
-    - **会话只在进程内存**（`orchestrator._autopilot_sessions`，按项目登记——自动回滚会换分支）。
-      不要挪进 `Project`：`PATCH /projects` 是整份读-改-写，逐步写计数会与用户编辑主线目标互相
-      抹掉；落库后重启对账（6.4）会让它无人值守地继续烧 LLM。重启即结束会话是刻意的；
-    - **开启的"查重 → 校验 → 登记"必须在项目锁内**（`_autopilot_lock`）：查已有会话与登记新会话
-      之间隔着读项目、读场景等 await，不锁的话同一 `request_id` 的并发重放会各开一个会话、
-      各开演一次；不同起点会两场都开演，而项目只记得后登记的那个，另一场跑完无人接手。
-      **停止也在同一把锁内**：否则夹在开启的几次 await 之间到达的停止读到"还没有会话"就返回，
-      随后会话照样登记、往下接，用户的停止被静默吞掉；
-    - **决策点在 `run_scene` 释放运行锁之后、发终态帧之前**（`_autopilot_after_scene`）。
-      早于释放锁：continue 是对同一 `scene_id` 再起 `run_scene`，会被 `_active_scenes`
-      守卫静默丢掉。晚于终态帧：前端的流收到 completed 就关了，无从得知下一场。
-      **自动 continue 时不发终态帧**，迟到的 completed 会让重连的客户端把新一轮判成已结束；
-    - **回滚上限按连续次数计、在执行前判**。不能按"回滚到同一快照"判：重演场景开跑时重打
-      前置快照，目标 ID 每次都不同。执行前判靠的是 `make_decision` 不调 LLM——先算出决策、
-      过 `stop_reason_for_decision`，再作为 override 交给 `apply_decision`。
-      **给 `make_decision` 加 LLM 调用之前先想清楚这条**；
-    - **自动决策与人工决策走同一个 `apply_decision`**（CAS、幂等重放、回滚即分叉），只多一个
-      `DirectorDecision.source = "auto"`。幂等重放命中人工决策、或 CAS 冲突，都按"有人接手了"停下。
-      **开演权留在 AutoPilot 手里**：它以 `start_continue=False` 调用，continue 只把场景改回 pending，
-      由 `_autopilot_after_scene` 在 `is_running` 检查之后（两者之间不得有 await）自己开演，
-      与 next_scene / rollback 同一条路。让 `apply_decision` 内部起续跑的话，决策期间的停止事后拦不住，
-      会白烧一整轮。被停下的 continue 没有续跑，终态帧照常推；
-    - **停止条件在无人值守下比界面更严**：评估不可用或评估之后的补写失败（`evaluated` 为 None）、
-      抵达结局、`导演中断`（`termination.INTERRUPTED_REASON`；pause 走正常终止路径，场景照样是
-      completed，见 12.1）都停。界面上结局只是提示、不锁按钮，这两者不矛盾。
-
-23. **`LoreEntry.scope` 只认两种取值，失败一律收紧**（工单29）：`global`（全员可见）与
-    `character:{角色 id}`（仅本人）。读取侧 `CharacterAgent._select_lore` 只注入 `global` 与
-    **完全等于**本角色的那一种，其余（按角色名写的、拼错的）一律丢弃；旧实现用 `endswith`
-    匹配，`character:x-{id}` 也能混进来。写入侧分类器拿不准的（调用失败、漏判、取值非法、
-    知情者名字对不上任何角色）都不发给任何角色，**绝不退回 global**：漏一条公开设定只是少点
-    背景，泄露一条秘密则信息差无痕消失。**分类器自身的证据也可能不全，且不止一处**：
-    `_describe_characters` 裁剪每个角色的 `unknown_facts`（条数/单条字数），裁掉的恰好是
-    "证明某角色不知道"的那条反证——分类器既可能把本该私有的设定错判成 `public`，也可能
-    把这个本不该知情的角色错判进某条 `private` 的 `known_by`（它自己那条反证被裁掉，
-    分类器没有依据排除它），**两个方向都要收紧，不止 public**；`classify()` 检测到任一
-    角色的 unknown_facts 被裁，本轮全部 public/private 判定一律收紧为不发（`hidden` 不发
-    给任何人，结构上已最安全，不受影响；known_facts 被裁只会让 private 的知情者名单
-    **偏少**，方向本身安全，不连带收紧）。**送进分类 prompt 的设定正文同样有裁剪**
-    （`_ENTRY_CONTENT_CHARS`）——分类器只看得到前一截，若秘密藏在裁剪点之后，它可能
-    依据看得到的公开前半段判为 public/private，而**分发用的是完整正文**：真分发出去，
-    后半段的秘密就跟着一起发了。每条设定的正文裁剪独立判定（只影响这一条，不连带整批）。
-    **调大任何裁剪阈值都不是修复**，固定阈值总会被超过，这几道安全网必须一直在。
-    多人知情的私有设定按知情者各发
-    一份副本，`LoreEntry` 不加"知情者列表"字段。已有项目用 `python -m scripts.reclassify_lore`
-    修复（默认预览；`--apply` 先备份再写；任一批判定调用失败就整个不写，让人重试）。
-
-24. **轮次的渲染、感知与计数各只有一处实现**（`utils/turns.py`，工单24/20 PR-0），
-    为环境回合（`TurnKind.ENVIRONMENT`，PR-2 起产生）预留口径：
-    - **计数分两种**：`turn_number` / `turns_completed` / 水位线 `turns_consolidated` 数**全部**轮次；
-      `max_turns`、停滞检测、轮询选人、continue 的新上限只数**角色轮次**（`character_turns`）。
-      新增按轮次计数的逻辑时先想清楚是哪一种，不要直接 `len(dialogue_log)`。
-      continue 从 `turns_completed` 里扣掉环境回合数，而不是改数日志——没有环境回合时与旧公式逐字相同；
-    - **感知只经 `perceive(turn, viewer_id)`**：`MemoryManager.add_experience` 与 `EpisodicMemory`
-      用自己的 `character_id` 判定，不接受调用方传入的布尔。现场写入与续跑重放各判一次会漂移，
-      而事件摘要靠两边逐字相同去重（陷阱 9）；
-    - **`render_turn` 不去首尾空白**：记忆文本是长期记忆的寻址键，改一个字符就是一条新记录；
-      角色看到的"目前对话"由引擎自己 strip；
-    - **`EpisodicMemory._snippet` 的条目格式冻结、不并入 `render_turn`**：它是序列化格式，
-      老快照与重放去重都靠逐字相同。
-
-25. **`DialogueTurn.actions`（工单24 PR-1b）有六条语义**，`ENVIRONMENT_MODE` 为 record / adjudicate 时才产生：
-    - **不进任何角色记忆、transcript 或 prompt**：`render_turn` / `_turn_line` / 记忆文本只读
-      `action` 拼接字段。这是**设计保证不是现状**，`test_record_mode_leaves_memory_and_transcript_byte_identical`
-      逐字比对 off 与 record 两档。PR-2 想让环境结果进角色视野，走环境回合，**不要**把 `detail`
-      渲染进 `_turn_line`；
-    - **抽取 prompt 只有命中段**（不传对白、不传隐藏规则），段内 `[...]` 先剥掉
-      （`action_intents.strip_thoughts`，没闭合的 `[` 剥到段尾）：角色把独白格式写坏时，
-      独白会混进对白或动作段，而 `text` / `detail` 在 PR-2 会交给裁决器、产出公开叙述；
-    - **动作段与 `turn.action` 同源**（`SceneEngine._split_reply`，先剥独白再取动作）：抽取**不得**
-      拿原始回复重跑动作正则。否则独白里的 `*戴上王冠*`（想做、没做）与没闭合的 `[` 之后的星号
-      都会被当成尝试，adjudicate 档会把角色心里的打算裁决成全场可见的环境回合（PR-2a 评审 P1）；
-    - **抽取先于第一次落盘**，落盘的轮次意图恒完整，续跑不重抽；命中段超过 6 段按段落顺序取前 6，
-      结果按 `index` 回填 —— 结果可复现是"续跑不重抽"的前提；
-    - **`ENVIRONMENT_MODE` 按段冻结**：每次进 `run_scene` 读一次。continue 重进会重读配置，
-      **同一场的前后两段可以处于不同档位，`actions` 为空不代表没有物件动作**；
-    - **读取侧收紧**：未知 `status` 一律按 `skipped`（PR-2 会按 `pending` 补裁决，脏值不能变成待裁决）。
-      在场物件的悬空 ID 跳过时 warning —— 静默跳过会让 record 档命中率无声归零。
-
-26. **LLM 调用计数（工单25）的四条语义**，只增观测，但两条红线动了就是数据损坏：
-    - **计数点只在 `utils/llm.py`**（外加 `memory/embeddings.py` 这个契约7 例外）。调用方只传
-      `purpose=LLMPurpose.xxx`，漏标的归 `untagged`；`tests/test_llm_usage.py` 用 AST 扫描钉住
-      "每个 `chat` / `chat_safe` 调用点都标了用途"。计数本身出错只记日志，不得让调用失败；
-      token 记的是计费量：拿到了响应却判失败的尝试（空正文）也计 token，但不计成功调用（工单30）；
-    - **归属靠 ContextVar**（`utils/usage.py`），不靠参数传递：`create_task` / `gather` 的子任务与
-      `asyncio.to_thread` 都会复制上下文，selector 的并发打分、线程里的 embedding 自然归到同一场；
-    - **推送 evaluation 事件之后不得再 `save_scene`**：用户收到评估就能决策，continue 会改写这一场，
-      再整份覆盖 `data_json` 就把决策的改动抹掉了。所以评估的调用装在**内层计数器**里、记在
-      `SceneEvaluation.llm_usage` 上，场景的计数随既有的逐轮落盘带走，最后一次是评估之前那次；
-    - **`run_scene` 必须自己装计数器、在外层 `finally` 撤下**：AutoPilot 的自动 continue 是在上一轮
-      `run_scene` 里起的任务，复制了它的上下文；不重新装两轮就混在一起，不撤下则收尾阶段
-      （AutoPilot 决策、下一场规划）的调用会记到已经落库的那场上。continue 的多段在场景已有
-      计数上累加（`UsageMeter.seed`）。导演历史副本里清掉评估的计数（同 `storyboard_patch` 的理由）。
-
-27. **环境回合（工单20 PR-2a，`ENVIRONMENT_MODE=adjudicate`）的七条语义**，设计单
-    `docs/fix-tickets/24-20-environment.md` §5 / §9 是判据来源：
-    - **一个动作一个提交单元**：角色轮次推送之后、下一次终止判定之前，`SceneEngine._adjudicate_pending`
-      逐个裁决本轮 pending 动作。成功 = 追加环境回合 + 动作置 resolved + 来源轮次 `revision+1` +
-      `Scene.environment_state` 更新，全在 `scenes.data_json`，`on_environment` 一次 `save_scene` 原子提交后
-      **才**推 `turn_update`（来源轮次）再推 `turn`（环境回合）。环境回合作为普通轮次走 `_remember` 与周期
-      固化（陷阱 9），**不另开记忆写入口**；
-    - **失败不伪造**：裁决调用失败或输出不可用 → 动作 failed、不生成环境回合、推非致命 `scene_error`。
-      **绝不补一句"毫无反应"**（同陷阱 14）。而"裁决成功但没触发规则"照样生成环境回合，那是裁决出的事实；
-    - **额度在调用前预占**（`remaining_environment_quota`）：上限 − 已有环境回合 − 仍 pending 的动作。
-      ≤0 时命中段直接 `skipped/quota`、**不发起抽取**；pending 必须计入，否则续跑补裁决后超限；
-    - **续跑先补裁决**：`_replay_unconsolidated` 之后按日志顺序补 pending 动作。中断只在动作之间生效，
-      剩下的留 pending。环境回合 `turn_id` 由 `(来源轮次, 动作序号)` 确定性生成（`environment_turn_id`），
-      已有同 ID 回合的动作改记 resolved（A35）；物件已不在本场记 failed（A34）；**非 adjudicate 档原样保留
-      pending、仍占额度**（A27）——改成 skipped 就不可恢复了；
-    - **可见性三条线**：公开叙述 `narration` 进"目前对话"与全体在场角色记忆；`private_detail` 只进
-      `perceived_by`（固定为执行者本人，A25）的记忆与导演/用户界面，**不进 transcript**；物件隐藏规则与
-      预制揭示的 content **只进裁决 prompt**（R1，`test_hidden_rules_reach_only_the_adjudicator` 扫遍角色 /
-      selector / 抽取的全部 prompt）。私密细节只能是导演预制揭示的原文（A31），裁决器自己写的不采纳；
-    - **角色侧只在 adjudicate 档变化**：system 多出按可见性过滤的【在场物件】（只有名称与公开描述，A24）
-      与"动作只写尝试"规范（R7），整场不变；场景内物件状态进 **user** 消息的【当前环境】块
-      （契约3 补充条款），排在"目前对话"之后。off / record 两档 prompt 由 golden 用例逐字钉住；
-    - **物件状态按 `object_id` 归属、只在本场有效**（A30 / A32）：渲染时才按物件当前名字拼
-      `物件名·属性`；裁决器只读本场状态（`object_state_view`）。跨场延续与是否进世界变量待 PR-2b 重议
-      （设计单 §9），**不要**顺手把 `environment_state` 并进 `WorldState`：世界变量进全体角色的 system，
-      private / hidden 物件的状态会泄露给不知道它存在的人。
-
-28. **角色回复先截续写、再解析**（工单30 PR-30a，`scene_engine/continuation.py`）。角色拿到的
-    "目前对话"是逐行排列的剧本，模型说完自己这一轮常常不停：替别人写台词、写 `【环境】…`
-    （伪造裁决结果）、复读到输出上限。解析进 `dialogue` 就是公开对白，进全场 transcript 与长期记忆。
-    - **截断必须早于 `_split_reply`**：动作意图抽取、transcript、记忆都吃解析结果，晚一步，续写里的
-      `*动作*` 就会被当成尝试去裁决。截下的内容**不挽救**（不当提示、不改写、不交给裁决器）；
-    - **续写标记**：**已知的** `【…】` 标签 —— 伪发言人（环境 / 旁白 / 导演…，含以它们开头的自造变体
-      如 `【导演视角】`）、参演角色名、角色 prompt 自己的区块标题（`PROMPT_SECTION_TITLES`，用例扫描
-      `character_agent.py` 钉住同步）；**其他**参演角色或伪发言人后跟冒号，且在行首或空白、句末标点之后。
-      **本人名字标签不论开头还是中途都只剥不截**：模型常把一轮写成 `*动作*` 换行 `本人: 台词`，
-      截它就截掉了本人这一轮的台词（30b 回放发现，30a 起初误判）；替自己写下一轮之前通常先写了
-      别人或环境，已在那里截断。**例外是本人标签自己复读**（`_own_runaway_at`）：某段与前文某段相同、
-      或本人标签超过 3 处，就从那里截 —— 只剥不截的话，`本人: …` 会一直写到输出上限再落库。
-      名字后不跟冒号不算（"诺安大人说得对"）。
-      **不要放宽成"任意 `【…】` 都截"**：游戏 / 奇幻种子常用 `【火球术】` 标技能物品，按任意标签截会
-      吞掉正常台词，标签在开头时整段截光、重新要一次还是同样写法，场景抛错转 paused，每次续跑都卡在同一处；
-    - **不落空轮次**：截完什么都不剩就再要一次（`_REPLY_ATTEMPTS`），仍不行抛 `LLMError`
-      （场景转 paused）。服务商的空正文在 `utils/llm.py` 就是失败（契约7），
-      两层各管一种：前者是"给了正文但全是续写"，后者是"根本没给正文"；
-    - **触顶的空正文不重试**（`finish_reason=length`）：推理吃光了 `max_tokens`，同一个 prompt 再发结果一样，
-      对 selector（200）/ 意图抽取（400）这类小额度调用只是白等退避、多花两倍 token。其余空正文照常重试。
-      空正文那次尝试的 token 照样计入用量（`UsageMeter.record_tokens`），只是不算成功调用；
-    - **输出上限 `CHARACTER_MAX_TOKENS` 要给推理留余量**：推理模型把推理 token 算进 `max_tokens`，
-      设低了正常回复会被吃光、只剩空正文，日志先出现"输出触顶"。默认 8000：2000 时回放约 2% 的调用触顶
-      （几乎全出自 4 位量化的服务商），而上限只在失控时才真正花钱（正常回复几百 token）；
-    - **续写与推理失控主要是服务商问题**（30b 对 OpenRouter 日志）：两次污染都出自 4 位量化的 OpenInference，
-      8 位量化的服务商在同样现场几乎不续写。用 OpenRouter 时要按量化过滤（`provider.quantizations`
-      只放行 fp8 及以上，未标注量化的也一并排除），且 preset 必须在模型名里引用（`@preset/…`）才生效；
-      截断仍是必要的兜底 —— 服务商随时会换；
-    - 这是兜底不是根治：没有标记的续写（直接用叙述口吻写出结果）挡不住。主因在服务商（见上一条），
-      prompt 层的修法（工单30c）已暂缓。
-      30b 的回放评测用同一个 `trim_continuation` 判定污染，不另写一套；
-    - **`DialogueTurn.output_notice` 记下发生过截断**（`已截断：…` / `已重新生成：…`，冒号前是前端标签），
-      与 `selector_notice` 同类：只给导演 / 用户看，不进 prompt、记忆与任何逻辑。**只存字数与开头 40 字，
-      不存截掉的原文**：伪造内容整段落盘，迟早被某个"渲染全部字段"的新代码带回角色视野。
-
----
-
-## 5. 持久化契约 ★
-
-> 这一节是最容易写出静默 bug 的地方，改数据相关代码前必读。
-
-### 5.1 SQLite（`data/projects.db`，10 张表）
-
-`projects` / `branches` / `scenes` / `snapshots` / `evaluations` / `decisions` / `outputs` / 
-`world_revisions` / `world_heads` / `world_events`（后三张为工单24/20 schema 2 新增）
-
-**【契约】统一模式：每张表的 `data_json` 列存放整个 dataclass 的 JSON，是唯一真相源；
-`name` / `status` / `branch_id` / `created_at` 等列仅用于索引、过滤与 CAS。**
-
-所有读取（`get_scene` / `list_projects` / ...）都从 `data_json` 反序列化。
-只更新列而不更新 `data_json`，对 API 完全不可见。
-
-**唯一例外**：`scenes.status` 列会承载 CAS 瞬态值 `deciding`，且**刻意不写入 `data_json`**
-（见【契约5】）。因此该列的值域比 `SceneStatus` 枚举多一个。
-
-**`snapshots` 表是另一处例外（工单18 D3）**：它的 `data_json` 只存列表投影
-（id / scene_id / branch_id / label / created_at / `character_ids`），**快照的唯一真相源是
-快照目录下的 `meta.json`**（`get_snapshot` 一直读的就是它）。原因是整份快照里的导演历史副本
-随谱系增长，第 N 个快照带 N 条完整评估，列表接口因此 O(N²)。`list_snapshots` 在 SQL 侧投影，
-兼容本功能上线前写入的整份旧行（用 `json_each` 取 `character_states` 的键），旧行在下一次
-补写时自然瘦身。`character_ids` 不可删：`inspection._latest_snapshot_id` 靠它找"某角色最近
-出现的快照"。
-
-### 5.2 文件系统 `data/projects/{project_id}/`
-
-```
-characters/{character_id}.json    ★ 角色卡不入库，走文件系统
-world_state/{branch_id}.json      ★ 分支级世界变量，同样不入库（工单07）
-seed_texts/                       原始种子文本
-kuzu_db                           ⚠️ 当前 Kuzu 版本下是【单个文件】，不是目录
-chroma_db/                        向量库
-snapshots/{snapshot_id}/
-    meta.json                     ★ 快照的唯一真相源（索引行只是列表投影，见 5.1）
-    character_states/{cid}.json
-    chroma_collections/
-storyboard/{branch_id}.json       ★ 分支级导演分镜稿，同样不入库（工单18）
-objects/{object_id}.json          ★ 项目级物件，同样不入库，支持人工编辑（工单24）
-build_status.json                 构建进度（供重启后对账）
-```
-
-角色卡无 `delete_character`；删项目直接 `rmtree` 整个项目目录。
-
-### 5.3 进程内易失状态
-
-`_active_scenes`（并发守卫）、`_running_engines`（暂停/中断）、`_build_status`（有磁盘兜底）、
-`_branch_locks`（分支级文件——世界变量与分镜稿——的读-改-写临界区，见 4.2 陷阱 19 / 21）、
-`_pending_world_patch`（后置快照的世界状态与分镜稿补写窗口守卫，同见 4.2 陷阱 19）、
-`_autopilot_sessions`（自动推演会话，见 4.2 陷阱 22）、`_autopilot_locks`（开启会话的临界区）、
-`_object_locks`（项目物件的读-改-写临界区）
-与 `_background_tasks`（持有自动推演 `create_task` 的引用，防止被回收）、
-`events._subscribers`（SSE 订阅者）、每个 `MemoryManager` 的短期与事件记忆。
-
-### 5.4 【契约】修改数据模型的三步 checklist
-
-1. 改 `backend/models.py` 的 dataclass；
-2. **同步改 `services/repository.py` 里对应的 `_deserialize_*`**（`_deserialize_card` /
-   `_deserialize_scene` / `deserialize_story_history` / `deserialize_storyboard` /
-   `_deserialize_object` / `_deserialize_actions` / `_deserialize_turn` / 快照的 `_deserialize_character_state`，
-   以及场景与评估共用的 `usage.deserialize_usage`、场景物件状态的 `environment.clamp_environment_state`、
-   世界版本的 `world_repository.deserialize_revision`）——漏这步字段会静默丢失；
-3. 评估是否需要新增 SQL 列（只有需要索引/过滤/CAS 时才加，普通字段靠 `data_json` 自动携带）。
-
-前端有对应类型时，同步改 `frontend/src/types/index.ts`。
-
----
-
-## 6. 核心调用链
-
-```mermaid
-graph TD
-  A[POST /seed] --> B[POST /build → BackgroundTask]
-  B --> C[orchestrator.run_graphrag]
-  C --> D[GraphRAGPipeline: 编码嗅探 → 分块 → EntityExtractor]
-  D --> E[GraphManager 写 Kuzu]
-  D --> F[PersonaBuilder 逐个生成 CharacterCard<br/>on_character 回调即时落盘]
-  D --> G[WorldRulesExtractor → LoreEntry<br/>LoreVisibilityClassifier 判定知情范围]
-  C --> H[SnapshotManager.ensure_main_branch]
-
-  I[POST /scenes/plan] --> J[DirectorAgent.plan_scene → SceneConfig]
-  J --> K[POST /scenes → Scene 落库 pending]
-  K --> L[POST /scenes/id/start → BackgroundTask]
-  L --> M[orchestrator.run_scene]
-  M --> N[_load_inherited_states 四级快照继承]
-  N --> O[build_character_agents + MemoryManager.prime]
-  O --> P[SceneEngine.run]
-  P --> Q[前置快照 → 选人 → respond → 解析 → 后置快照 → 固化记忆]
-  Q --> R[events.publish turn/status/snapshot]
-  R --> S[SSE /scenes/id/stream → 前端 DialogLog]
-  Q --> T[DirectorAgent.evaluate_scene → evaluations]
-  T --> U[POST /scenes/id/decision → apply_decision]
-  U --> V{continue / next_scene / rollback}
-```
-
-### 6.1 构建（`run_graphrag`）
-
-后台任务。进度经 `_set_build_status` 同时写内存与 `build_status.json`。
-角色卡在生成过程中通过 `on_character` 回调**逐个落盘**，前端轮询即可增量预览。
-世界设定在角色卡之后判定可见性（证据是各角色的已知/未知事实），再由 `run_graphrag`
-按 `lore_for_character` 分发；判定失败的条目不发给任何角色，条数记在构建状态的
-`lore_withheld` 里（工单29，见 4.2 陷阱 23）。
-失败时把 stage 写成 `失败: xxx` 并把项目状态退回 `initializing`。
-
-### 6.2 运行场景（`run_scene`）
-
-1. `_active_scenes` 并发守卫（检查与写入之间无 `await`，依赖单线程事件循环原子性）；
-2. `_load_inherited_states` 取运行时记忆；`get_world_state` 取本分支的世界变量
-   （每次运行都重读，但整场冻结 —— 契约3 补充条款）；`get_storyboard` 取开场分镜稿，
-   **只交给引擎写进前/后置快照的时点副本**，不进任何角色上下文（4.2 陷阱 21）；
-3. `build_character_agents`：**每场新建** `CharacterAgent` + `MemoryManager`（无跨场复用），
-   用 `prime()` 回填短期缓冲与事件摘要；长期记忆靠 ChromaDB 目录天然连续；
-4. `SceneEngine.run(on_turn=...)`：前置快照 → `check_termination` → `_select_speaker`
-   （`selector` 模式下转交 `ScoringSpeakerSelector`：每个候选各一次并行打分调用，
-   叠加被点名加分与重复发言惩罚；兜底必须 warning 可见，不得静默选 `agents[0]`）
-   → `agent.respond()` → 截掉续写（`trim_continuation`，截完为空则再要一次，见陷阱 28）→ 正则拆 `*动作*` / `[独白]` / 对白 →（record / adjudicate 档）动作意图抽取
-   （`ActionIntentExtractor`，提到在场物件的轮次一次调用，必须早于落盘，见陷阱 25；adjudicate 档先按额度预占）→ 追加 transcript
-   → 对本场**全部参演角色**调 `add_experience`（在场即记忆，工单15；每个角色能感知到
-   什么由记忆层按 `utils/turns.perceive` 自行判定——他人轮次剥离 `inner_thought`，
-   调用方不传判定，续跑重放走同一个函数）→ 每满 `MEMORY_CONSOLIDATE_EVERY_TURNS` 轮**或缓冲占用逼近容量**
-   时走一次 `_consolidate_all`（先单独落一次日志 → 固化 + 推水位线 + `on_persist`，
-   整体必须早于 SSE 推送）→ SSE 推送 →（adjudicate 档）逐个裁决本轮 pending 动作，每个动作
-   落盘一次再推 `turn_update` + `turn`（见陷阱 27）；
-5. 终止后做收尾固化（`_consolidate_all`：`consolidate(force=True)`，唯一写入点在第4步，不重复写入）
-   → 同一步内通过 `on_persist` 把水位线落库 → 再打后置快照（此时短期缓冲已清空，
-   快照记录的是"已落库"的干净状态，供下一场 `prime()` 回填也不会重新引入已固化过的内容）。
-   **三者顺序均不可颠倒**：若先打快照再固化，快照里的短期缓冲会带着"即将被固化"的原始文本，
-   一旦该快照被 continue/rollback/next_scene 用于 `prime()` 回填，
-   这批已写入长期记忆的台词会在新场景的下一次 consolidate 时被二次写入；
-   若水位线等到 `run()` 返回后才落库，拷快照期间被硬杀就会整场二次写入（见 4.2 陷阱 9）；
-   崩溃续跑的重放循环（`_replay_unconsolidated`）同样按周期固化，
-   否则定长的短期缓冲会静默淘汰还没进过长期记忆的内容；**且水位线之前的那段要单独
-   补事件摘要**（`replay_episodic`，只补摘要不写缓冲，整批去重）——episodic 是独立内存层，
-   不受水位线保护，按水位线切会让那段的重要事件在续跑后彻底消失，而逐轮追加又会在正常
-   continue（`prime()` 已载入同一段）上把它翻倍、挤出保留窗口；
-
-6. orchestrator 落盘角色状态与 Scene → 推 snapshot 事件 → 记下导演此刻看到的分镜稿与
-   目标版本 → 自动评估落库
-   → 世界变量合并落盘并补写后置快照（`_apply_world_delta`，**在分支锁内重读**世界状态，
-   否则同分支并发的另一场会被整份覆盖抹掉）
-   → 分镜稿 patch 逐条校验合并并补写后置快照（`_apply_storyboard_patch`，同一把分支锁）
-   → 推 evaluation → 释放运行锁 → AutoPilot 决策（若本场是某个会话的当前场景，见 4.2 陷阱 22）
-   → 推终态帧 completed / paused（自动 continue 时不推）。
-   **自动评估、世界变量更新、分镜稿合并各包一个 `try`**：这一场已经跑完并打了后置快照，它们的失败
-   不得把状态打回 `paused`——决策 CAS 只接 `completed`，退回了用户就再也无法对这场决策。
-   从引擎创建后置快照**之前**（`on_after_snapshot` 回调）到评估+补写全部结束（成败均可）
-   为止，该快照 id 挂在 `_pending_world_patch` 里，期间 `fork_from_snapshot` 一律拒绝
-   （见 4.2 陷阱 19 / 6.3.1）。
-
-**运行中的可恢复性（工单23）**：开跑前先把 `status=running` 落库；引擎每产生一轮就先把
-`dialogue_log` / `turns_completed` 写回 `scene` 对象，再回调 `on_turn`，由 orchestrator **逐轮
-`save_scene`** 后才推 SSE。因此中途刷新/断线/进程退出都能从 `GET /scenes/{id}` 拿回已产生的
-轮次；运行失败时将场景置为 `paused` 并落库（否则永远卡在 running）。
-**不要为了“减少写入”把逐轮落盘改回结束时一次性保存。**
-
-**注意**：`SceneEngine` 不碰 SQLite，它把结果写回传入的 `Scene` 对象，由 orchestrator 负责落盘。
-
-### 6.3 决策（`apply_decision`）
-
-见【契约5】。人工提交与 AutoPilot 的自动决策都走这里（后者 `source="auto"`，见 4.2 陷阱 22）。三分支行为：
-
-- **continue**：`max_turns = turns_completed + extra`（默认 6），状态改回 `pending`，
-  `asyncio.create_task(run_scene)` 重跑。**不写 decisions 表**（开启新一轮生命周期）。
-- **next_scene**：调 `plan_scene(after_scene=被决策的那一场)` 生成配置 → 应用人工覆盖（角色/地点/初始条件）
-  → 建新场景并记录 `parent_scene_id` → 写 decisions 表。
-  目标恒为 `project.narrative_goal`；用户填的 `next_scene_description` 作为**本场意图**
-  （`scene_intent`）单独传入。**不得再用 `f"延续上一场…"` 冒充目标**（工单28）：
-  那会让连跑几场后只剩动量、没有引力，`plot_deviation_score` 也就没了参照物。
-  **规划的前情与评估同源**（工单18 §3.3）：`plan_scene` 沿 `after_scene`（缺省取本分支最近
-  一场）的因果谱系走 `_story_context`，分叉处按冻结副本截止；**不要改回
-  `list_scenes(branch_id)`** —— 那样分叉出的新分支规划时看不到分叉点之前的剧情，
-  而评估那一侧看得到。本分支最近几场只剩选角兜底一个用途。
-- **rollback**：**回滚是条件为空的分叉**（工单08 结论1），走唯一原语
-  `orchestrator.fork_from_snapshot()`：只读目标快照 → 新建分支（`parent_branch_id`
-  指向来源分支）→ 复制该时点的长期记忆到新分支的 collection → 建一个 pending 的
-  "（回滚重演）"场景，`snapshot_id_before=""`、`restore_snapshot_id=target` → 写 decisions 表。
-  角色卡按快照态写回（仅展示缓存）。目标快照缺失时**不持久化决策**，允许用户补 ID 重试。
-  **不调 `restore_snapshot()`**（见 4.2 陷阱 10）：重演需要的运行时记忆由 `restore_snapshot_id`
-  懒承接，而就地覆盖 chroma/kuzu 会抹掉其他分支的长期记忆。
-
-### 6.3.1 分叉原语 `fork_from_snapshot`
-
-`fork(S, C, name) -> (Branch, Scene₀)` 是系统里**唯一**的分叉入口，`POST /snapshots/{id}/fork`
-与 rollback 决策都走它。两套实现分叉过一次，其中一套就会悄悄退化。五条不变量：
-
-| 编号 | 名称 | 实现 |
-|------|------|------|
-| I1 | 起点一致 | `Scene₀.restore_snapshot_id = S`，靠契约4 懒承接，**绝不 restore_snapshot()** |
-| I2 | 无副作用 | 全程只读来源分支，只 INSERT 新分支/新场景；Chroma `PersistentClient` 会在打开时维护文件，因此只能打开 checkpoint 的临时副本，不能直接打开权威快照目录（代价：分叉期间向量库占用的磁盘峰值翻倍，用空间换快照不可变，向量库变大后可再优化） |
-| I3 | 相互隔离 | `clone_collections_for_branch()` 把 `S.chroma_checkpoint` 里**来源分支的全部角色集合**（不是本场参演名单，缺席者一分叉就失忆）搬进新分支的集合（`collection_name_for(cid, 新分支)`），分页读 + 按客户端 `max_batch_size` 分批写；另以分支级初始化文件封住快照中不存在 collection 的角色和空起点。**世界变量同理**：`S.world_state_variables` 写进新分支的 `world_state/{新分支}.json`（工单07）——它是分支级文件、不随快照目录走，不搬就是"一分叉世界重置"。**分镜稿同理**：`S.storyboard` 写进 `storyboard/{新分支}.json` 并附确定性模板生成的 `fork_origin`（来源分支名、快照标签、IF 条件、`director_notes`；工单18）；旧快照无副本时以空稿起步，不回读来源分支 |
-| I4 | 可追溯 | `Branch.parent_branch_id = S.branch_id`；`Scene₀.parent_scene_id = S.scene_id` |
-| I5 | 条件生效 | `Scene₀.initial_conditions = {**来源场景条件, **C}` |
-
-`Scene₀` 状态恒为 `pending`，**不自动开跑**——分叉是探索性操作，不该隐含整场 LLM 成本。
-来源场景已被删时降级：参演角色取自 `S.character_states`。
-`Branch.fork_conditions` 仅为溯源元数据，权威值在 `Scene₀.initial_conditions`。
-**记忆先搬、分支后建**：复制用预生成的 `branch_id` 在 `fork_branch` 之前执行，失败
-（`MemoryError` → 500）就不会留下一条无记忆的孤儿分支。世界变量与分镜稿的落盘同样排在
-`fork_branch` 之前，同一理由：不留下一条"世界被重置"或"导演失忆"的分支。Chroma 不可用 / 快照不含向量库
-仍按契约6 只 warning 并记录空起点；Chroma 已安装且快照库存在但复制/打开失败则必须中止。
-
-**评估+补写窗口内拒绝分叉**（评审修复，与 4.2 陷阱 19 世界变量补写窗口同一机制）：
-`fork_from_snapshot` 入口先查 `orchestrator._pending_world_patch`，命中则抛
-`ConflictError`（409）。`S` 若恰是某场刚完成、评估仍在跑的后置快照，`snap` 里的
-`world_state_variables`（以及 `story_history`）此刻还是评估之前那份；分叉只在那一刻
-读一次并整份拷给新分支，之后的补写不会再传播过去。旧实现允许这个窗口内分叉成功
-（见 `test_fork_during_evaluation_keeps_history_known_at_fork` 的历史版本），新分支会
-永久缺失本场结果——对 story_history 这曾被当成可接受的"冻结语义"，但对 world_state
-是无迹可查的静默丢失，两者本质是同一处竞态，因此统一堵住整个窗口而非只堵 world_state。
-**窗口的起点是快照创建、不是 scene 落库**：fork 只读 `snapshots` 表，`create_snapshot`
-一索引它就可分叉，因此标记由引擎在创建前经 `on_after_snapshot` 挂上（见 4.2 陷阱 19）。
-
-### 6.4 启动对账
-
-`main.py` 的 lifespan 中调用两个对账函数：
-
-- `reconcile_stale_builds()`：扫描所有 `build_status.json`，把进度在 (0,1) 且既非完成
-  也非失败的状态标记为失败，避免前端无限轮询卡死；
-- `reconcile_stale_scenes()`：把数据库里残留的 `running` 场景改为 `paused`。场景由后台
-  任务驱动，进程一退出任务就没了（【契约9】单进程假设下，启动瞬间不可能有场景真在跑）。
-  **只改状态，不自动重跑 LLM**——已产生的轮次都已逐轮落盘，由用户显式决定是否续跑。
-
-### 6.5 Inspection（角色内部状态查询）
-
-`services/inspection.py` 是**读角色内部状态的唯一路径**，用户面板 / 导演 / 总结智能体共用：
-
-- `resolve_scene_states(scene, sm)`：契约4 四级快照继承的**唯一实现**，
-  `orchestrator._load_inherited_states` 只是它的薄封装；
-- `load_character_state(...)`：时点解析优先级 `snapshot_id` > `scene_id`（走上面四级链）
-  > 该角色最近一次出现的快照（可用 `branch_id` 限定）；一个快照都没有时退回角色卡当前值，
-  此时返回的来源 id 为空；
-- `inspect_character(...)`：在上者基础上叠加角色卡人设与长期记忆检索，产出 `CharacterInspection`。
-  `include_private=False` 会抹掉 `unknown_facts`——结果若可能进入角色可见上下文必须传 False（契约1）。
-  长期记忆**只在显式给出检索词时**才查（避免面板每次打开都触发 embedding 调用）。
-
-短期缓冲与事件摘要是纯内存态，只存在于快照里；这正是旧接口每次新建 `MemoryManager`
-因而恒返回空的根因。注意后置快照是在 `consolidate` 之后打的（见 6.2），
-所以已完成场景的快照里 `short_term_buffer` 为空是**正常**的，内容已进长期记忆。
+**唯一定义源 `backend/models.py`**。语义、存放位置与三步 checklist 见 `.claude/rules/persistence.md`，世界相关模型见 `world-environment.md`。
+三个全局事实：`data_json` 列是 SQLite 各表的唯一真相源；角色卡 / 世界变量 / 分镜稿 / 物件走文件树而不入库；
+**改数据模型必须同步 `repository.py` 的 `_deserialize_*` 与前端 `types/index.ts`**，否则字段静默丢失。
 
 ---
 
 ## 7. 【契约】九条承重墙
 
-改动触碰以下任意一条时，必须显式保持，破坏前先和人类确认。
+改动触碰以下任意一条时，必须显式保持，破坏前先和人类确认。细则在对应规则文件。
 
 ### 契约 1 — 信息不对称（注意隔离边界）
 
-**schema 2 补充**：下面的世界变量全体广播规则仅适用于 schema 1 的公共层。统一世界中的
-客观属性与角色知识分别保存，只有明确 global 的属性可以广泛传播，现场公开不等于跨场广播。
-完整事实/规则只供导演和裁决，角色及 selector 必须经过可见投影（见 4.1.1）。
+**该隔离的**（分发与隔离细则：`lore-build.md`、`scene-engine.md`、`world-environment.md`、`director-story.md`）：
+- `unknown_facts` 只允许出现在 `PersonaBuilder` 生成、构建期 `LoreVisibilityClassifier` 与面向导演/用户的 API 响应中，**绝不允许**进入
+  `CharacterAgent.build_system_prompt()`、selector 打分 prompt 或任何角色可见上下文；
+- `LoreEntry` 按知情范围分发（公开进全员，私有只进知情者，隐藏与判定失败的不进任何角色）；
+- `inner_thought` 不得进入其他角色 prompt；**解析时先剥独白、再取动作**；
+- **导演分镜稿 `Storyboard` 只进导演的规划/评估 prompt**，引擎只拿它写快照副本，绝不并进 `scene_context`；
+- **物件隐藏规则、预制揭示内容只进导演与环境裁决层**；
+- **世界层（schema 2，新项目默认）**：客观属性与角色观察分离；只有 `global` 可广泛传播，`observable` 须在现场且能感知，`hidden` 不给角色；
+  角色与 selector 一律经**可见投影**获取世界信息。schema 1 旧项目的 `WorldState`（只许存全员可感知的公开事实）见 `world-environment.md`；
+- 角色不在场的场次里发生的信息不直接给。
 
-**该隔离的**：
-- `unknown_facts` 只允许出现在 `PersonaBuilder` 生成过程、构建期的设定可见性判定
-  （`LoreVisibilityClassifier`，工单29）与面向导演/用户的 API 响应中，
-  **绝不允许**进入 `CharacterAgent.build_system_prompt()`、`speaker_selector` 的打分 prompt
-  或任何角色可见的上下文；
-- **世界设定（`LoreEntry`）按知情范围分发**（工单29）：公开的进全部角色卡，私有的只进知情者
-  （`character:{id}`），隐藏的与判定失败的不进任何角色卡。种子里分属不同角色的秘密若以
-  `global` 发下去，等于构建那一刻就向全员泄密，且角色卡是拷贝、不会自愈；
-- 一个角色的 `inner_thought` 不得进入其他角色的 prompt；
-  **解析时先剥独白、再取动作**（`SceneEngine._parse_turn`）：`*戴上王冠[我怕]*` 若先按动作正则
-  整段抓走，独白就留在公开的 `action` 里，随 transcript 进全场 prompt 与他人记忆。
-  独白认半角与全角方括号，没闭合的 `[` 到回复末尾都按独白处理（宁可少公开一点）。
-  2026-10-05 之前落盘的轮次可能已带着这种 `action`，不追溯清理；
-- **导演分镜稿（`Storyboard`）只进导演的规划/评估 prompt**（工单18）：它含导演对全部角色
-  `unknown_facts` 的安排，进了任何角色或 selector 的上下文，角色就"知道剧本"了。
-  `SceneEngine` 只拿它写快照副本，绝不并进 `scene_context`；
-- 角色不在场的场次里发生的信息不直接给；能跨场次传播的只有公开的世界层事实，
-  走 `WorldState`（见下）。
-
-**不该隔离的**：同一场景中在场角色的**公开发言与动作**。这些是共享感知，
-每个在场角色都应该记住。**分支世界变量（`WorldState`）同理**：它会进入本场全部在场
-角色的 system prompt，因此**只允许存放所有角色都可感知的公开世界层事实**
-（季节、某势力的公开态度、某公开事件是否已发生）。把只有部分角色知道的秘密写进去，
-等于一次性向全体角色泄密 —— 这条约束写在导演的评估提示词里，后端无法代为判断。
-未来的环境智能体（工单20）最容易违反它：动作裁决的结果天然带私密性
-（"只有他看见水盆亮了"），落地时必须先想清楚哪些结果进世界变量、哪些只进当事人记忆。
-
-> ⚠️ 早期文档只写"角色只持有已知信息"，被误读成"不该记录他人发言"，
-> 曾是"记忆只写发言者"那个 bug（工单15，已修复：`SceneEngine.run()` 现在对本场
-> 全部参演角色写入每一轮，写他人轮次时剥离 `inner_thought`）的文档层成因。别再退回去。
+**不该隔离的**：同一场景中在场角色的**公开发言与动作**——共享感知，每个在场角色都应该记住
+（写他人轮次时剥离 `inner_thought`）。别退回"记忆只写发言者"（工单15）。
 
 ### 契约 2 — 快照前置（含唯一例外）
 
-场景模拟必须有前置快照。**唯一例外**：`scene.snapshot_id_before` 非空时（continue 续跑）
-引擎刻意跳过创建，避免覆盖首次快照。这是特性不是 bug。
+场景模拟必须有前置快照。唯一例外：`scene.snapshot_id_before` 非空（continue 续跑）时刻意跳过创建，避免覆盖首次快照。细则：`scene-engine.md`。
 
 ### 契约 3 — Prompt 前缀稳定（prefix cache）
 
-`system` 消息只放**整场不变**的内容（人设 / 世界观 / 已知事实 / 关系 / 场景设定 / 格式规范）；
-每轮变化的内容（目前对话、检索到的记忆、发言指令）一律放 `user` 消息，
-且"目前对话"**只在末尾追加、不做逐行滑窗**——超出 `TRANSCRIPT_TOKEN_BUDGET` 时
-成块丢弃并记录 `_transcript_start`。
-
-目的：同一角色在同一场景内的 prompt 前缀保持稳定，命中服务端 prefix cache。
-**任何"优化"都不得把变化内容塞回 system，也不得改成逐行滑窗。**
-
-**补充条款**：schema 2 的动态世界属性统一走 user 的可见投影（见 4.1.1），整场
-稳定的静态资料仍进 system。schema 1 保留工单07 的两类分层，**两者不得混用**——
-
-| 类别 | 何时变 | 放哪 | 现状 |
-|------|--------|------|------|
-| **场景常量** | 只在场次**之间**变，开场即冻结 | system（`scene_brief` 的"当前情境"块） | ✅ 工单07 已落地 |
-| **场景内变量** | 场景**进行中**由环境裁决改变 | user 消息里独立的"当前环境"块 | ✅ 工单20 PR-2a（`Scene.environment_state`，见陷阱 27） |
-
-工单07 的 `WorldState` 属于前者，所以进 system 不破契约；工单11 §2.2 曾写的
-"更新后的环境状态在下一轮 `build_system_prompt` 中体现"属于后者，**那样做会每轮击穿
-prefix cache**，落地时必须改走 user 块。
+`system` 只放**整场不变**的内容；每轮变化的（目前对话、检索记忆、发言指令、场景内动态环境）一律进 `user`，
+"目前对话"只在末尾追加、不做逐行滑窗（超预算成块丢弃）。**任何"优化"都不得把变化内容塞回 system，也不得改成逐行滑窗。**
+细则与 schema 1 / 2 的分层：`scene-engine.md`、`world-environment.md`。
 
 ### 契约 4 — 运行时记忆继承链
 
-短期缓冲与事件摘要是纯内存态，必须靠快照续命。`_load_inherited_states` 的四级优先级：
-
-1. `snapshot_id_after`（本场跑过 → continue 续跑）
-2. `restore_snapshot_id`（回滚重演）
-3. `snapshot_id_before`（异常恢复）
-4. 父场景的 `snapshot_id_after`（next_scene）
-
-取到后经 `MemoryManager.prime()` 回填。**顺序不可调换。**
+短期缓冲与事件摘要靠快照续命。`_load_inherited_states` 四级优先级**不可调换**：
+`snapshot_id_after` → `restore_snapshot_id` → `snapshot_id_before` → 父场景 `snapshot_id_after`，取到后经 `MemoryManager.prime()` 回填。细则：`memory.md`。
 
 ### 契约 5 — 幂等性是通用不变量
 
-**任何可被用户重试 / 网络重放触发的写接口，都必须设计幂等键。**
-这不是决策接口的局部规定，新增此类接口时同样适用。
-
-当前决策接口的三件套实现（可作为模板）：
-
-1. `decisions` 表（`scene_id` 主键 = 幂等键）持久化已生效决策 → 重试/重放返回同一
-   `next_scene_id`，不重复调 LLM、不重复建场景；提交不同 `decision_type` 抛 `ConflictError`(409)。
-2. `scenes.status` 的 CAS 条件更新 `completed → deciding` 拦截并发，
-   靠 SQLite 写锁跨进程有效；**只写列不写 `data_json`**。
-3. `finally: clear_scene_deciding` 释放守卫（仅当仍为 `deciding` 时恢复 `completed`）。
-
-`continue` 刻意不落表。已知边界：极晚到达的 continue 重试会再次续跑（确定性、不分叉，可接受）。
+**任何可被用户重试 / 网络重放触发的写接口，都必须设计幂等键。** 决策接口的三件套（decisions 表主键、
+`scenes.status` CAS `completed→deciding`、`finally` 释放守卫）是模板；`continue` 刻意不落表。细则：`director-story.md`。
 
 ### 契约 6 — 优雅降级
 
-`kuzu` / `chromadb` / `autogen` 全部走 try-import + `_XXX_AVAILABLE` 分支，
-缺失时降级（空图 / 字符重叠伪检索 / 不可用）。**离线与 CI 环境必须能跑通。**
-新增可选重依赖时沿用同一模式。
-
-**Chroma 运行期失败只暂时断开**（`LongTermMemory._suspend`）：写入/检索抛错（多半是远程
-embedding 抖动）后冷却 `RETRY_COOLDOWN_SECONDS`，期间写入进暂存区并镜像到降级存储，
-恢复后先按序补写；每次 `consolidate` 收尾无视冷却再补写一次，仍有剩余则打 error。
-**不要改回"失败一次就 `_collection = None`"**：那会让本场余下写入全部只进内存、场景结束即丢，
-而水位线照推，续跑也补不回来。暂存区本身仍是内存态，服务在场景结束前都没恢复时照样丢——
-这是已知边界，日志可见。
+`kuzu` / `chromadb` / `autogen` 走 try-import + `_XXX_AVAILABLE`，缺失时降级（空图 / 字符重叠伪检索 / 不可用）。
+**离线与 CI 必须能跑通。** 新增可选重依赖沿用同一模式。Chroma 运行期失败只暂时断开，不要改回"失败一次就置空"（`memory.md`）。
 
 ### 契约 7 — LLM 唯一出口
 
-所有 LLM 调用必须经 `backend/utils/llm.py` 的 `chat()` / `chat_safe()`
-（tenacity 3 次指数退避、180s 超时、失败转 `LLMError`）。
-**禁止**在其他模块直接实例化 OpenAI 客户端——唯一例外是 `memory/embeddings.py`
-（Chroma 要求同步接口）。模型名一律走 `settings`，禁止硬编码。
-调用点要用 `purpose` 标明用途：调用计数（工单25）只在这一个出口发生，见 4.2 陷阱 26。
-服务商返回空正文时这里判失败、日志带 `finish_reason`（工单30）：不得再以 `content or ""` 当成功交回。
-触顶（`length`）导致的空正文立即失败不重试，其余照常退避重试；两种都把这次的 token 计入用量（陷阱 28）。
+所有 LLM 调用经 `utils/llm.py` 的 `chat()` / `chat_safe()`；**禁止**在别处实例化 OpenAI 客户端（唯一例外 `memory/embeddings.py`）；
+模型名走 `settings`；调用点标 `purpose`。细则：`llm.md`。
 
 ### 契约 8 — 分层边界
 
-- `api/` 只做参数校验 → 调 `services` → `to_dict`，**不写业务逻辑**；
-- 跨模块编排只在 `services/orchestrator.py`；
-- 写 SQLite 与角色 JSON 只在 `services/repository.py`；
-- 不在模块间传递 Kuzu / Chroma 的原始连接对象。
+`api/` 只做校验→调 services→`to_dict`；跨模块编排只在 `orchestrator.py`；写 SQLite 与角色 JSON 只在 `repository.py`；
+不在模块间传递 Kuzu / Chroma 的原始连接对象。
 
 ### 契约 9 — 单进程假设
 
-`_active_scenes` 与 SSE 事件总线都是进程内的，**当前部署必须单 worker**。
-多 worker 会破坏场景并发守卫与 SSE 投递（决策幂等因走 DB CAS 不受影响）。
-要上多 worker 需先把这两处外置。
+`_active_scenes`、SSE 事件总线、各类锁与 AutoPilot 会话都是进程内的，**当前部署必须单 worker**。上多 worker 需先外置这些状态。
 
 ---
 
-## 8. API 实况
+## 7.1 陷阱索引
 
-统一前缀 `/api/v1`（`main.py::API_PREFIX`）。统一响应包络：
+陷阱正文（编号全局不变，代码注释里有"陷阱 N"引用）在规则文件里，按路径随文件载入。**新陷阱从 29 起编**，写进所属规则文件，并在此补一行。
 
-```json
-{ "success": true, "data": {}, "error": null, "timestamp": "..." }
-```
-
-异常映射：`ConflictError` → 409，`InvalidRequestError`（业务层校验失败，如分镜稿超预算）→ 422，
-`MemoryError`（长期记忆继承失败）→ 500，其余 `PlotSystemError` → 404（`main.py` 全局处理器）。
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-| POST / GET | `/projects` | 创建（可带 `narrative_goal` / `ending_criteria`）/ 列出项目 |
-| GET / DELETE | `/projects/{project_id}` | 详情 / 删除（连带 `rmtree` 项目目录） |
-| PATCH | `/projects/{project_id}` | 人工编辑 name/description/**主线目标**/结局标准（字段为 null 则不改） |
-| POST | `/projects/{project_id}/seed` | 上传种子文本（multipart） |
-| POST | `/projects/{project_id}/build` | 触发构建（后台任务） |
-| GET | `/projects/{project_id}/build/status` | 构建进度 |
-| GET | `/projects/{project_id}/graph` | 图谱可视化数据 |
-| GET | `/projects/{project_id}/characters` | 角色列表 |
-| GET / PATCH | `/projects/{project_id}/characters/{char_id}` | 角色详情 / 人工编辑 |
-| GET | `/projects/{project_id}/characters/{char_id}/memory` | 运行时记忆（短期缓冲 + 事件摘要），读自快照 |
-| GET | `/projects/{project_id}/characters/{char_id}/inspect` | 角色内部视图（人设 + 时点状态 + 三层记忆） |
-| POST | `/projects/{project_id}/scenes/plan` | 导演规划，返回 SceneConfig（**不落库**）。请求体只有 `branch_id` 与可选的 `scene_intent`；主线目标固定读 `project.narrative_goal` |
-| POST | `/projects/{project_id}/scenes` | 创建场景。`objects_present` 选本场在场物件（每场上限 10，含不存在的物件 422） |
-| GET | `/projects/{project_id}/scenes` | 列出场景（`?branch_id=` 可选），前端刷新后恢复导航用 |
-| GET | `/projects/{project_id}/scenes/{scene_id}` | 场景详情 |
-| GET | `/scenes/{scene_id}` | 场景详情（无需 project_id） |
-| POST | `/scenes/{scene_id}/start` | 开始模拟（后台任务）。已在跑→`already_running`；已完成→`already_completed`（不重跑） |
-| POST | `/scenes/{scene_id}/pause` | 中断运行中的引擎 |
-| GET | `/scenes/{scene_id}/log` | 完整对话日志 |
-| GET | `/scenes/{scene_id}/stream` | **SSE** 实时流 |
-| GET | `/scenes/{scene_id}/evaluation` | 导演评估 |
-| GET / POST | `/scenes/{scene_id}/decision` | 查询已生效决策（幂等重放） / 提交决策 |
-| GET | `/projects/{project_id}/autopilot` | 该项目最近一次自动推演会话（含已停止的与停止原因）；没有则 null（进程重启后也是 null） |
-| POST | `/projects/{project_id}/autopilot` | 开启自动推演：`scene_id`、可选 `max_steps` / `max_consecutive_rollbacks`（缺省取 `.env`），`request_id` 必填（幂等键，同键重放返回同一会话）。已有进行中的会话 409；越界、起点已有生效决策、起点已完成但评估不可用或已抵达结局 422。起点在跑→等它跑完；pending/paused→替用户开演；completed→立即决策 |
-| DELETE | `/projects/{project_id}/autopilot` | 停止自动推演：不再往下接，正在演的这一场照常演完（要立刻中断另调 pause） |
-| GET | `/projects/{project_id}/branches` | 分支树 |
-| GET | `/projects/{project_id}/branches/{branch_id}/world-state` | 分支世界变量（只读）。分支没有记录时返回空变量而非 404。schema 2 项目返回完整世界版本 |
-| POST | `/projects/{project_id}/branches/{branch_id}/world/commands` | schema 2：提交世界命令（带 request_id / revision_id / operations / observers） |
-| POST | `/projects/{project_id}/branches/{branch_id}/world/adopt-definitions` | schema 2：采用项目物件规则（显式更新分支世界版本的物件定义） |
-| GET | `/projects/{project_id}/branches/{branch_id}/world/events` | schema 2：查看最近已提交的世界事件（含分叉起点前的继承来源） |
-| GET | `/projects/{project_id}/world/migration-preview` | schema 2：预览 schema 1 → 2 迁移（分类及内容指纹，不调 LLM） |
-| POST | `/projects/{project_id}/world/migrate` | schema 2：执行迁移（接受显式选中的事实，事务内切换全项目所有分支） |
-| GET | `/projects/{project_id}/branches/{branch_id}/storyboard` | 分支导演分镜稿（工单18）。无记录返回空分镜稿而非 404；附 `goal_stale`（路线图基于旧版主线目标）与这一刻的 `narrative_goal` / `current_goal_revision` |
-| PUT | `/projects/{project_id}/branches/{branch_id}/storyboard` | 用户整份替换 `outline` / `memo`，带读取时的 `revision`：不匹配 409；超预算、引用不存在的 `beat_id` 422（不截断）；`request_id` 为幂等键，命中已生效的编辑视为重放（200、不写），同键不同内容 422；与当前内容完全相同视为无操作。`confirm_goal` 显式确认已按目标重排，须同时带回读取时的 `goal_revision_seen`（缺失 422），写回的就是它。分支不存在 404。`goal_revision` / `fork_origin` / `changelog` / `revision` 由后端维护 |
-| GET | `/projects/{project_id}/objects` | 物件列表（工单24，含隐藏规则：面向用户/导演，同角色卡返回 `unknown_facts`） |
-| GET | `/projects/{project_id}/objects/{object_id}` | 物件详情 |
-| POST | `/projects/{project_id}/objects` | 新建物件。`request_id` 必填，物件 ID 由它确定性生成，重放返回同一物件；超预算、`private` 无知情者或知情者不存在、名称或别名与其他物件重复（不区分大小写）422（不截断）；每项目上限 40 |
-| PATCH | `/projects/{project_id}/objects/{object_id}` | 修改物件（字段为 null 不改），带读取时的 `revision`：不匹配 409；`request_id` 为幂等键；与当前内容相同视为无操作 |
-| DELETE | `/projects/{project_id}/objects/{object_id}` | 删除物件，已不存在也成功（`existed` 区分） |
-| GET | `/projects/{project_id}/snapshots` | 快照列表：id / scene_id / branch_id / label / created_at / `character_count`（不带角色状态明细与导演历史，SQL 侧投影） |
-| POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}`。若目标快照所属场景的评估/世界状态补写仍在进行中，返回 409（`ConflictError`），稍后重试即可（见 6.3.1） |
-| DELETE | `/snapshots/{snapshot_id}` | 删除快照（**需 `project_id` query 参数**，且按项目约束） |
-| POST | `/projects/{project_id}/output` | 生成输出 |
-| GET | `/output/{output_id}` | 取回生成结果 |
-
-**SSE 事件类型**：`turn`（新 DialogueTurn）、`turn_update`（已推过的轮次被服务端改写后的完整版本，
-带更大的 `revision`；目前只有环境裁决改动作状态时发，见陷阱 27）、`status`、`snapshot`、`evaluation`、`scene_error`、
-`autopilot`（自动推演会话的最新状态，带 `current_scene_id`；推在刚收场那一场的流上，**先于**终态帧）。
-自动 continue 时这一场的终态帧**不推**，同一条流直接接着收到新一轮的 `status: running` 与 `turn`。
-业务失败事件**必须叫 `scene_error` 而不是 `error`**：`error` 是 EventSource 的原生连接
-错误事件名，同名会让前端把两者混在一个处理器里、丢掉 `message`（`fatal` 字段区分
-“整场挂了”与“仅自动评估失败”）。
-订阅建立时后端会**先回放一帧 `status`**（带 `initial: true`）告知当前状态；
-若首帧已是 `completed` / `paused`，服务端**直接结束流**，不留只会 ping 的连接。
-逐轮落盘先于 SSE 推送，因此铺底用的 GET 与随后的 `turn` 事件**可能撞上同一轮**，
-客户端必须按 `turn_id` 去重，并在终态时无条件以持久化日志为准。
-`turn` 的去重语义因此**不能**用来送达改写：同一 `turn_id` 再推一次会被丢掉，改写只能走 `turn_update`。
+| 规则文件 | 陷阱 |
+|---|---|
+| `persistence.md` | 5（`long_term_memory_snapshot` 恒空） |
+| `scene-engine.md` | 1 前置快照留空 · 2 restore 与 before 分工 · 3 speaker_mode 链路 · 4 selector_notice · 8 PAUSED · 20 scene_context 逐键渲染 · 24 轮次渲染/感知/计数 |
+| `memory.md` | 9 固化水位线 · 11 branch_id 寻址 · 12 旧集合承接 |
+| `world-environment.md` | 19 WorldState（schema 1）· 25 动作意图 · 27 环境回合 |
+| `director-story.md` | 6 next_* 覆盖 · 7 四维评分 · 13 opening_narration 搬运 · 14 评估 -1 · 15 目标只读 · 16 story_progress/历史冻结 · 17 unresolved_threads · 18 数值解析 · 21 分镜稿 · 22 AutoPilot |
+| `fork-snapshot.md` | 10 状态作用域与 restore 破坏性 |
+| `llm.md` | 26 调用计数 · 28 续写截断 |
+| `lore-build.md` | 23 LoreEntry.scope |
 
 ---
 
-## 9. 前端实况
+## 10. 开发规范（通用部分）
 
-| 页面 | 路由 | 功能 |
-|------|------|------|
-| `Workspace.vue` | `/` | 项目管理、**主线目标编辑**、种子上传、构建进度轮询、G6 图谱、角色、**物件编辑** |
-| `Director.vue` | `/director/:projectId` | 三栏：左栏当前谱系与本分支场景；中间舞台（剧本格式实时日志 / 开演前规划）；右侧检查器（评估 / 决策 / 分镜稿 / 快照，角色内部状态也在这里打开） |
-| `BranchMap.vue` | `/branches/:projectId` | 分支图：纵轴第几场、横轴分支，点任意一场回导演台打开 |
-| `Output.vue` | `/output/:projectId` | 选分支 + 选格式 → 纸面预览 → 下载；右栏是给后续导出功能的预留区 |
+Python 规范见 `.claude/rules/python.md`（按 `*.py` 载入）。
 
-### 9.1 设计系统
-
-- **变量是唯一真值**：颜色、圆角、字体全在 `styles/global.css`，组件里不写十六进制色值。
-  亮色默认，`html[data-theme="dark"]` 切暗色；选择存在 `localStorage['plotsystem.theme']`，
-  `index.html` 的内联脚本在挂载前读它，避免闪色。
-- **颜色带语义，别当装饰用**：`--spot`（追光）只标"当前发言者 / 推演中"；`--private`（暗场）
-  只标**仅导演可见**的内容（独白、未知事实、分镜稿）——这是信息不对称在界面上的编码，
-  拿它装饰普通元素就把编码冲掉了。亮色是暖金 + 紫，暗色是钴蓝 + 冰青。
-  `--b-*` 是分支识别色，由 `utils/branches.ts::branchColors` 按深度优先顺序分配（主线用墨色），
-  左栏、分支图、快照必须用同一个函数取色。
-- **圆角随层级变**：4（标签）/ 6（按钮、输入框）/ 10（面板）/ 14（浮层）；嵌套时内圆角 = 外圆角 − 内边距。
-  阴影只给真正浮起来的层（抽屉、侧拉面板）。不要卡片套卡片。
-- **按钮四级**：默认（次要）/ `.primary` / `.ghost` / `.danger`，只放图标用 `.icon`（文字说明写在 `title`）。
-  图标一律 `<Icon name>`，不用 emoji。
-- **G6 读不到 CSS 变量**：两个图谱查看器渲染前经 `composables/theme.ts::cssVar` 现取颜色，
-  并 `watch(theme)` 重建图实例。新增 JS 侧配色的库照此处理。
-- **导演台按容器宽度而不是视口宽度退让**（`container: director`）：≤1180 检查器变抽屉，
-  ≤860 左栏收成顶部下拉框，舞台永远不让出空间。应用侧栏在视口 ≤1440 时默认收成图标栏。
-
-### 9.2 要点
-
-- **舞台的两种状态**：有草稿或正在规划时显示 `SceneComposer`（写本场意图 → 导演规划 →
-  就地改草稿 → 开演），否则显示 `StageView`。**只有尚未落库的草稿能改**：后端没有修改场景的
-  接口，决策 / 分叉产生的 pending 场景只能看、只能开演。切分支时草稿作废。
-- **规划与建场景的迟到响应一律作废**（`Director.vue` 的 `planSeq`）：重新规划、取消、切分支、
-  开演都会让序号前进，响应回来时序号或分支不符就丢弃——否则取消后草稿会弹回来、A 分支的
-  草稿会填进 B 并建到 B 上。重新规划期间"开演"禁用；建场景请求在途时开演/重新规划/取消都禁用。
-  **主动作废时要同时复位 `planning`**（`dropPendingPlan`）：旧请求的 `finally` 因序号失效
-  不会再收它，否则再次打开规划界面按钮一直停在"规划中"。**卸载时同样作废**并置 `disposed`：
-  离开导演页后迟到的创建响应不得再开演、改路由或刷新共享状态。
-  `sceneStore.createScene` **只落库不改舞台**，上台由 `startNewScene` 做：创建期间用户已离开
-  规划界面时，场景留在原分支未开演，不替用户开演。
-- **`startSimulation` 失败不抛出**：流必须先于 `/start` 打开，`/start` 失败时后端场景仍是
-  pending、SSE 首帧回放 pending，不复位就会永远卡在"准备中"且不出重试按钮。失败时关流、
-  `running=false`、原因进 `lastError`，返回 false；场景回到可开演。决策后的续跑启动失败
-  因此也不会被误报成"决策提交失败"。
-- **舞台底栏有快捷决策**（已完成且未决策时）：继续 / 下一场与决策面板的默认提交等价；
-  回滚要选快照、填条件，只负责打开检查器的决策页。**导演建议的那一个用实底（`.primary`）**，
-  不另写"导演建议"字样；评估未到 / 不属于本场时写"评估中…"、评估不可用（−1 分）时写"评估不可用"，
-  都不高亮（`utils/decision.ts::stageDecisionHint`，陷阱 14：失败的评估不得伪装成导演意见）。
-  侧边决策面板保持原样（只有一行"导演建议：xx"）。
-- **截断提示**：角色名后的黄字（`--warn`）"已截断 / 已重新生成"来自 `output_notice`，悬停看字数与开头；
-  比灰字"降级选择"重一档 —— 有内容被丢了，而且多半是伪造的（陷阱 28）。
-- **自动推演（工单12）只跟随、不开演**：会话状态经场景流上的 `autopilot` 事件与 3 秒轮询两条路
-  进 `sceneStore.applyAutopilot`，跟到下一场只 `attachScene`（下一场还是 pending 时再补开流），
-  **绝不调 `/start`**——后端已经替用户开演。**只在会话前进时跟随**（换场景/多一步/新会话），
-  不是"当前场景与会话不一致就跟"，否则用户在自动推演期间翻看别的场景会被轮询拽回去；
-  迟到的轮询按 `updated_at` 丢弃。跟随后 `autopilotFollows` +1，`Director.vue` 据此走
-  `syncToCurrentScene`（与决策后同一个函数：自动回滚会换分支）。进行中时底栏的开演/快捷决策
-  收起、决策面板锁定；停在哪一场就在那一场显示停止原因。离开导演页只停前端的轮询，后端会话照跑。
-  **异步结果的三道提交边界**（评审修复）：跟随请求带序号，**在改舞台、换流之前**校验
-  （`attachScene` 拆出提交半段 `showAttachedScene` 就是为此——在它返回后再查已经晚了，旧响应
-  会把舞台和 SSE 切回旧场景）；"前进"只负责设 `followTarget`，**到达才清空**，跟随失败时下一次
-  轮询带回同一步也会重试；导演页挂载走 `bindAutopilot(projectId)`、卸载走 `resetAutopilot()`，
-  生命周期版本前进，离页前发出的轮询/开启/停止/跟随结果一律作废，别的项目的会话一律不收。
-- **检查器各标签页用 `v-show` 而不是 `v-if`**：分镜稿的编辑草稿与决策表单切走再回来不能丢。
-  角色内部状态（`CharacterInspector embedded`）盖在标签页上，返回即恢复。
-- **测试直接执行 `Director.vue` / `DirectorPanel.vue` / `Output.vue` / `StoryboardPanel.vue` / `ObjectsPanel.vue`
-  的脚本块**，环境里只注入了它们用到的全局名。给这几个文件加逻辑时只加 `ref` / 函数，
-  不要在顶层调用新的 store 或 composable；新布局逻辑放进子组件。`Output.vue` 的重试按钮
-  还被测试按 `<button v-if="scopeError" ... @click="loadScope">` 的写法匹配。
-- **SSE 双保险**：`joinScene` 先用已持久化的 `dialogue_log` 铺底，
-  `startSimulation({keepLog})` 保留续跑日志，场景完成后 `reconcileLog()` 补齐
-  SSE 建立前遗漏的轮次。改动实时日志逻辑时别破坏这个对账。
-  舞台只在用户停在底部附近时才跟随新台词滚动（`StageView` 的 `stick`）。
-- **`turn_update` 必须比 `revision`**（工单20，`utils/turns.ts::applyTurnUpdate`）：本地有同 `turn_id`
-  且新版 `revision` 更大才替换，本地没有就忽略（终态 `reconcileLog` 会补齐）。不比的话，订阅期间铺底 GET
-  先拿到新版、队列里的旧事件随后才到，就会把动作状态回退。
-- **环境回合不是发言**：`DialogLog` 把它渲染成叙述，私密细节用 `--private` 只在导演视角显示；
-  只看某个角色时，环境回合跟着执行者（`perceived_by`）走。`StageView` 的"第 N / max_turns 轮"与
-  进度条只数角色轮次（`characterTurnCount`），与后端终止判定同一口径。
-- **`attachScene` 与 `joinScene` 不可混用**：前者用于“打开/重连已存在的场景”（刷新恢复、
-  点选历史场景），**绝不调 `/start`**；后者用于决策产生的新场景/续跑，会调 `/start`。
-  对已完成场景误调 `/start` 会白烧一整场 LLM 并覆盖快照/评估（后端已加拦截，但前端不该依赖它）。
-- **SSE 句柄必须捕获自己的连接**：`openStream` 把 `EventSource` 存为局部变量，每个事件
-  处理器先比对它是否仍是当前连接。否则快速切场景时，旧流的终态会关掉新流、
-  旧流的 `turn` 会串进新场景的日志。
-- **业务失败走 `scene_error`，连接错误走 `error`**：两者在 `openStream` 里是两个独立
-  处理器，前者把 `message` 存进 `sceneStore.lastError` 并在日志区上方展示。合并处理会
-  让失败原因被紧随其后的 `status` 覆盖掉。
-- **切分支要连当前场景一起切**：`watch(branchId)` 刷新场景列表后会 attach 该分支最后一场，
-  没有场景则 `clearScene()`。只刷新列表不切场景，日志与决策面板会跨分支残留。
-- **分叉后只 `attachScene`**：`confirmFork` 切到新分支并打开返回的首场，绝不调 `joinScene`
-  （它会 `/start`，用户点一下“分叉”就烧掉一整场 LLM）。IF 条件在分叉表单里按每行
-  `key=value` 填，解析后进 `new_conditions`；“给导演的说明”进 `director_notes`，
-  最终成为新分支分镜稿的分叉说明。
-- **分镜稿面板（`StoryboardPanel.vue`，工单18）的七条约束**：草稿有归属，切分支即清空，
-  保存的响应（成功与失败都算）**只认发出它的那份草稿**——A→B→A 往返后分支号相同、草稿却是新的，
-  只比分支号会让迟到的响应清掉新草稿；**保存期间草稿只读**（`fieldset :disabled` + 增删移动
-  函数拦截），响应回来时若草稿内容与发出的不同，保留草稿、提示未保存，且**不把草稿基准改成
-  新修订号**（幂等重放返回的稿子可能已含他人后来的改动）；**保存成功让此前发出的刷新作废**，
-  同时清掉此前刷新失败留下的加载错误
-  （读取与保存各有序号，不作废的话较早的 GET 会把面板盖回旧稿，再编辑必 409）；409 **保留草稿并提示重新加载，
-  不自动重试覆盖**（导演评估与用户编辑会并发）；编辑时已有节拍原样回传 `beat_id`，新节拍
-  不带，**已有节拍标题清空时本地拦下**——PUT 是整份替换，漏发一个已有节拍就是删掉它；
-  幂等键 `request_id` 随草稿内容走，内容没变的重试沿用同一个；确认目标重排时旁边显示的
-  是开始编辑时响应里的目标原文，带回的是它的版本。`refresh-key` 绑本场评估：评估事件到达时
-  分镜稿已合并落盘，正在编辑时不刷新。区分 409 靠 `api/client.ts` 抛出的 `ApiError.status`。
-- **物件编辑器（`ObjectsPanel.vue`，工单24 PR-1c）沿用分镜稿面板的草稿归属、只认本草稿的响应、
-  保存期间只读、409 保留草稿不自动覆盖**，另有几条自己的：
-  **写入后作废在途读取的方式是补发一次读取，不是只作废**（`refreshAfterWrite`）——分镜稿保存返回整份，
-  只作废不丢信息；物件保存/删除只返回这一个，只作废会让在途读取本该带回的其他物件（首次加载的全部、
-  构建刚抽出的）一直缺失。补发的读取在写入之后发出，必含本次写入，所以不会盖回旧修订号。
-  **列表不完整时（`listed` 为假：首次加载完成前、加载失败后）不许新建**，计数显示"列表未加载"，
-  也不因保存成功清掉加载错误。
-  **幂等键两种用法**——修改随内容走，新建一份草稿从头到尾只用一个键（创建响应丢了、用户改完再提交时，
-  换新键会建出第二个同名物件；沿用旧键则后端 422"幂等键已用于另一份内容"，面板据此刷新列表）；
-  编辑中物件被删（PATCH 404，后端不会重建）草稿转只读，只能"另存为新物件"，换新键走 POST；
-  本地只拦必然 422 的形状问题（空名、单字别名、与角色同名、与其他物件重名、private 无知情者），token 预算以后端
-  422 原文为准。**超出别名上限的输入留在输入框并拦下保存**，不清空（清空即替用户截断）；
-  **409 后的重新加载只在读取成功时重开草稿**，失败时保留草稿与冲突状态（拿旧列表重开只会带着旧修订号再撞 409）。
-  非 private 时提交空 `known_by`，但草稿里保留名单，切回 private 不必重选。
-  知情者名单里不存在的角色照样显示、照样提交，不在前端悄悄删。`refresh-key` 绑构建完成，只刷列表不动草稿。
-- **决策后要把分支选择一起切**：rollback 会把新场景建到新分支上，`onDecision` 必须按
-  `currentScene.branch_id` 同步 `branchId`（切时先抑制 watcher，否则它会把当前场景改写成
-  新分支的最后一场）。不同步的话，后续“让导演规划”和场景列表仍按旧分支走。
-- **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，
-  否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
-- `GraphViewer.vue` 与 `GraphViewer2.vue` 并存，由 `graphViewerVersion` 切换（界面上叫"概览 / 聚焦"）。
-  **两者用的布局不同，`nodeStrength` 的符号相反**：概览是 G6 `force`，正数 = 斥力（它的类型注释
-  写反了，曾配成 -60 让整张图塌成一团）；聚焦是 `d3-force`，负数 = 斥力。
-- **分支图的深度沿因果链推**（`utils/branches.ts::layoutBranchMap`）：首场的 `parent_scene_id`
-  指向来源场景（契约 I4），承接的若是来源场景的 `snapshot_id_before` 就是回滚重演、与来源同一行；
-  手建场景没有 parent，接在本分支上一场之后。它读的是全量 `GET /scenes`（带对白），
-  几十场的规模可以接受，场景多了要给后端加投影。
-- **结局是提示不是闸门**：`is_ending_reached` 为真时 `DirectorPanel` 显示结局提示与
-  "生成结局输出"入口，但**三个决策按钮保持可用** —— 结局是导演的判断，用户完全可能
-  不认同（想继续演、想回滚）。别让 LLM 的一个布尔值锁死用户操作。
-- **主线目标为空时规划只提示不拦**：`Director.vue` 的"让导演规划"在目标为空时弹一次确认
-  （同一项目只问一次），说明导演将自由发挥、主线相关评分没有参照；没有目标也可以先看看角色
-  会演出什么。`DirectorPanel` 按评估的 `goal_missing` 显示无锚点提示，不画推进度。
-- 数据模型变更需同步 `frontend/src/types/index.ts`。
-
----
-
-## 10. 开发规范
-
-### 10.1 Python
-
-- 公共函数必须完整类型注解；文件头 `from __future__ import annotations`。
-- 所有 IO（LLM / DB / 文件）必须 `async`；禁止 `time.sleep`。
-- 内部数据用 `@dataclass`（集中在 `models.py`），跨 API 边界用 Pydantic（`api/schemas.py`）。
-- 异常继承 `PlotSystemError`（`exceptions.py`），不要裸 `raise Exception`。
-- **原子写文件时，临时名必须唯一且不长于目标名**。这条已经踩过三次：
-  `f".{目标全名}.{uuid4().hex}.tmp"` 会净增 38 字符，目标名含 sha256 时
-  很容易越过 Windows MAX_PATH(260)，抛出伪装成 `FileNotFoundError` 的错误；
-  `path.with_suffix('.tmp')` 会让 `meta.json` 与 `meta.tmp` 共用一个名字，
-  并发写互相覆盖；"目标名前 16 字 + 8 位 uuid"对 `crown.json` 这种短名又会拉长 9 个字符。
-  **唯一实现是 `utils/fileio.py`**（`atomic_write_text` / `temp_path_for`）：临时名不含目标名、
-  按目标名长度取随机串，replace 前 fsync，失败清理。不要再在别处手写一份。
-  测"不留临时文件"用 `is_temp_name`，不要写死某种 glob —— 命名一改断言就恒真。
-- **读人工可编辑的 JSON 文件，损坏判定要含 `UnicodeDecodeError`**：记事本另存为 ANSI 就是 GBK，
-  它既不是 `OSError` 也不是 `JSONDecodeError`。
-- **反序列化时间戳统一走 `models.as_aware`**：手写文件常不带时区，与系统写的带时区时间
-  一比较就抛 `TypeError`（`_parse_created_at` / `_parse_snapshot_time` 已接上）。
-- **整个数据目录的路径预算约 65 字符**，别再挥霍。默认布局下最长的两条已达
-  195（分支初始化 marker，含 64 字符 sha256）与 205 字符
-  （`snapshots/{id}/chroma_collections/{uuid}/data_level0.bin`，**由 Chroma 生成、
-  我们控制不了**）。因此：新增路径层级前先量一量；**`DATA_DIR` 建议放浅目录**，
-  配到深目录会重新踩线。根治要么开注册表 `LongPathsEnabled`（每台机器都得改），
-  要么全路径加 `\\?\` 前缀（要统一所有构造点，且第三方库兼容性未验证）——
-  两者都是环境/架构决策，真踩到再上。
-- `ruff` 通过（配置见 `pyproject.toml`，已忽略 UP042）。
-
-### 10.2 命名
-
-类 `PascalCase`；函数/变量 `snake_case`；常量 `UPPER_SNAKE`；
-API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内 `camelCase`。
-
-### 10.3 提交与测试
-
-- Conventional Commits：`feat(agents): ...` / `fix(scene): ...` / `docs: ...`。
-- **提交信息与 PR 正文不加 `Co-Authored-By` 等署名尾注**（包括 AI 助手的署名）。
-  这条覆盖工具的默认行为：AI 助手即使被要求附加 attribution，在本仓库也不要加。
-- 核心模块（agents / snapshot / memory / orchestrator）新功能需附单测。
-- `tests/conftest.py` 会把 `DATA_DIR` 指向临时目录，测试不会污染 `data/`。
-- 后端 `uv run pytest tests/`；前端 `cd frontend && npm test`
-  （`node --test tests/*.test.mjs`，无浏览器，直接编译 `.vue` 的 script 块跑）。
-  **新增前端测试必须能被这条命令选中**——写了测试却没有入口等于没写。
-- 端到端手测：`python -m scripts.run_demo`。
-- 长期记忆重复排查：`python -m scripts.check_memory_dupes`（**只读**，按集合统计完全相同
-  的正文条目）。改造前沉淀的重复只评估不清理——无法区分"重复写入"与"角色确实说了两遍"；
-  确认严重时最干净的处理是删掉该项目的 `chroma_db/` 重跑（长期记忆可从 `dialogue_log` 重建）。
-- 世界设定可见性修复：`python -m scripts.reclassify_lore --project ID [--apply]`（工单29，
-  工单29 之前构建的项目都需要跑一次；会调 LLM，预览与写入是两次独立判定）。
-- 动作意图统计：`python -m scripts.action_stats --project ID [--branch B]`（工单24，**只读**、
-  不调 LLM）：record 档下的命中率、抽取调用次数、跳过原因分布。
-- LLM 用量报表：`python -m scripts.usage_report --project ID [--branch B]`（工单25，**只读**、
-  不调 LLM）：按场景与用途列出调用次数、token（"≈"表示含估算）、耗时，运行与评估分开计。
-- 角色回复回放评测：`python -m scripts.replay_character --project ID --site SCENE:TURN [...] [--run]`
-  （工单30b，只读库、**带 `--run` 才调 LLM**）：重建某轮之前的现场，按 prompt 变体各生成 N 次，
-  用 `trim_continuation` 统计污染率，样本并排导出到项目目录。基线走真实的
-  `CharacterAgent.build_messages`（`respond` = 检索记忆 → `build_messages` → `complete`；"目前对话"
-  之后的几块是 `prompt_tail`，多轮变体 C 直接复用），候选变体是脚本内原型；改角色 prompt 时变体 A
-  的锚点找不到会直接报错，跟着改脚本。`--memory checkpoint` 用真实的 `LongTermMemory` 打开快照
-  向量库的临时副本，承接规则与生产一致。报告记下 `LLM_BASE_URL` 的主机名，`--model` 只换模型名
-  （OpenRouter 上可写 `@preset/…`）；跨次比较先对齐服务商，同一模型名在不同平台、不同量化下差别很大。
-
-### 10.4 注释
-
-业务语义注释用中文；只写"代码本身看不出来的信息"（为什么这么做、哪条契约在起作用），
-不要复述下一行在干什么。
+- **命名**：类 `PascalCase`；函数/变量 `snake_case`；常量 `UPPER_SNAKE`；API 路径参数与 DB 字段 `snake_case`；Vue 组件 `PascalCase`，脚本内 `camelCase`。
+- **提交**：Conventional Commits（`feat(agents): ...`）。**提交信息与 PR 正文不加 `Co-Authored-By` 等署名尾注**（含 AI 署名），覆盖工具默认行为。
+- **测试**：核心模块（agents / snapshot / memory / orchestrator）新功能需附单测。`tests/conftest.py` 把 `DATA_DIR` 指向临时目录。
+  后端 `uv run pytest tests/`；前端 `cd frontend && npm test`（`node --test tests/*.test.mjs`，无浏览器）。
+  **新增前端测试必须能被这条命令选中**。端到端手测：`python -m scripts.run_demo`。
+- **工具脚本**（`python -m scripts.xxx`；用法见对应规则文件）：`check_memory_dupes`（只读，长期记忆重复）、`reclassify_lore` / `extract_objects`（`lore-build.md`，调 LLM，默认预览）、
+  `action_stats` / `usage_report`（只读，不调 LLM；后者见 `llm.md`）、`replay_character`（回放评测，带 `--run` 才调 LLM，`llm.md`）。
+- **注释**：业务语义用中文；只写代码本身看不出的信息（为什么、哪条契约在起作用），不复述下一行。
 
 ---
 
 ## 11. 环境与启动
 
-配置项的**唯一真值是 `.env.example`**，本文档不复制。只强调：
-
-- 三路模型 `LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY` 留空即回退 `LLM_MODEL_NAME`。
-- `EMBEDDING_API_KEY / EMBEDDING_BASE_URL` 留空即复用 LLM 的那套。
-  **换 embedding 模型必须清空 `chroma_db/`**，否则维度不一致。
-- `GRAPHRAG_LLM_MODEL` 已弃用，代码从不读取。
+配置项唯一真值是 `.env.example`。只强调：四路模型留空回退 `LLM_MODEL_NAME`；`EMBEDDING_*` 留空复用 LLM 那套，
+**换 embedding 模型必须清空 `chroma_db/`**；`GRAPHRAG_LLM_MODEL` 已弃用。Python `>=3.11,<3.13`；生产/演示**必须单 worker**（契约 9）。
 
 ```bash
 uv sync                       # 或 pip install -e ".[dev]"
 cd frontend && npm install
 python -m backend.utils.init_db
-
-npm run dev        # 前后端同时起
-npm run backend    # FastAPI  http://localhost:5001
-npm run frontend   # Vite     http://localhost:3000
+npm run dev        # 前后端同时起；或 npm run backend (5001) / npm run frontend (3000)
 ```
-
-Python 要求 `>=3.11,<3.13`。生产/演示部署**必须单 worker**（见【契约9】）。
 
 ---
 
 ## 12. 已知缺陷与 dead code
 
-> **这一节的东西不要顺手"修复"。** 它们要么无人使用、要么已有工单在跟。
-> 确实要动，先确认属于当前工单范围。
+> **不要顺手"修复"。** 要么无人使用、要么已有工单在跟；确要动，先确认属于当前工单范围。
 
-### 12.1 已知缺陷（真 bug，有工单或待排期）
+**已知缺陷**
+- **Kuzu 图谱无分支隔离**：项目级单文件，现只构建时写一次、全程只读，故无影响；工单06（场景后回写图谱）落地前必须先解决（推理见工单06）。
+- `Branch.scenes` 恒为空数组，无写入方；前端用 `GET .../scenes?branch_id=` 查。
+- `pause` 走正常终止路径，场景最终是 `completed`，与 `SceneStatus.PAUSED` 无关，前端提示"已中断"。
+- 角色回复的 prompt 层输出边界（工单30c）暂缓：无标记的续写仍会进公开对白；主因是 4 位量化服务商，细节见 `llm.md`。
+- `DialogueTurn.timestamp` 反序列化时不还原，读出一律是当前时间（同陷阱 16 的 `created_at`）。
+- **chromadb 缺失时契约 6 的降级实际不生效**：`memory/embeddings.py` 无条件 `import chromadb`，`long_term` 导入即失败（不要顺手修，待建单；详见 `memory.md`）。
+- 后置快照冻结的是内存副本，理论上可能带过时的 `inherited_story_history`；正常路径进不来，难以复现。
 
-| 缺陷 | 现象 | 备注 |
-|------|------|------|
-| **Kuzu 图谱无分支隔离** | 图谱是项目级单文件。当前只在构建阶段写入一次、全程只读，所以“共享”与“隔离”等价，无实际影响 | 工单06（场景结束后动态回写图谱）的**前置约束**：它一落地图谱就变成可变状态，分支隔离立刻破 |
-| `Branch.scenes` 恒为空数组 | 无写入方；前端改用 `GET /projects/{id}/scenes?branch_id=` 查，不依赖它 | 工单 03 可选目标 6 |
-| `pause` 的语义与 `SceneStatus.PAUSED` 无关 | `engine.interrupt()` 走的是正常终止路径，场景最终是 `completed`，但前端提示“已中断” | 待排期 |
-| **角色回复没有输出边界（prompt 层）** | 角色把"目前对话"当剧本续写：替其他角色写台词、写 `【环境】` / `【旁白】` 段。PR-30a 已兜底（带标记的续写在解析前截掉、输出设上限、空正文判失败，见 4.2 陷阱 28），但**没有标记的续写**（直接用叙述口吻写出"底座里确实有夹层"）仍会进公开对白；adjudicate 档下它等于绕过裁决器伪造事实（设计单 A30）。30b 查明主因是 **4 位量化的服务商**：烟测的两次污染都出自 OpenRouter 上的 OpenInference，8 位量化的服务商在同样现场 0/118 | 工单 30c（prompt 改造）**暂缓**：在 8 位服务商上没有可量化的收益。换模型、换服务商、或要用 4 位服务商时，先跑 `scripts.replay_character` 再议 |
-| `DialogueTurn.timestamp` 不还原 | `_deserialize_turn` 不读 `timestamp`，每次读取都填成当前时间，同一场所有轮次时间相同（同陷阱 16 的 `created_at`） | 待排期，独立小修 |
-| **后置快照冻结的是内存副本** | `run_scene` 落 `record_story_history` 时用的 `scene` 是方法开头读的副本，中间隔着整场 LLM。若期间别的路径改写了库里的 `inherited_story_history`，落进快照的就是过时历史，从该快照分叉的分支据此起算 | 触发需在场景 `running` 时对它提交决策，而决策 CAS 只接 `completed`，正常路径进不来；构造不出可靠复现。真要修得在写快照前重读 scene（窗口只缩小、不消除）。待排期 |
-
-### 12.2 Dead code（存在但零调用）
-
-- `knowledge_graph/queries.py` —— 全仓库零 import。
-- `agents/base_agent.py` 的 AutoGen 封装 + `CharacterAgent.get_autogen_agent()` —— 无调用方。
-- `DirectorAgent.query_graph()` —— 零调用；且传入的 `GraphManager` 从未 `connect()`，
-  真调用会报错。**导演目前仍不读图谱**，只吃角色卡与对白文本
-  （`query_character_state()` 已在工单17 落地到 Inspection 层，不再是死代码）。
-- `MemoryManager.snapshot()` / `restore()` —— 零调用。真实快照路径是
-  `SceneEngine._collect_states()` 直接读 `short_term.dump()` / `episodic.dump()`，
-  恢复路径是 `_load_inherited_states()` + `MemoryManager.prime()`。
-- `SnapshotManager.restore_snapshot()` —— 自 rollback 改走 `get_snapshot` 后已无生产调用方
-  （仅剩 `tests/test_snapshot_manager.py`）。**不要把它接回任何写路径**，它是破坏性的（见 4.2 陷阱 10），
-  且不恢复分支级世界变量，恢复出来的项目状态是**半对的**。工单07 已给它加上
-  `confirm_destructive=True` 路障，不显式传就抛 `RuntimeError`。
-- `CharacterState.long_term_memory_snapshot` —— 恒为空字符串。
-- `settings.GRAPHRAG_LLM_MODEL` —— 从不读取。
-- `scene_engine/scene_config.py`、`snapshot/models.py` —— 仅从 `models.py` 再导出，
-  保留是为了 import 路径兼容，**不要往里加定义**。
+**Dead code**
+- `knowledge_graph/queries.py`、`agents/base_agent.py` + `CharacterAgent.get_autogen_agent()`、`MemoryManager.snapshot()` / `restore()`（真实路径是 `_collect_states()` + `prime()`）：零调用。
+- `DirectorAgent.query_graph()`：零调用且 `GraphManager` 从未 `connect()`；**导演目前不读图谱**。
+- `SnapshotManager.restore_snapshot()`：破坏性，**不要接回任何写路径**（陷阱 10；有 `confirm_destructive=True` 路障）。
+- `CharacterState.long_term_memory_snapshot`（恒空）、`settings.GRAPHRAG_LLM_MODEL`（从不读取）；`scene_config.py`、`snapshot/models.py` 仅再导出，**不要往里加定义**。
 
 ---
 
-## 13. 【设想】尚未实现的规划
+## 13. 【设想】
 
-> 以下全部**尚不存在于代码中**，且多数**尚未立项**。此处只做集中登记，防止在别处
-> 被误当成现状引用；真正要做时先去 `docs/fix-tickets/` 开单、先补接口再实现。
-
-| 设想 | 想解决什么 | 工单 / 状态 |
-|------|-----------|------------|
-| **环境智能体** | 裁决介于"角色动作"与"环境变量"之间的判定。例：配角想拔石中剑 → 判定"没拔动"；角色触碰祭祀水盆 → 展示其特殊功能。实现走 OpenAI 原生 function calling，**不需要 AutoGen**。⚠️ 两条已定的线：裁决结果若要沉淀成世界变量，必须先过契约1 的"公开可见"判据（裁决天然带私密性）；场景**进行中**变化的环境状态必须走 user 消息块，不得塞回 system（契约3 补充条款） | ✅ 工单 24/20 已落地（schema 2）；裁决器看得到世界层公开事实；物件状态按可见性渲染，能跨场延续；环境回合进记忆与对话；预制揭示与生成揭示分离；导演产出 objects_present 和 environment_script |
-| **私有内心 OS** | 角色输出前的自适应思考，**不入档**——与现在会落档的 `inner_thought` 是两回事 | 未立项 |
-| **MCTS / 多结局** | 当前"每次只生成一场 + 采纳导演建议" ≈ 已默认剪枝的单条路径；多结局靠人工从快照分叉。场景评价与分镜稿（工单18）都已持久化，可在其上做真正的搜索 | 未立项 |
-
-**关于项目书里的"多结局与 MCTS"**：不要把它理解成已实现的搜索算法。
-当前是「贪心单路径 + 人工分叉」，这是有意为之的成本取舍。
+私有内心 OS、MCTS / 多结局等未实现规划登记在 `docs/fix-tickets/README.md`「设想清单」。不要当现状引用；要做时先开工单、先补接口。
 
 ---
 
 ## 14. 文档维护规则
 
-以下情况**必须**同步更新本文件：
+**落位规则**——写新内容前先问"删掉后会不会有人重新写出这个 bug"：全局影响的契约 / 代码地图 / 已知缺陷 → 本文件（≲280 行）；
+改某处代码必须知道的约束（陷阱、细则、"为什么"一句话）→ `.claude/rules/*.md`；推理过程、发现经过、评审时间线、旧实现 →
+`docs/fix-tickets/NN-*.md`（规则里放 `详见 工单NN#锚点`）；过时 / 被推翻 / 与代码不符 → **删除或改正**。
 
-- 新增/移除核心依赖 → 第 2 节
-- 目录结构变化 → 第 3 节
-- 数据模型字段变化 → 第 4 节 + 走 5.4 checklist
-- 新增/修改 API → 第 8 节
-- 触碰第 7 节任一契约 → 更新契约描述并说明理由
-- 修掉第 12 节的缺陷 / 落地第 13 节的设想 → 把条目从对应清单里删掉，
-  并把内容升格到正文（【设想】→【实况】）
-
-**不要**新建"变更说明.md""重构总结.md"之类的文件；改动落到对应章节即可。
-**也不要在本文件末尾追加变更记录**（HTML 注释也不行）：改了什么看 git log，评审教训与设计决策写进
-`docs/fix-tickets/NOTES.md` 带锚点的小节，仍然有效的规则升格进正文（陷阱 / 契约）。本文件每次会话都整份
-载入，流水账只会越积越长，还会和正文打架 —— 2026-10-09 删掉的那批 28 条里有 6 条已被后来的修复推翻。
-在途任务写进 `docs/fix-tickets/`，完成后更新该目录的 `README.md` 索引。
+- `NOTES.md` 冻结；有效结论升格进规则。**陷阱编号**全局唯一不变，新陷阱从 29 起并补 7.1 索引。
+- **规则文件 ≤30KB**，超了就拆；新增规则文件的 `paths` 要覆盖调用方，用 Glob 核实匹配到文件。
+- 同步本文件：核心依赖变化 → 第 2 节；目录结构 → 第 3 节；契约 → 第 7 节；修掉第 12 节缺陷 / 落地设想 → 删条目并升格到正文；API 变化 → `api.md`。
+- **不要**新建"变更说明.md"，**也不要在任何文档末尾追加变更记录**（看 git log）；在途任务写进 `docs/fix-tickets/`，完成后更新其 `README.md` 索引。
