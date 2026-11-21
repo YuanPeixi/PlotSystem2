@@ -225,7 +225,8 @@ Python 规范见 `.claude/rules/python.md`（按 `*.py` 载入）。
   **新增前端测试必须能被这条命令选中**。端到端手测：`python -m scripts.run_demo`。
 - **工具脚本**（`python -m scripts.xxx`；用法见对应规则文件）：`check_memory_dupes`（只读，长期记忆重复）、`reclassify_lore` / `extract_objects`（`lore-build.md`，调 LLM，默认预览）、
   `action_stats` / `usage_report`（只读，不调 LLM；后者见 `llm.md`）、`replay_character`（回放评测，带 `--run` 才调 LLM，`llm.md`）、
-  `reference_run`（把一次推演导出成 `docs/test-fixtures/reference-runs/` 下的参考记录，或从记录建出角色卡与物件逐字相同的新项目；不调 LLM）。
+  `reference_run`（把一次推演导出成 `docs/test-fixtures/reference-runs/` 下的参考记录，或从记录建出角色卡与物件逐字相同的新项目；不调 LLM）、
+  `rerun_scene`（从同一快照反复分叉并跑完首场、统计环境层触发情况；**调 LLM**，可无人值守，须先停后端）。
 - **注释**：业务语义用中文；只写代码本身看不出的信息（为什么、哪条契约在起作用），不复述下一行。
 
 ---

@@ -67,7 +67,13 @@ python -m scripts.reference_run import --from docs/test-fixtures/reference-runs/
 **C. 本机从快照分叉（带完整记忆，只在产生这份记录的机器上可用）**
 
 原项目 `35fd1cb8-92e6-476a-a61b-57bf40ece334`，第 5 场的前置快照 `ed49da22-77f8-4847-9e18-3d2af5ec52bc`。
-从它分叉得到的首场带着前四场的记忆与世界状态，最接近原现场。
+从它分叉得到的首场带着前四场的记忆与世界状态，最接近原现场。要攒样本用复测脚本（先停掉后端；会调 LLM，可挂机）：
+
+```bash
+python -m scripts.rerun_scene --project 35fd1cb8-92e6-476a-a61b-57bf40ece334 --snapshot ed49da22-77f8-4847-9e18-3d2af5ec52bc --times 5
+```
+
+它串行分叉并跑完 5 次，报告写在 `data/reruns/时间戳/report.md`：几次出现公开投影、由谁的哪个动作触发、有没有裁决失败。
 
 **怎样算复现成功**：第 5 场出现带"幻象"的环境回合（`DialogueTurn.projection` 非空），之后至少有一个其他角色的台词引用了投影里的内容，
 并且没有 `failed` 的物件动作。
