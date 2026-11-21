@@ -13,6 +13,7 @@ from __future__ import annotations
 import random
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 
 from backend.agents.character_agent import CharacterAgent
 from backend.agents.environment_agent import EnvironmentAgent
@@ -25,6 +26,7 @@ from backend.models import (
     CharacterState,
     DialogueTurn,
     EnvironmentMode,
+    RevealEntry,
     Scene,
     SceneConfig,
     SceneResult,
@@ -47,11 +49,12 @@ from backend.services.environment import (
     describe_environment_state,
     object_state_view,
     remaining_environment_quota,
+    reveals_for_actor,
 )
 from backend.services.objects import MAX_OBJECTS_PRESENT, describe_objects_for
 from backend.services.world import apply_operations, render_world_for_character
 from backend.snapshot import SnapshotManager
-from backend.utils.llm import estimate_tokens
+from backend.utils.llm import EmptyCompletionError, estimate_tokens
 from backend.utils.logger import get_logger
 from backend.utils.turns import count_character_turns, is_character_turn, render_turn
 
@@ -86,11 +89,21 @@ _REPLY_ATTEMPTS = 2
 _NOTICE_HEAD_CHARS = 40
 
 
-def _output_notice(cut: str, *, retried: bool) -> str:
+def _ran_out_of_tokens(exc: LLMError) -> bool:
+    """这次失败是不是推理把输出上限吃光、只剩空正文（`chat_safe` 把原始异常挂在 __cause__ 上）。"""
+    cause = exc.__cause__
+    return isinstance(cause, EmptyCompletionError) and not cause.retryable
+
+
+_RETRY_CONTINUATION = "第一次回复全是续写（替他人或环境写的内容），已丢弃并重新生成"
+_RETRY_RUNAWAY = "第一次推理吃光了输出上限、没有给出正文，已重新生成"
+
+
+def _output_notice(cut: str, *, retried: bool, retry_reason: str = _RETRY_CONTINUATION) -> str:
     """`DialogueTurn.output_notice`：`标签：说明`，前端取冒号前作标签、整句作悬停说明。"""
     details = []
     if retried:
-        details.append("第一次回复全是续写（替他人或环境写的内容），已丢弃并重新生成")
+        details.append(retry_reason)
     if cut:
         head = re.sub(r"\s+", " ", cut).strip()
         if len(head) > _NOTICE_HEAD_CHARS:
@@ -634,6 +647,22 @@ class SceneEngine:
             if on_environment:
                 await on_environment(source, env)
 
+    def _reveals_for(
+        self, actor_id: str, obj: WorldObject, contents: list[WorldObject]
+    ) -> list[RevealEntry]:
+        """本次裁决能命中的预制揭示：目标物件的，加上在场内容物的；只留属于这个执行者的。
+
+        内容物的条件前缀它的名字，裁决器才分得清"打开夹层"说的是哪一件。过滤在这里做、
+        而不是交给裁决器挑：别人的条目根本不进它的输入，选错人在结构上不可能。
+        """
+        entries = list(self.scene.environment_script.get(obj.object_id, []))
+        for content in contents:
+            entries += [
+                replace(e, condition=f"【{content.name}】{e.condition}")
+                for e in self.scene.environment_script.get(content.object_id, [])
+            ]
+        return reveals_for_actor(entries, actor_id)
+
     async def _adjudicate_world_pending(
         self, source: DialogueTurn, turns: list[DialogueTurn], transcript: list[str],
         on_persist: PersistCallback, on_environment: EnvironmentCallback,
@@ -651,6 +680,7 @@ class SceneEngine:
             obj = self._objects.get(intent.object_id)
             actor = next((a for a in self.agents if a.character_id == source.character_id), None)
             result = None
+            allowed = {intent.object_id}
             if obj is not None:
                 material = ""
                 if actor is not None:
@@ -658,19 +688,22 @@ class SceneEngine:
                     material = "\n".join([
                         *actor.card.known_facts, *actor.memory.short_term.recent(), *memories,
                     ])
+                # 装在它里面、且本场在场的物件一并裁决（"翻看王冠底座"要能翻出夹层里的东西）
+                contents = [o for o in self._objects.values() if o.container_id == obj.object_id]
+                allowed |= {o.object_id for o in contents}
                 result = await self._adjudicator.adjudicate_world(
                     obj, source.character_id, source.character_name, intent, self.world_revision,
-                    reveals=self.scene.environment_script.get(obj.object_id, []),
-                    actor_material=material, allowed_object_ids={obj.object_id},
+                    reveals=self._reveals_for(source.character_id, obj, contents),
+                    actor_material=material, allowed_object_ids=allowed,
                     participants=[(a.character_id, a.name) for a in self.agents],
-                    location=self.config.location,
+                    location=self.config.location, contents=contents,
                 )
             if result is not None:
                 try:
                     # Check the complete command before accepting its narration as a fact.
                     apply_operations(self.world_revision, result.operations, event_id,
                                      self.scene.participating_characters, source="environment",
-                                     allowed_objects={intent.object_id})
+                                     allowed_objects=allowed)
                 except InvalidRequestError as exc:
                     logger.warning("环境变化校验失败：%s", exc)
                     result = None
@@ -685,6 +718,7 @@ class SceneEngine:
                 turn_id=event_id, scene_id=self.scene.scene_id, turn_number=len(turns) + 1,
                 kind=TurnKind.ENVIRONMENT.value, character_name=ENVIRONMENT_SPEAKER,
                 narration=result.narration, private_detail=result.private_detail or None,
+                projection=result.projection or None,
                 perceived_by=[source.character_id] if source.character_id else [],
                 source_turn_id=source.turn_id, source_action_index=intent.index,
                 world_event_id=event_id,
@@ -774,12 +808,27 @@ class SceneEngine:
         截完什么都不剩（整段回复就是续写，或只剩空括号）时重新要一次；仍不行就按调用失败
         抛 `LLMError`，与其他 LLM 失败同一语义（场景转 paused、可续跑）。**不落空轮次、
         不补占位台词**（R5）：一个三项全空的轮次会进全场记忆，且看起来像角色沉默了。
+
+        推理吃光输出上限导致的空正文（`finish_reason=length`）同样再要一次：`utils/llm.py`
+        对它不重试，是因为小额度的判断调用再发一次结果一样；角色温度高、推理失控是随机的，
+        回放里同一个现场重跑多半就好了，不该为一次失控让整场转 paused（工单30 后续）。
         """
         others = [a.name for a in self.agents if a is not agent]
+        retry_reason = _RETRY_CONTINUATION
         for attempt in range(1, _REPLY_ATTEMPTS + 1):
-            raw = await agent.respond(
-                self._scene_context(), transcript, **self._respond_extras(agent)
-            )
+            try:
+                raw = await agent.respond(
+                    self._scene_context(), transcript, **self._respond_extras(agent)
+                )
+            except LLMError as exc:
+                if attempt >= _REPLY_ATTEMPTS or not _ran_out_of_tokens(exc):
+                    raise
+                logger.warning(
+                    "场景 %s 第 %d 轮 %s 的推理吃光了输出上限、正文为空，重新生成（第 %d/%d 次）",
+                    self.scene.scene_id, turn_number, agent.name, attempt, _REPLY_ATTEMPTS,
+                )
+                retry_reason = _RETRY_RUNAWAY
+                continue
             kept, cut = trim_continuation(raw, self_name=agent.name, other_names=others)
             if cut:
                 logger.warning(
@@ -788,7 +837,8 @@ class SceneEngine:
                 )
             actions, dialogue, thoughts = self._split_reply(kept)
             if dialogue or any(a.strip() for a in actions) or any(t.strip() for t in thoughts):
-                return kept, _output_notice(cut, retried=attempt > 1)
+                return kept, _output_notice(cut, retried=attempt > 1, retry_reason=retry_reason)
+            retry_reason = _RETRY_CONTINUATION
             logger.warning(
                 "场景 %s 第 %d 轮 %s 的回复截掉续写后为空（第 %d/%d 次）",
                 self.scene.scene_id, turn_number, agent.name, attempt, _REPLY_ATTEMPTS,

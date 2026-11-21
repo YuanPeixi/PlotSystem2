@@ -13,6 +13,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.models import EnvironmentMode, SpeakerMode
 
+#: OpenRouter `reasoning.effort` 的取值。不含 none：有的模型（GLM-5.3）不允许关闭推理，会 400
+REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def reasoning_for(effort: str) -> dict | None:
+    """`utils/llm.chat` 的 `reasoning` 参数；空档位返回 None（不发字段）。"""
+    return {"effort": effort} if effort else None
+
 
 class Settings(BaseSettings):
     """应用配置。字段名与 .env 中的变量一一对应（大小写不敏感）。"""
@@ -35,6 +43,11 @@ class Settings(BaseSettings):
     # selector 独立服务商（留空复用 LLM_API_KEY / LLM_BASE_URL）
     LLM_SELECTOR_BASE_URL: str = ""
     LLM_SELECTOR_API_KEY: str = ""
+    # 环境裁决（工单24/20）：短输入、结构化 JSON 输出，留空回退导演模型。
+    # 独立服务商同 selector（留空复用 LLM_API_KEY / LLM_BASE_URL）
+    LLM_MODEL_ENVIRONMENT: str = ""
+    LLM_ENVIRONMENT_BASE_URL: str = ""
+    LLM_ENVIRONMENT_API_KEY: str = ""
 
     @property
     def director_model(self) -> str:
@@ -59,6 +72,18 @@ class Settings(BaseSettings):
     @property
     def selector_api_key(self) -> str:
         return self.LLM_SELECTOR_API_KEY or self.LLM_API_KEY
+
+    @property
+    def environment_model(self) -> str:
+        return self.LLM_MODEL_ENVIRONMENT or self.director_model
+
+    @property
+    def environment_base_url(self) -> str:
+        return self.LLM_ENVIRONMENT_BASE_URL or self.LLM_BASE_URL
+
+    @property
+    def environment_api_key(self) -> str:
+        return self.LLM_ENVIRONMENT_API_KEY or self.LLM_API_KEY
 
     # --- 后端 ---
     BACKEND_HOST: str = "0.0.0.0"
@@ -124,6 +149,11 @@ class Settings(BaseSettings):
     # 几乎全出自 4 位量化的服务商（OpenRouter 上的 Relace / OpenInference，推理动辄数千 token）；
     # 8 位量化的服务商推理通常一两百 token。上限只在失控时才真正花钱，所以宁可给宽
     CHARACTER_MAX_TOKENS: int = 8000
+    # 角色调用的推理强度（OpenRouter `reasoning.effort`）；空 = 不发，由服务商决定。
+    # 2026-11-07 实测 GLM-5.3-Flash：默认每次推理 600–950 token、偶尔失控吃满上限；
+    # low 时 0–30 token、耗时减半。DS-V4-Flash 默认几乎不推理，low 反而略多。
+    # 注意 GLM 不允许关闭推理（`enabled:false` 返回 400），所以这里只开放强度档位
+    CHARACTER_REASONING_EFFORT: str = ""
 
     # --- 导演 / 总结的上下文预算（工单27）---
     # 默认足以容纳整场，正常场景触发不到裁剪（即事实上的全文），
@@ -152,9 +182,25 @@ class Settings(BaseSettings):
     # 每场环境回合上限（设计单 A3），含仍 pending 的动作、在调用前预占（A15）。
     # 0 = adjudicate 档也不裁决：命中段一律 quota 跳过、不发起抽取
     MAX_ENVIRONMENT_TURNS: int = 8
+    # 环境裁决单次调用的输出 token 上限；0 = 不限。同 CHARACTER_MAX_TOKENS 的教训：
+    # 推理模型把推理算进来，1800 时 DS-V4-Flash 在持有 / 交接类动作上约三成触顶、只剩空正文，
+    # 动作记为裁决失败。正常裁决几百 token，上限只在失控时才真正花钱
+    ENVIRONMENT_MAX_TOKENS: int = 8000
+    # 裁决要一致、不要创意
+    ENVIRONMENT_TEMPERATURE: float = 0.3
+    # 裁决调用的推理强度，口径同 CHARACTER_REASONING_EFFORT；空 = 不发
+    ENVIRONMENT_REASONING_EFFORT: str = ""
 
     # --- 日志 ---
     LOG_LEVEL: str = "INFO"
+
+    @field_validator("CHARACTER_REASONING_EFFORT", "ENVIRONMENT_REASONING_EFFORT")
+    @classmethod
+    def _validate_reasoning_effort(cls, v: str, info: ValidationInfo) -> str:
+        # 拼错的档位服务商可能静默忽略，等于配置没生效却无人知道：启动即失败
+        if v and v not in REASONING_EFFORTS:
+            raise ValueError(f"{info.field_name} 必须为空或是 {list(REASONING_EFFORTS)} 之一，收到 {v!r}")
+        return v
 
     @field_validator("DEFAULT_SPEAKER_MODE")
     @classmethod
@@ -173,7 +219,7 @@ class Settings(BaseSettings):
             raise ValueError(f"ENVIRONMENT_MODE 必须是 {allowed} 之一，收到 {v!r}")
         return v
 
-    @field_validator("MAX_ENVIRONMENT_TURNS", "CHARACTER_MAX_TOKENS")
+    @field_validator("MAX_ENVIRONMENT_TURNS", "CHARACTER_MAX_TOKENS", "ENVIRONMENT_MAX_TOKENS")
     @classmethod
     def _validate_non_negative(cls, v: int, info: ValidationInfo) -> int:
         if v < 0:

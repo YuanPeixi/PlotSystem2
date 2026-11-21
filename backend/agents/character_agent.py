@@ -14,7 +14,7 @@ system 消息只放**整场不变**的内容（人设/世界观/已知事实/关
 from __future__ import annotations
 
 from backend.agents.base_agent import autogen_available, make_model_client
-from backend.config import settings
+from backend.config import reasoning_for, settings
 from backend.memory import MemoryManager
 from backend.models import RESERVED_SCENE_CONTEXT_KEYS, CharacterCard, LLMPurpose, LoreEntry
 from backend.utils.llm import chat_safe, estimate_tokens
@@ -327,6 +327,7 @@ class CharacterAgent:
             model=self.model,
             max_tokens=settings.CHARACTER_MAX_TOKENS or None,
             purpose=LLMPurpose.CHARACTER,
+            reasoning=reasoning_for(settings.CHARACTER_REASONING_EFFORT),
         )
 
     # ---- AutoGen 集成 ----

@@ -697,12 +697,14 @@ async def run_scene(scene_id: str) -> None:
             _sync_usage()
             target = next((a.object_id for t in current_scene.dialogue_log for a in t.actions
                            if f"{t.turn_id}#{a.index}" == event.source_id), "")
+            # 与引擎裁决时的范围一致：目标物件加上装在它里面的在场物件
+            contents = {o.object_id for o in present_objects if target and o.container_id == target}
             return await repository.commit_world_event(
                 scene.project_id, scene.branch_id, event_id=event.event_id,
                 expected_revision_id=event.base_revision_id, operations=event.operations,
                 source=event.source, source_id=event.source_id, observers=event.observers,
                 narration=event.narration, scene=current_scene, execution_token=world_execution_token,
-                allowed_objects={target},
+                allowed_objects={target, *contents},
             )
 
         engine = SceneEngine(
@@ -1152,6 +1154,7 @@ async def create_object(project_id: str, fields: ObjectFields, *, request_id: st
             character_ids=ids,
             # 在锁内读：两个并发的新建各自查"没人用过这个名字"，会一起通过
             taken_terms=object_terms([o for o in existing if o.object_id != object_id]),
+            containers={o.object_id: o.container_id for o in existing if o.object_id != object_id},
         )
         if changed:
             await repository.save_object(obj)
@@ -1181,6 +1184,7 @@ async def update_object(
             character_names=names,
             character_ids=ids,
             taken_terms=object_terms(others),
+            containers={o.object_id: o.container_id for o in others},
         )
         if changed:
             await repository.save_object(obj)

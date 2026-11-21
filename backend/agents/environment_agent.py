@@ -13,7 +13,8 @@
   可观察现象 —— 这一条只能靠提示词（叙述本来就要现场写）。
   ② 现场生成要拆成独立调用（A13），归 20b，这里不产出。
 
-调用走 `chat_safe`（契约7），用导演模型、温度 0.3（要一致，不要创意）。
+调用走 `chat_safe`（契约7）。模型、服务商、输出上限、温度都读 `settings.environment_*` /
+`ENVIRONMENT_*`，模型留空回退导演模型、服务商留空复用主配置（同 selector）。
 """
 
 from __future__ import annotations
@@ -21,9 +22,10 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from backend.config import settings
+from backend.config import reasoning_for, settings
 from backend.exceptions import InvalidRequestError, LLMError
 from backend.models import (
+    REVEAL_AUDIENCE_PRESENT,
     ActionIntent,
     LLMPurpose,
     RevealEntry,
@@ -43,10 +45,7 @@ from backend.utils.logger import get_logger
 
 logger = get_logger("agents.environment")
 
-_TEMPERATURE = 0.3
-_MAX_TOKENS = 600
-
-_PROMPT = """你是剧情推演里的环境裁决者。物件不会说话、没有意图，它只按自己的规则对角色的动作作出反应。
+_PROMPT ="""你是剧情推演里的环境裁决者。物件不会说话、没有意图，它只按自己的规则对角色的动作作出反应。
 请裁决下面这个动作的结果。
 
 【物件】{name}
@@ -114,9 +113,22 @@ def build_adjudication_prompt(
 class EnvironmentAgent:
     """每场一个实例，由 orchestrator 构造后注入引擎（R8：引擎不碰 SQLite，也不自己建 LLM 客户端）。"""
 
-    def __init__(self, model: str | None = None, temperature: float = _TEMPERATURE):
-        self.model = model or settings.director_model
-        self.temperature = temperature
+    def __init__(self, model: str | None = None, temperature: float | None = None):
+        self.model = model or settings.environment_model
+        self.temperature = settings.ENVIRONMENT_TEMPERATURE if temperature is None else temperature
+
+    async def _complete(self, prompt: str) -> str:
+        """本智能体的全部调用（裁决与私密揭示生成）共用一套路由与上限。"""
+        return await chat_safe(
+            [{"role": "user", "content": prompt}],
+            temperature=self.temperature,
+            model=self.model,
+            max_tokens=settings.ENVIRONMENT_MAX_TOKENS or None,
+            base_url=settings.environment_base_url,
+            api_key=settings.environment_api_key,
+            purpose=LLMPurpose.ADJUDICATE,
+            reasoning=reasoning_for(settings.ENVIRONMENT_REASONING_EFFORT),
+        )
 
     async def adjudicate(
         self,
@@ -131,13 +143,7 @@ class EnvironmentAgent:
         entries = normalize_reveals(reveals)
         prompt = build_adjudication_prompt(obj, actor_name, intent, state, entries)
         try:
-            raw = await chat_safe(
-                [{"role": "user", "content": prompt}],
-                temperature=self.temperature,
-                model=self.model,
-                max_tokens=_MAX_TOKENS,
-                purpose=LLMPurpose.ADJUDICATE,
-            )
+            raw = await self._complete(prompt)
         except LLMError as exc:
             logger.warning("环境裁决调用失败（物件 %s、执行者 %s）：%s", obj.name, actor_name, exc)
             return None
@@ -156,15 +162,19 @@ class EnvironmentAgent:
         revision: WorldRevision, *, reveals: Sequence[RevealEntry] = (),
         actor_material: str = "", allowed_object_ids: set[str] | None = None,
         participants: Sequence[tuple[str, str]] = (), location: str = "",
+        contents: Sequence[WorldObject] = (),
     ) -> WorldAdjudication | None:
         """裁决角色对物件的尝试。
 
         Args:
             revision: 当前世界版本，包含全部世界层事实和物件状态。
-            allowed_object_ids: 本次裁决允许作用的物件（通常只有目标物件本身）。
+            reveals: 本次执行者能命中的预制揭示（调用方已按执行者过滤，见 `reveals_for_actor`）。
+            allowed_object_ids: 本次裁决允许作用的物件（目标物件，加上在场的内容物）。
             participants: 在场角色 (id, 名字)。只有名字与 ID，不含任何角色视图（R1 / R2）；
                 没有它，持有者、佩戴者这类实体引用写不出来，交接动作就记不进世界。
             location: 本场地点标识，位置属性引用它。
+            contents: 装在目标物件里、且在场的物件（如王冠底座的夹层）。动作触及它们时
+                一并按它们的隐藏规则裁决 —— 不给的话"翻看底座"永远翻不出东西。
         """
         allowed = allowed_object_ids or {obj.object_id}
         entries = normalize_reveals(reveals)
@@ -182,6 +192,8 @@ class EnvironmentAgent:
             "location": location,
             "target": {"id": obj.object_id, "name": obj.name, "description": obj.public_description,
                        "hidden_rules": obj.hidden_rules},
+            "contents": [{"id": c.object_id, "name": c.name, "description": c.public_description,
+                          "hidden_rules": c.hidden_rules} for c in contents],
             "world_facts": world_facts,
             "allowed_objects": [{"id": oid, "name": revision.definitions[oid].name,
                                  "state": object_state(revision, oid)}
@@ -189,10 +201,7 @@ class EnvironmentAgent:
             "reveals": [{"index": i, "condition": r.condition} for i, r in enumerate(entries, 1)],
         }
         try:
-            raw = await chat_safe(
-                [{"role": "user", "content": _UNIFIED_PROMPT.format(payload=json.dumps(payload, ensure_ascii=False))}],
-                temperature=self.temperature, model=self.model, max_tokens=1800, purpose=LLMPurpose.ADJUDICATE,
-            )
+            raw = await self._complete(_UNIFIED_PROMPT.format(payload=json.dumps(payload, ensure_ascii=False)))
             parsed = parse_world_adjudication(raw, allowed)
             if parsed is None:
                 logger.warning("统一环境裁决输出不可用（物件 %s）", obj.name)
@@ -201,24 +210,40 @@ class EnvironmentAgent:
             if index:
                 if index > len(entries):
                     return None
-                result.private_detail = entries[index - 1].content
+                entry = entries[index - 1]
+                if entry.audience == REVEAL_AUDIENCE_PRESENT:
+                    result.projection = entry.content
+                else:
+                    result.private_detail = entry.content
             elif effect and actor_material:
                 # Separate call: it receives no hidden rules, script or other characters' information.
+                public = effect == REVEAL_EFFECT_PUBLIC
                 try:
-                    reveal = await chat_safe(
-                        [{"role": "user", "content": "只根据当事人已知材料生成私密揭示，不编造新事实。"
-                          "材料不足只写可感知现象。只输出一小段文字。\n效果：投射当事人自己已知的一段记忆。"
-                          + "\n当事人材料：\n" + actor_material}],
-                        temperature=self.temperature, model=self.model, max_tokens=300, purpose=LLMPurpose.ADJUDICATE,
+                    reveal = await self._complete(
+                        "只根据当事人已知材料生成揭示，不编造新事实。"
+                        "材料不足只写可感知现象。只输出一小段文字。\n效果："
+                        + ("把当事人自己已知的一段记忆化作幻象，在场所有人都看得见。用第三人称写出幻象里的画面，"
+                           "不写任何人的内心与评论。" if public else "投射当事人自己已知的一段记忆。")
+                        + "\n当事人材料：\n" + actor_material
                     )
-                    result.private_detail = reveal.strip()
+                    if public:
+                        result.projection = reveal.strip()
+                    else:
+                        result.private_detail = reveal.strip()
                 except LLMError as exc:
                     # Public adjudication remains valid even when its private reveal cannot be generated.
-                    logger.warning("私密揭示生成失败，保留已裁决的公开结果：%s", exc)
+                    logger.warning("揭示生成失败，保留已裁决的公开结果：%s", exc)
             return result
         except LLMError as exc:
             logger.warning("统一环境裁决失败（物件 %s）：%s", obj.name, exc)
             return None
+
+
+#: 现场生成揭示的固定代码（裁决器只能给这几个，不能写自由文本）。public 用于物件规则本身
+#: 就公开的效果（"投射给在场所有人"），生成内容进全场 transcript
+REVEAL_EFFECT_PRIVATE = "actor_memory"
+REVEAL_EFFECT_PUBLIC = "actor_memory_public"
+_REVEAL_EFFECTS = {"", REVEAL_EFFECT_PRIVATE, REVEAL_EFFECT_PUBLIC}
 
 
 _UNIFIED_PROMPT = """你是剧情推演的环境裁决者。只按给定规则裁决一次尝试。
@@ -228,6 +253,8 @@ _UNIFIED_PROMPT = """你是剧情推演的环境裁决者。只按给定规则�
 要求：
 - executable 表示物理上能否执行；triggered 只按隐藏规则判定，不创造规则。
 - 可行性判断时参考 world_facts（世界层公开事实，如季节、势力态度、公开事件）。
+- contents 是装在目标物件里的东西。动作触及它们时（比如翻看、拆开目标物件的相应部位）按它们自己的
+  隐藏规则一并裁决，可以对它们写 operation；没触及就不动它们。
 - narration 只写物件本身的反应与可观察的状态变化，一两句，第三人称；不泄露隐藏规则、秘密或内心。
   不要复述执行者的神态、目光、语气或台词，那些角色自己已经写过。没触发时写物件的实际反应
   （例如"冰凉，毫无动静""王冠已在她手中"），不要写成旁白。
@@ -240,7 +267,9 @@ _UNIFIED_PROMPT = """你是剧情推演的环境裁决者。只按给定规则�
 - 每项 subject_kind 固定 object，visibility=observable 只放现场能看出的变化；不可观察的内部状态用 hidden，
   不在 narration 中透露隐藏属性名或值。最多 32 项。不因展示预算省略事实。
 - reveal_index 只选择匹配的预制揭示编号，未匹配给 0。你看不到揭示内容。
-- reveal_effect 只有触发当事人记忆揭示时给固定代码 actor_memory，否则空串。禁止任何自由文本或秘密。
+- 规则触发、需要读取当事人记忆而没有匹配的预制揭示时，reveal_effect 给固定代码：规则写明结果对
+  在场所有人可见（如投射给所有人）给 actor_memory_public，只有当事人自己感知给 actor_memory；
+  其余情况给空串。禁止任何自由文本或秘密。
 输出一个 JSON 对象：
 {{"executable":true,"triggered":false,"narration":"…","reveal_index":0,"reveal_effect":"",
 "operations":[{{"op":"set","subject_kind":"object","subject_id":"ID","attribute":"open",
@@ -285,7 +314,7 @@ def parse_world_adjudication(raw: str, allowed_objects: set[str]) -> tuple[World
             return None
         index = data.get("reveal_index", 0)
         effect = data.get("reveal_effect", "")
-        if type(index) is not int or index < 0 or not isinstance(effect, str) or effect not in {"", "actor_memory"}:
+        if type(index) is not int or index < 0 or not isinstance(effect, str) or effect not in _REVEAL_EFFECTS:
             return None
         if not triggered and (index or effect):
             return None

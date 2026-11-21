@@ -347,3 +347,70 @@ async def test_character_reply_carries_the_output_cap(scripted_llm, monkeypatch,
 def test_negative_output_cap_is_rejected():
     with pytest.raises(ValidationError, match="CHARACTER_MAX_TOKENS"):
         Settings(CHARACTER_MAX_TOKENS=-1)
+
+
+# ---------------------------------------------------------------------------
+# 推理失控：角色层再要一次，不让整场转 paused（2026-11-07 两次 GLM 实跑都停在这里）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reasoning_runaway_is_asked_again_at_character_level(scripted_llm):
+    """llm.py 对触顶空正文不重试（小额度调用再发一样）；角色层要再给一次机会。"""
+    engine = _engine("s-runaway-retry", [_agent("c1", "阿德里安"), _agent("c2", "诺安")])
+    scripted_llm.script.extend([_resp(None, "length"), _resp("*伸手* 让我看看。")])
+    with patch("backend.memory.memory_manager.MemoryManager.consolidate", new=AsyncMock()):
+        result = await engine.run()
+    assert len(scripted_llm.requests) == 2
+    turn = result.dialogue_log[0]
+    assert turn.dialogue == "让我看看。"
+    # 说明写的是真正的原因，不是"全是续写"
+    assert turn.output_notice.startswith("已重新生成：") and "推理" in turn.output_notice
+
+
+@pytest.mark.asyncio
+async def test_repeated_runaway_still_fails_without_an_empty_turn(scripted_llm):
+    engine = _engine("s-runaway-fail", [_agent("c1", "阿德里安")])
+    scripted_llm.script.extend([_resp(None, "length"), _resp(None, "length")])
+    with (
+        patch("backend.memory.memory_manager.MemoryManager.consolidate", new=AsyncMock()),
+        pytest.raises(LLMError),
+    ):
+        await engine.run()
+    assert engine.scene.dialogue_log == []
+
+
+@pytest.mark.asyncio
+async def test_other_character_failures_are_not_retried_by_the_engine():
+    """只有推理失控才在角色层重试；服务不可用等失败 llm.py 已经退避重试过，原样抛出。"""
+    engine = _engine("s-runaway-other", [_agent("c1", "阿德里安")])
+    respond = AsyncMock(side_effect=LLMError("LLM 调用最终失败：超时"))
+    with (
+        patch.object(CharacterAgent, "respond", new=respond),
+        patch("backend.memory.memory_manager.MemoryManager.consolidate", new=AsyncMock()),
+        pytest.raises(LLMError),
+    ):
+        await engine.run()
+    assert respond.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("effort", "body"), [("", None), ("low", {"reasoning": {"effort": "low"}})])
+async def test_character_reasoning_effort_comes_from_settings(scripted_llm, monkeypatch, effort, body):
+    monkeypatch.setattr(settings, "CHARACTER_REASONING_EFFORT", effort)
+    scripted_llm.script.append(_resp("*点头* 好。"))
+    await _agent("c1", "阿德里安").respond({"name": "验冠"}, [])
+    assert scripted_llm.requests[0].get("extra_body") == body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reasoning", [None, {"effort": "low"}])
+async def test_reasoning_control_reaches_the_request_body_only_when_given(scripted_llm, reasoning):
+    scripted_llm.script.append(_resp("好"))
+    await llm.chat_safe([{"role": "user", "content": "你好"}], purpose=LLMPurpose.CHARACTER,
+                        reasoning=reasoning)
+    sent = scripted_llm.requests[0]
+    if reasoning is None:
+        assert "extra_body" not in sent
+    else:
+        assert sent["extra_body"] == {"reasoning": reasoning}

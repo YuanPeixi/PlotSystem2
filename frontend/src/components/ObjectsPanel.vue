@@ -38,6 +38,8 @@ interface Draft {
   hidden_rules: string[]
   visibility: Visibility
   known_by: string[]
+  // 装着它的物件 id，空串 = 独立物件（只嵌一层）
+  container_id: string
   requestKey: string
   requestId: string
   // 编辑期间物件被删了：草稿只读，只能另存为新物件
@@ -107,6 +109,27 @@ const audienceOptions = computed(() => {
   return opts
 })
 
+// 能当容器的物件：不是自己、自己没装在别处。只嵌一层，所以已经装着东西的物件不能再被放进容器
+const containerOptions = computed(() => {
+  const d = draft.value
+  if (!d) return []
+  const opts = objects.value
+    .filter((o) => o.object_id !== d.objectId && !o.container_id)
+    .map((o) => ({ id: o.object_id, name: o.name }))
+  if (d.container_id && !opts.some((o) => o.id === d.container_id)) {
+    opts.push({ id: d.container_id, name: objectName(d.container_id) || '（物件已不存在）' })
+  }
+  return opts
+})
+const holdsOthers = computed(() => {
+  const own = draft.value?.objectId
+  return !!own && objects.value.some((o) => o.container_id === own)
+})
+
+function objectName(id: string): string {
+  return objects.value.find((o) => o.object_id === id)?.name ?? ''
+}
+
 const blockers = computed(() => {
   const d = draft.value
   if (!d) return []
@@ -129,6 +152,7 @@ const blockers = computed(() => {
     out.push(`别名最多 ${MAX_ALIASES} 个，输入框里的「${pending}」未添加：删掉一些别名后回车，或清空输入框`)
   }
   if (d.visibility === 'private' && !d.known_by.length) out.push('私有物件至少要选一位知情者')
+  if (d.container_id && holdsOthers.value) out.push('这个物件里已经装着别的物件，不能再放进容器（只支持一层）')
   return out
 })
 
@@ -220,6 +244,7 @@ function openDraft(o: WorldObject | null) {
     // 新物件默认隐藏：拿不准时收紧，与构建期判定同一口径
     visibility: o?.visibility ?? 'hidden',
     known_by: [...(o?.known_by ?? [])],
+    container_id: o?.container_id ?? '',
     requestKey: '',
     requestId: '',
     gone: false,
@@ -317,6 +342,7 @@ function toFields(d: Draft): WorldObjectFields {
     hidden_rules: d.hidden_rules.map(oneLine).filter(Boolean),
     visibility: d.visibility,
     known_by: d.visibility === 'private' ? [...d.known_by] : [],
+    container_id: d.container_id,
   }
 }
 
@@ -544,6 +570,14 @@ async function remove(o: WorldObject) {
                 <span v-if="!audienceOptions.length" class="dim small">项目里还没有角色</span>
               </div>
             </div>
+            <div class="field">
+              <label>装在<span class="dim label-hint">对容器的动作会连带裁决它（如"翻看王冠底座"翻出夹层），两者要一起选进场景</span></label>
+              <select v-model="draft.container_id" :disabled="holdsOthers && !draft.container_id">
+                <option value="">（独立物件）</option>
+                <option v-for="c in containerOptions" :key="c.id" :value="c.id">{{ c.name }}</option>
+              </select>
+              <p v-if="holdsOthers" class="dim small">这个物件里装着别的物件，只支持一层，不能再放进容器。</p>
+            </div>
           </fieldset>
 
           <ul v-if="blockers.length" class="blockers">
@@ -570,6 +604,9 @@ async function remove(o: WorldObject) {
               {{ VISIBILITY[row.obj.visibility]?.label ?? row.obj.visibility }}<template
                 v-if="row.obj.visibility === 'private'"
               > · {{ audienceText(row.obj) }}</template>
+            </span>
+            <span v-if="row.obj.container_id" class="tag" title="对容器的动作会连带裁决它">
+              装在{{ objectName(row.obj.container_id) || '（物件已不存在）' }}里
             </span>
             <span class="spacer"></span>
             <button class="icon sm" title="编辑" :disabled="!!draft" @click="startEdit(row.obj)"><Icon name="edit" :size="14" /></button>

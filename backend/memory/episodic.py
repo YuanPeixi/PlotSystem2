@@ -51,7 +51,7 @@ class EpisodicMemory:
         他人轮次的私有内心独白不得参与判定或被写入摘要（CLAUDE.md 第7节“契约1”）。
         环境回合的私密细节同理：非当事人的判定不得读它。
         """
-        texts = [turn.dialogue, turn.action, turn.narration]
+        texts = [turn.dialogue, turn.action, turn.narration, turn.projection]
         if perception.inner_thought:
             texts.append(turn.inner_thought)
         if perception.private_detail:
@@ -109,8 +109,9 @@ class EpisodicMemory:
             return None
         if not is_character_turn(turn):
             # 环境回合是新增分支，角色轮次的冻结格式（R9）不受影响：老快照里没有环境回合。
-            # 私密细节不进正文，与内心独白同一口径
-            return _normalize_entry(f"{_ENTRY_PREFIX}{ENVIRONMENT_SPEAKER}: {turn.narration or ''}")
+            # 私密细节不进正文，与内心独白同一口径；公开投射是全场看见的，进正文
+            projection = f"（幻象：{turn.projection}）" if turn.projection else ""
+            return _normalize_entry(f"{_ENTRY_PREFIX}{ENVIRONMENT_SPEAKER}: {turn.narration or ''}{projection}")
         parts = []
         if turn.action:
             parts.append(f"（{turn.action}）")

@@ -39,6 +39,7 @@ async def create_object(project_id: str, req: CreateObjectRequest) -> ApiRespons
             hidden_rules=req.hidden_rules,
             visibility=req.visibility,
             known_by=req.known_by,
+            container_id=req.container_id,
         ),
         request_id=req.request_id,
     )
@@ -58,6 +59,7 @@ async def update_object(project_id: str, object_id: str, req: UpdateObjectReques
             hidden_rules=req.hidden_rules,
             visibility=req.visibility,
             known_by=req.known_by,
+            container_id=req.container_id,
         ),
         base_revision=req.revision,
         request_id=req.request_id,

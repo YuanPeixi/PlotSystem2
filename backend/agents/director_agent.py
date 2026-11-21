@@ -321,23 +321,32 @@ _PLAN_OBJECTS_SECTION = """
   "读取佩戴者的记忆"，就不能期望它显出另一个人的记忆；推不出时改写本场走向，或改由规则适用的人去用它。
 - 不得在 opening_narration 或 initial_conditions 里写物件已被触发、已产生的结果（如"王冠落下，
   光芒溢出……"）。要让它发生，就把它写进 description，作为角色本场要做的尝试，留给环境裁决。
-- 触发后需要具体内容（显出什么画面、暗格里有什么）时，用 environment_script 预制：condition 写
-  触发情形（谁对它做什么，必须与隐藏规则一致），content 写只交给执行者本人的私密内容；
-  在场其他人只看到裁决给出的可观察现象。content 不得写进 description、initial_conditions 或开场白。
+- 触发后需要具体内容（显出什么画面、暗格里有什么）时，用 environment_script 预制，每条一种触发情形：
+  · condition 写触发情形（谁对它做什么，必须与隐藏规则一致）；
+  · actor 写会触发这一条的角色名（只有这个角色的尝试能命中它）；谁触发都一样时留空；
+  · audience：规则本身写明结果对在场所有人可见（如"投射给所有人"）给 "present"，内容会进全场对白与每个
+    在场者的记忆；否则给 "actor"，内容只交给执行者本人，在场其他人只看到裁决给出的可观察现象；
+  · content 只写触发那一刻**感知者实际看见、听见、读到的东西**：present 用第三人称写出众人看见的画面，
+    actor 写执行者本人的所见所感。不得加旁白式评论或剧情说明（如"你并不知道真相""这证明了……"），
+    不得写感知者无从得知的事。读取某人记忆的规则，content 只能是那个人自己的记忆。
+  content 不得写进 description、initial_conditions 或开场白。
+- 装在别的物件里的物件（列表里标了"装在……里"）要与容器一起选进 objects_present，才可能被翻出来。
 - 本场用不到物件时 objects_present 给 []，environment_script 给 {}。
 
 JSON 另含以下两个键：
   "objects_present": ["物件ID"],
-  "environment_script": {"物件ID": [{"condition": "某角色戴上它", "content": "执行者看到/得知的内容"}]}
+  "environment_script": {"物件ID": [{"condition": "某角色戴上它", "actor": "某角色", "audience": "present", "content": "众人看见的画面"}]}
 """
 
 
 def _describe_plan_objects(objects: Sequence[WorldObject]) -> str:
+    names = {obj.object_id: obj.name for obj in objects}
     lines = []
     for obj in objects:
         rules = "；".join(" ".join(r.split()) for r in obj.hidden_rules if r.strip()) or "（无特殊规则）"
+        inside = f"，装在「{names[obj.container_id]}」里" if obj.container_id in names else ""
         lines.append(
-            f"- {obj.object_id}：{obj.name}（可见性 {obj.visibility}）。公开描述："
+            f"- {obj.object_id}：{obj.name}（可见性 {obj.visibility}{inside}）。公开描述："
             f"{' '.join(obj.public_description.split()) or '（无）'}；隐藏规则：{rules}"
         )
     return "\n".join(lines)
@@ -513,7 +522,9 @@ class DirectorAgent:
                                      if isinstance(oid, str) and oid in allowed))[:10]
         return SceneConfig(
             objects_present=selected,
-            environment_script=normalize_environment_script(data.get("environment_script"), set(selected)),
+            environment_script=normalize_environment_script(
+                self._bind_reveal_actors(data.get("environment_script"), available_characters), set(selected)
+            ),
             name=data.get("name", "未命名场景"),
             description=data.get("description") or scene_intent or narrative_goal,
             participating_characters=chosen_ids,
@@ -825,6 +836,36 @@ class DirectorAgent:
             elif card.character_id not in hit:
                 hit.append(card.character_id)
         return hit, missed
+
+    @classmethod
+    def _bind_reveal_actors(cls, raw: object, cards: list[CharacterCard]) -> object:
+        """把导演按角色名写的 `actor` 换成 `actor_id`（揭示条目只认 id）。
+
+        写了名字却匹配不上的条目整条丢弃：退成"谁都能触发"的话，绑给王后的秘密会被
+        别人的尝试命中（失败即收紧）。没写 actor 的条目原样保留，任何执行者都能命中。
+        """
+        if not isinstance(raw, dict):
+            return raw
+        out: dict = {}
+        for oid, items in raw.items():
+            if not isinstance(items, list):
+                continue
+            kept = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                entry = {k: v for k, v in item.items() if k != "actor"}
+                name = item.get("actor")
+                if isinstance(name, str) and name.strip():
+                    hit, missed = cls._match_characters([name], cards)
+                    if missed or len(hit) != 1:
+                        logger.warning("预制揭示的触发角色「%s」匹配不上，整条丢弃：%s",
+                                       name, str(item.get("condition", ""))[:40])
+                        continue
+                    entry["actor_id"] = hit[0]
+                kept.append(entry)
+            out[oid] = kept
+        return out
 
     @staticmethod
     def _fallback_characters(

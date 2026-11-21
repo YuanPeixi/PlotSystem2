@@ -42,17 +42,21 @@ def perceive(turn: DialogueTurn, viewer_id: str) -> Perception:
 
 
 def render_turn(turn: DialogueTurn, *, inner_thought: bool = False, private_detail: bool = False) -> str:
-    """把一轮渲染成单行：角色轮次 `角色名: *动作* 对白 [独白]`，环境回合 `【环境】叙述（私密：细节）`。
+    """把一轮渲染成单行：角色轮次 `角色名: *动作* 对白 [独白]`，环境回合
+    `【环境】叙述（幻象：投射内容）（私密：细节）`。
 
     不去首尾空白：记忆文本是长期记忆的寻址键（`long_term.memory_id`），改一个字符就是
     一条新记录，续跑重放会与已入库的旧文本对不上。需要去空白的调用方（角色看到的
     "目前对话"）自己 strip。
 
     两个开关各管一种只给特定观察者的内容：`inner_thought` 是本人独白，`private_detail`
-    是环境回合的私密细节。角色看到的"目前对话"两者都不开（R3）。
+    是环境回合的私密细节。角色看到的"目前对话"两者都不开（R3）。投射内容是公开的，不受开关控制；
+    没有投射的回合渲染结果与之前逐字相同（记忆寻址键不变）。
     """
     if not is_character_turn(turn):
         text = f"【{ENVIRONMENT_SPEAKER}】{turn.narration or ''}"
+        if turn.projection:
+            text += f"（幻象：{turn.projection}）"
         if private_detail and turn.private_detail:
             text += f"（私密：{turn.private_detail}）"
         return text

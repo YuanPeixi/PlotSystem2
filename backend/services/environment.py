@@ -21,7 +21,14 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from backend.models import ActionStatus, DialogueTurn, RevealEntry
+from backend.models import (
+    REVEAL_AUDIENCE_ACTOR,
+    REVEAL_AUDIENCE_PRESENT,
+    REVEAL_AUDIENCES,
+    ActionStatus,
+    DialogueTurn,
+    RevealEntry,
+)
 from backend.services.world_state import normalize_world_value
 from backend.utils.context import ContextBudget, fit_lines
 from backend.utils.llm import estimate_tokens
@@ -160,6 +167,8 @@ class Adjudication:
     reveal_source: str = REVEAL_OBSERVABLE
     narration: str = ""
     private_detail: str = ""
+    #: 公开投射（揭示条目 audience=present）：与 narration 一样全场可见
+    projection: str = ""
     state_changes: dict[str, str | None] = field(default_factory=dict)
     rejected: list[str] = field(default_factory=list)
 
@@ -202,6 +211,11 @@ MAX_REVEAL_ENTRIES = 6
 REVEAL_CONDITION_TOKENS = 60
 
 
+def _normalize_audience(raw: object) -> str:
+    # 非法取值按只给执行者（失败即收紧）：错把私密内容公开，就是一次全场泄密
+    return raw if isinstance(raw, str) and raw in REVEAL_AUDIENCES else REVEAL_AUDIENCE_ACTOR
+
+
 def normalize_reveals(entries: Sequence[RevealEntry] | None) -> list[RevealEntry]:
     """规整预制揭示：塌单行、限长度，丢掉条件或内容为空的条目，超出条数的截掉并 warning。
 
@@ -217,8 +231,21 @@ def normalize_reveals(entries: Sequence[RevealEntry] | None) -> list[RevealEntry
         if len(kept) >= MAX_REVEAL_ENTRIES:
             logger.warning("预制揭示超过 %d 条，其余不参与裁决", MAX_REVEAL_ENTRIES)
             break
-        kept.append(RevealEntry(condition=condition, content=content))
+        kept.append(RevealEntry(
+            condition=condition, content=content,
+            actor_id=_one_line(entry.actor_id) if isinstance(entry.actor_id, str) else "",
+            audience=_normalize_audience(entry.audience),
+        ))
     return kept
+
+
+def reveals_for_actor(entries: Sequence[RevealEntry] | None, actor_id: str) -> list[RevealEntry]:
+    """本次执行者能命中的预制揭示：未绑定执行者的，加上绑定的正是他的。
+
+    裁决前过滤、过滤后的列表同时用于 prompt 与解析（编号对得上）。裁决器选错人在结构上
+    不可能 —— 别人的条目根本不在它眼前（A31 原本只能靠提示词）。
+    """
+    return [e for e in entries or [] if not e.actor_id or e.actor_id == actor_id]
 
 
 def _reveal_index(value: object) -> int | None:
@@ -271,7 +298,11 @@ def parse_adjudication(raw: str, *, reveals: Sequence[RevealEntry]) -> Adjudicat
         result.rejected.append("规则未触发，不揭示导演预制内容")
     elif index is not None:
         result.reveal_source = REVEAL_SCRIPT
-        result.private_detail = reveals[index - 1].content
+        entry = reveals[index - 1]
+        if entry.audience == REVEAL_AUDIENCE_PRESENT:
+            result.projection = entry.content
+        else:
+            result.private_detail = entry.content
     changes = data.get("state_changes")
     if changes is None:
         changes = {}
@@ -359,7 +390,12 @@ def normalize_environment_script(raw: object, allowed_objects: set[str]) -> dict
             if isinstance(item, RevealEntry):
                 entries.append(item)
             elif isinstance(item, dict) and isinstance(item.get("condition"), str) and isinstance(item.get("content"), str):
-                entries.append(RevealEntry(condition=item["condition"], content=item["content"]))
+                actor_id = item.get("actor_id")
+                entries.append(RevealEntry(
+                    condition=item["condition"], content=item["content"],
+                    actor_id=actor_id if isinstance(actor_id, str) else "",
+                    audience=_normalize_audience(item.get("audience")),
+                ))
         if normalized := normalize_reveals(entries):
             out[oid] = normalized
     return out

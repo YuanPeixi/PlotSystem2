@@ -243,6 +243,7 @@ def _deserialize_object(
         hidden_rules=data.get("hidden_rules"),  # type: ignore[arg-type]
         visibility=data.get("visibility"),  # type: ignore[arg-type]
         known_by=data.get("known_by"),  # type: ignore[arg-type]
+        container_id=data.get("container_id"),  # type: ignore[arg-type]  # clamp_object 规整
         revision=max(0, _safe_int(data.get("revision"), 0)),
         request_id=str(data.get("request_id") or ""),
         request_digest=str(data.get("request_digest") or ""),
@@ -450,6 +451,7 @@ def _deserialize_turn(t: dict) -> DialogueTurn:
         actions=_deserialize_actions(t.get("actions")),
         narration=_str_or_none(t.get("narration")),
         private_detail=_str_or_none(t.get("private_detail")),
+        projection=_str_or_none(t.get("projection")),
         # 名单只认字符串 id：它决定谁的记忆里有私密细节，脏值不能扩大可见范围
         perceived_by=[p for p in perceived if isinstance(p, str) and p] if isinstance(perceived, list) else [],
         source_turn_id=str(t.get("source_turn_id") or ""),

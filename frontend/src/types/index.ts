@@ -97,6 +97,8 @@ export interface DialogueTurn {
   narration?: string | null
   /** 环境回合的私密细节：只给导演/用户与 perceived_by 的记忆，不进"目前对话" */
   private_detail?: string | null
+  /** 环境回合的公开投射（揭示条目 audience=present）：全场可见，进"目前对话" */
+  projection?: string | null
   perceived_by?: string[]
   /** 环境回合的来源：哪个角色轮次的第几个动作段 */
   source_turn_id?: string
@@ -204,6 +206,8 @@ export interface WorldObject {
   hidden_rules: string[]
   visibility: 'global' | 'private' | 'hidden'
   known_by: string[]
+  /** 装着它的物件 id（只嵌一层）；空串 = 独立物件 */
+  container_id?: string
   revision: number
   created_at?: string
   updated_at?: string
@@ -212,7 +216,7 @@ export interface WorldObject {
 /** 物件的可编辑字段。预算由后端校验，超限 422 不截断。 */
 export type WorldObjectFields = Pick<
   WorldObject,
-  'name' | 'aliases' | 'public_description' | 'hidden_rules' | 'visibility' | 'known_by'
+  'name' | 'aliases' | 'public_description' | 'hidden_rules' | 'visibility' | 'known_by' | 'container_id'
 >
 
 /** 新建物件：request_id 是幂等键，物件 ID 由它确定性生成。 */
@@ -434,7 +438,16 @@ export interface BuildStatus {
 }
 
 
-export interface RevealEntry { condition: string; content: string }
+/**
+ * 导演预制的一条揭示。actor_id 绑定执行者（空 = 任何人）；audience=present 时内容全场可见，
+ * actor（默认）只给执行者本人。
+ */
+export interface RevealEntry {
+  condition: string
+  content: string
+  actor_id?: string
+  audience?: 'actor' | 'present'
+}
 export type WorldValue = string | boolean | number | null | { kind: 'object' | 'character' | 'location'; id: string }
 export interface WorldFact {
   subject_kind: 'world' | 'object' | 'location'

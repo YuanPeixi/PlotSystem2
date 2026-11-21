@@ -86,6 +86,7 @@ async def _complete(
     base_url: str | None,
     api_key: str | None,
     purpose: str,
+    reasoning: dict | None = None,
 ) -> tuple[str, object]:
     """一次带重试的补全，连同服务商返回的 usage 一起交回（可能为 None）。"""
     try:
@@ -94,6 +95,8 @@ async def _complete(
             messages=messages,  # type: ignore[arg-type]
             temperature=temperature,
             max_tokens=max_tokens,
+            # OpenRouter 的推理控制（effort / max_tokens / enabled）；不认这个字段的服务商会忽略它
+            **({"extra_body": {"reasoning": reasoning}} if reasoning else {}),
         )
         choice = resp.choices[0]
         text = choice.message.content or ""
@@ -168,12 +171,14 @@ async def chat(
     base_url: str | None = None,
     api_key: str | None = None,
     purpose: LLMPurpose | str | None = None,
+    reasoning: dict | None = None,
 ) -> str:
     """发起一次对话补全，返回纯文本内容。带重试。
 
     base_url / api_key 留空即用全局配置；传入时可把某类调用（如 selector
     打分）路由到另一个服务商或本地模型，同时保持本模块为唯一出口。
     `purpose` 只用于计数归类（工单25），漏标的记为 untagged。
+    `reasoning` 原样作为请求体的 `reasoning` 字段（OpenRouter 推理控制），留空不发。
     """
     key = purpose_key(purpose)
     started = time.monotonic()
@@ -186,6 +191,7 @@ async def chat(
             base_url=base_url,
             api_key=api_key,
             purpose=key,
+            reasoning=reasoning,
         )
     except Exception:
         meter = current_meter()
@@ -205,6 +211,7 @@ async def chat_safe(
     base_url: str | None = None,
     api_key: str | None = None,
     purpose: LLMPurpose | str | None = None,
+    reasoning: dict | None = None,
 ) -> str:
     """带兜底的对话调用：失败时抛出 LLMError 而非原始异常。"""
     try:
@@ -216,6 +223,7 @@ async def chat_safe(
             base_url=base_url,
             api_key=api_key,
             purpose=purpose,
+            reasoning=reasoning,
         )
     except Exception as exc:  # noqa: BLE001
         raise LLMError(f"LLM 调用最终失败：{exc}") from exc

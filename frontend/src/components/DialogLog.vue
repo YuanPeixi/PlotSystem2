@@ -73,6 +73,10 @@ const whoWidth = computed(() => {
       <!-- 环境回合：公开叙述全场可见；私密细节只给执行者，这里是导演视角才显示（契约1） -->
       <div v-if="isEnvironmentTurn(t)" class="body">
         <span class="narration">{{ t.narration }}</span>
+        <!-- 公开投射（导演标了 audience=present）：全场都看见了，不用暗场色 -->
+        <div v-if="t.projection" class="projection">
+          <span class="inner-tag"><Icon name="world" :size="13" />幻象</span>{{ t.projection }}
+        </div>
         <div v-if="t.private_detail" class="inner">
           <span class="inner-tag"><Icon name="private" :size="13" />私密</span>{{ t.private_detail }}
         </div>
@@ -186,6 +190,16 @@ const whoWidth = computed(() => {
   font-size: 11.5px;
   margin-right: 6px;
   vertical-align: 1px;
+}
+/* 公开投射：与私密细节同一版式，但用正文色 —— 暗场色只标"仅导演可见" */
+.projection {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border-left: 2px solid var(--line);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.75;
 }
 /* 追光：推演中的最新一轮 */
 .turn.live .who {

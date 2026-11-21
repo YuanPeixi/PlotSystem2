@@ -274,6 +274,10 @@ class WorldObject:
     visibility: str = OBJECT_VISIBILITY_HIDDEN
     #: 知道它存在与外观的角色 id，仅 `private` 有意义；过滤后为空按 hidden（失败即收紧）
     known_by: list[str] = field(default_factory=list)
+    #: 装着它的物件 id（如"王冠底座夹层"装在"王冠"里）；空 = 独立物件。只嵌一层。
+    #: 对容器的动作连同在场的内容物一起裁决 —— 否则"翻看王冠底座"时裁决器不知道里面有东西。
+    #: 内容物要与容器一起选进 objects_present 才算在场，不自动带入
+    container_id: str = ""
     #: 每次用户编辑 +1，PATCH 必须带回读取时的值（乐观并发）
     revision: int = 0
     #: 最近一次用户写入的幂等键与请求摘要（契约5）
@@ -499,6 +503,8 @@ class WorldAdjudication:
     triggered: bool = False
     narration: str = ""
     private_detail: str = ""
+    #: 公开投射的揭示内容（`RevealEntry.audience == present`），与 narration 一样全场可见
+    projection: str = ""
     operations: list[WorldOperation] = field(default_factory=list)
 
 
@@ -651,10 +657,24 @@ class RevealEntry:
     按条存而不是一整段自由文本：一条只对应一种触发情形。裁决器只看 `condition`、只回答
     命中第几条，`content` 由代码原样交给执行者 —— 每次最多给一条，跨分支泄露在结构上不可能；
     content 也不进裁决 prompt，公开叙述就无从转述它。
+
+    `actor_id` 把条目绑定到执行者：裁决前代码只把属于本次执行者（或未绑定）的条目交给裁决器，
+    "伊莎贝尔戴冠却拿到王后那一条"在结构上不可能发生，不再只靠提示词（A31 的遗留风险）。
+    `audience` 决定内容给谁：`actor` 只进执行者记忆（默认，A25）；`present` 是物件规则本身
+    就公开的效果（"把记忆投射给在场所有人"），内容进全场 transcript 与每个在场者的记忆。
+    非法取值按 `actor` —— 失败即收紧。
     """
 
     condition: str = ""  # 触发情形，只给裁决器看，例如"伊莎贝尔戴上"
     content: str = ""  # 揭示内容，触发时进执行者记忆，例如"投出她六岁那年的冬天"
+    actor_id: str = ""  # 只对这个执行者生效；空 = 任何执行者
+    audience: str = "actor"  # actor / present
+
+
+#: `RevealEntry.audience` 的取值
+REVEAL_AUDIENCE_ACTOR = "actor"
+REVEAL_AUDIENCE_PRESENT = "present"
+REVEAL_AUDIENCES = (REVEAL_AUDIENCE_ACTOR, REVEAL_AUDIENCE_PRESENT)
 
 
 @dataclass
@@ -705,7 +725,10 @@ class DialogueTurn:
     narration: str | None = None
     #: 私密细节：只给导演 / 用户 / perceived_by 的记忆，**不进 transcript**（A2、契约1）
     private_detail: str | None = None
-    #: 能感知 private_detail 的角色 id。PR-2 固定为执行者本人（A25）
+    #: 公开投射：揭示条目标了 `audience=present` 时的内容（如王冠把记忆投给满殿），
+    #: 与 narration 同样进"目前对话"与全体在场角色的记忆。导演显式标注才会有，见陷阱 27
+    projection: str | None = None
+    #: 能感知 private_detail 的角色 id。固定为执行者本人（A25）
     perceived_by: list[str] = field(default_factory=list)
     #: 来源：哪个角色轮次的第几个动作段。turn_id 由二者确定性生成（environment_turn_id）
     source_turn_id: str = ""

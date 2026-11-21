@@ -173,6 +173,8 @@ class CreateObjectRequest(BaseModel):
     # global / private / hidden；private 时 known_by 给出知情者的角色 id
     visibility: str = Field("hidden", max_length=16)
     known_by: list[str] = Field(default_factory=list, max_length=50)
+    # 装着它的物件 id（只嵌一层）；null / 空 = 独立物件
+    container_id: str | None = Field(None, max_length=128)
     # 幂等键（契约5）：物件 ID 由它确定性生成，重放落在同一个物件上
     request_id: str = Field(..., min_length=1, max_length=64)
 
@@ -186,6 +188,8 @@ class UpdateObjectRequest(BaseModel):
     hidden_rules: list[str] | None = Field(None, max_length=50)
     visibility: str | None = Field(None, max_length=16)
     known_by: list[str] | None = Field(None, max_length=50)
+    # 空串 = 取出容器，变回独立物件
+    container_id: str | None = Field(None, max_length=128)
     revision: int
     request_id: str = Field(..., min_length=1, max_length=64)
 

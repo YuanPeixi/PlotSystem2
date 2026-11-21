@@ -337,3 +337,79 @@ async def test_adjudicate_failure_returns_none(monkeypatch, outcome):
     ret = None if side else outcome
     monkeypatch.setattr(environment_agent, "chat_safe", AsyncMock(side_effect=side, return_value=ret))
     assert await EnvironmentAgent(model="m").adjudicate(CROWN, "伊莎贝尔", WEAR, {}) is None
+
+
+# ---------------------------------------------------------------------------
+# 路由与上限（可经 .env 单独调节，留空回退导演模型 / 主服务商）
+# ---------------------------------------------------------------------------
+
+
+def _isolate_environment_settings(monkeypatch, **overrides):
+    """本机 .env 里可能配了 LLM_ENVIRONMENT_* 或 ENVIRONMENT_*，先清成默认再按需覆盖。"""
+    from backend.config import settings
+
+    defaults = {
+        "LLM_MODEL_ENVIRONMENT": "", "LLM_ENVIRONMENT_BASE_URL": "", "LLM_ENVIRONMENT_API_KEY": "",
+        "LLM_MODEL_DIRECTOR": "导演模型", "LLM_BASE_URL": "http://main", "LLM_API_KEY": "main-key",
+        "ENVIRONMENT_MAX_TOKENS": 8000, "ENVIRONMENT_TEMPERATURE": 0.3, "ENVIRONMENT_REASONING_EFFORT": "",
+    }
+    for name, value in {**defaults, **overrides}.items():
+        monkeypatch.setattr(settings, name, value)
+
+
+@pytest.mark.asyncio
+async def test_unset_environment_route_falls_back_to_director_and_main_provider(monkeypatch):
+    _isolate_environment_settings(monkeypatch)
+    fake = AsyncMock(return_value=_raw(reveal_index=0))
+    monkeypatch.setattr(environment_agent, "chat_safe", fake)
+    await EnvironmentAgent().adjudicate(CROWN, "伊莎贝尔", WEAR, {})
+    kwargs = fake.await_args.kwargs
+    assert (kwargs["model"], kwargs["base_url"], kwargs["api_key"]) == ("导演模型", "http://main", "main-key")
+    assert (kwargs["max_tokens"], kwargs["temperature"]) == (8000, 0.3)
+    assert kwargs["reasoning"] is None
+
+
+@pytest.mark.asyncio
+async def test_environment_reasoning_effort_is_sent_when_configured(monkeypatch):
+    _isolate_environment_settings(monkeypatch, ENVIRONMENT_REASONING_EFFORT="low")
+    fake = AsyncMock(return_value=_raw(reveal_index=0))
+    monkeypatch.setattr(environment_agent, "chat_safe", fake)
+    await EnvironmentAgent().adjudicate(CROWN, "伊莎贝尔", WEAR, {})
+    assert fake.await_args.kwargs["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.parametrize("field", ["ENVIRONMENT_REASONING_EFFORT", "CHARACTER_REASONING_EFFORT"])
+def test_unknown_reasoning_effort_fails_at_startup(field):
+    from pydantic import ValidationError
+
+    from backend.config import Settings
+
+    with pytest.raises(ValidationError, match=field):
+        Settings(**{field: "lowest"})
+    # 不开放 none：GLM 不允许关闭推理，会 400
+    with pytest.raises(ValidationError, match=field):
+        Settings(**{field: "none"})
+
+
+@pytest.mark.asyncio
+async def test_environment_route_and_limits_come_from_settings(monkeypatch):
+    _isolate_environment_settings(
+        monkeypatch, LLM_MODEL_ENVIRONMENT="gemma", LLM_ENVIRONMENT_BASE_URL="http://env",
+        LLM_ENVIRONMENT_API_KEY="env-key", ENVIRONMENT_MAX_TOKENS=0, ENVIRONMENT_TEMPERATURE=0.1,
+    )
+    fake = AsyncMock(return_value=_raw(reveal_index=0))
+    monkeypatch.setattr(environment_agent, "chat_safe", fake)
+    await EnvironmentAgent().adjudicate(CROWN, "伊莎贝尔", WEAR, {})
+    kwargs = fake.await_args.kwargs
+    assert (kwargs["model"], kwargs["base_url"], kwargs["api_key"]) == ("gemma", "http://env", "env-key")
+    # 0 = 不限，与 CHARACTER_MAX_TOKENS 同一口径
+    assert (kwargs["max_tokens"], kwargs["temperature"]) == (None, 0.1)
+
+
+def test_negative_environment_max_tokens_fails_at_startup():
+    from pydantic import ValidationError
+
+    from backend.config import Settings
+
+    with pytest.raises(ValidationError, match="ENVIRONMENT_MAX_TOKENS"):
+        Settings(ENVIRONMENT_MAX_TOKENS=-1)

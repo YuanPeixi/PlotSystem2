@@ -227,6 +227,12 @@ def clamp_object(
     obj.visibility = visibility
     # 非 private 不带名单：留着的话改回 private 会复活一份过时的知情者
     obj.known_by = known_by if visibility == OBJECT_VISIBILITY_PRIVATE else []
+    container = single_line(obj.container_id) if isinstance(obj.container_id, str) else ""
+    if container == obj.object_id:
+        issues.append("物件不能装在自己里面，已按独立物件处理")
+        container = ""
+    # 只规整形状、不核对容器是否存在：读一个物件不去扫整个目录，悬空的由消费方跳过
+    obj.container_id = container
     return issues
 
 
@@ -249,12 +255,16 @@ class ObjectFields:
     hidden_rules: list[str] | None = None
     visibility: str | None = None
     known_by: list[str] | None = None
+    container_id: str | None = None
 
     def digest(self, base_revision: int) -> str:
         payload = [
             self.name, self.aliases, self.public_description, self.hidden_rules,
             self.visibility, self.known_by, base_revision,
         ]
+        # 只在给了时追加：旧客户端的重放摘要保持不变
+        if self.container_id is not None:
+            payload.append(self.container_id)
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False).encode("utf-8")
         ).hexdigest()[:16]
@@ -265,10 +275,12 @@ def _validated(
     character_names: set[str],
     character_ids: set[str],
     taken_terms: dict[str, str] | None = None,
+    containers: dict[str, str] | None = None,
 ) -> WorldObject:
     """校验一份待写入的物件；任何超限都 422，不截断。返回规整过空白的副本。
 
     `taken_terms` 是**其他**物件的名称与别名（`object_terms`），撞上即 422。
+    `containers` 是**其他**物件的 id → 它们的 container_id，用来校验容器（只嵌一层）。
     """
     taken = taken_terms or {}
     out = deepcopy(obj)
@@ -325,11 +337,24 @@ def _validated(
             raise InvalidRequestError(f"知情者不是本项目的角色：{missing[0]}")
     else:
         out.known_by = []
+    out.container_id = single_line(out.container_id or "")
+    if out.container_id:
+        others = containers or {}
+        if out.container_id == out.object_id:
+            raise InvalidRequestError("物件不能装在自己里面")
+        if out.container_id not in others:
+            raise InvalidRequestError(f"容器物件不存在：{out.container_id}")
+        # 只嵌一层：裁决按"容器 + 它直接装着的东西"展开，多层会让一次动作波及整串物件
+        if others[out.container_id]:
+            raise InvalidRequestError("容器本身装在别的物件里，只支持一层")
+        if out.object_id in others.values():
+            raise InvalidRequestError("这个物件里已经装着别的物件，不能再放进容器（只支持一层）")
     return out
 
 
 def _content_key(obj: WorldObject) -> list:
-    return [obj.name, obj.aliases, obj.public_description, obj.hidden_rules, obj.visibility, obj.known_by]
+    return [obj.name, obj.aliases, obj.public_description, obj.hidden_rules, obj.visibility, obj.known_by,
+            obj.container_id]
 
 
 def apply_object_edit(
@@ -343,9 +368,10 @@ def apply_object_edit(
     character_names: set[str],
     character_ids: set[str],
     taken_terms: dict[str, str] | None = None,
+    containers: dict[str, str] | None = None,
 ) -> tuple[WorldObject, bool]:
-    """用户创建或修改物件。返回 (结果, 是否真的写了)。调用方须在项目物件锁内重读 `current`
-    与 `taken_terms`（其他物件的名称与别名，`object_terms`）。
+    """用户创建或修改物件。返回 (结果, 是否真的写了)。调用方须在项目物件锁内重读 `current`、
+    `taken_terms`（其他物件的名称与别名，`object_terms`）与 `containers`（其他物件 id → 容器 id）。
 
     判定顺序同分镜稿 PUT（`storyboard.apply_user_edit`）：
 
@@ -378,6 +404,8 @@ def apply_object_edit(
         base.visibility = fields.visibility
     if fields.known_by is not None:
         base.known_by = list(fields.known_by)
+    if fields.container_id is not None:
+        base.container_id = fields.container_id
 
     if current is not None:
         if _content_key(_safe_normalized(base)) == _content_key(current):
@@ -387,7 +415,7 @@ def apply_object_edit(
                 f"物件已被修改（当前修订号 {current.revision}，请求基于 {base_revision}），请重新加载后再编辑"
             )
 
-    result = _validated(base, character_names, character_ids, taken_terms)
+    result = _validated(base, character_names, character_ids, taken_terms, containers)
     if current is not None:
         result.revision = current.revision + 1
     result.request_id = request_id
@@ -404,6 +432,7 @@ def _safe_normalized(obj: WorldObject) -> WorldObject:
     out.public_description = normalize_memo(out.public_description)
     out.hidden_rules = [r for r in (single_line(r) for r in out.hidden_rules) if r]
     out.known_by = _clean_ids(out.known_by) if out.visibility == OBJECT_VISIBILITY_PRIVATE else []
+    out.container_id = single_line(out.container_id or "")
     return out
 
 
