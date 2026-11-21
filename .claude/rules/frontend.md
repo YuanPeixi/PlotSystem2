@@ -63,7 +63,7 @@ paths:
 - **SSE 句柄必须捕获自己的连接**：`openStream` 把 `EventSource` 存为局部变量，每个事件处理器先比对它是否仍是当前连接。否则快速切场景时，旧流的终态会关掉新流、旧流的 `turn` 会串进新场景的日志。
 - **业务失败走 `scene_error`，连接错误走 `error`**：两者在 `openStream` 里是两个独立处理器，前者把 `message` 存进 `sceneStore.lastError` 并在日志区上方展示。合并处理会让失败原因被紧随其后的 `status` 覆盖掉。
 - **`turn_update` 必须比 `revision`**（`utils/turns.ts::applyTurnUpdate`）：本地有同 `turn_id` 且新版 `revision` 更大才替换，本地没有就忽略（终态 `reconcileLog` 会补齐）。不比的话，订阅期间铺底 GET 先拿到新版、队列里的旧事件随后才到，就会把动作状态回退。
-- **环境回合不是发言**：`DialogLog` 把它渲染成叙述，私密细节用 `--private` 只在导演视角显示；只看某个角色时，环境回合跟着执行者（`perceived_by`）走。`StageView` 的"第 N / max_turns 轮"与进度条只数角色轮次（`utils/turns.ts::characterTurnCount`），与后端终止判定同一口径（陷阱 24）。
+- **环境回合不是发言**：`DialogLog` 把它渲染成叙述，私密细节用 `--private` 只在导演视角显示；公开投射（`projection`）全场都看见了，用正文色而不是暗场色；只看某个角色时，环境回合跟着执行者（`perceived_by`）走。`StageView` 的"第 N / max_turns 轮"与进度条只数角色轮次（`utils/turns.ts::characterTurnCount`），与后端终止判定同一口径（陷阱 24）。
 - **`attachScene` 与 `joinScene` 不可混用**：前者用于"打开/重连已存在的场景"（刷新恢复、点选历史场景），**绝不调 `/start`**；后者用于决策产生的新场景/续跑，会调 `/start`。对已完成场景误调 `/start` 会白烧一整场 LLM 并覆盖快照/评估（后端已加拦截，但前端不该依赖它）。
 - **刷新恢复链**：URL query `?scene=` 记录当前场景 → `onMounted` 优先 attach 它，否则退到该分支最后一场；评估与已生效决策分别由 `GET /evaluation` 与 `GET /decision` 回填。
 
@@ -111,6 +111,7 @@ paths:
 - 本地只拦必然 422 的形状问题（空名、单字别名、与角色同名、与其他物件重名、private 无知情者），token 预算以后端 422 原文为准。**超出别名上限的输入留在输入框并拦下保存**，不清空（清空即替用户截断）。
 - **409 后的重新加载只在读取成功时重开草稿**，失败时保留草稿与冲突状态（拿旧列表重开只会带着旧修订号再撞 409）。
 - 非 private 时提交空 `known_by`，但草稿里保留名单，切回 private 不必重选。知情者名单里不存在的角色照样显示、照样提交，不在前端悄悄删。`refresh-key` 绑构建完成，只刷列表不动草稿。
+- "装在"下拉框只列没装在别处的物件；自己已装着东西时禁选（只嵌一层，后端同样 422）。
 
 ---
 

@@ -86,6 +86,7 @@
 | [18](./18-storyboard.md) | 导演场记板 / 分镜稿（storyboard）持久化 | P2 | 17 ✅、28 ✅ | ✅ PR #21（合入 main：`b7dabe6`到`07688f2`） | [选择与落地结论](./NOTES.md#t18) |
 | [12](./12-auto-pilot-director.md) | Auto Pilot（自动执行导演决策，无人值守连跑） | P2 | 13 ✅；18 ✅（可选） | ✅ 已合入 main（`f2d4cad`到`9baa083`；PR 号待核实） | [与原单的偏离](./NOTES.md#t12) |
 | [09](./09-memory-quality-optional.md) | 记忆检索质量优化（时间衰减 / BM25 混合 / 中文分词降级） | P3 | 02 ✅、15 ✅、26 ✅ | 待处理（前置已齐） | [前置说明](./NOTES.md#t09) |
+| [31](./31-doc-split.md) | CLAUDE.md 瘦身与按路径拆分（`.claude/rules/`） | P2 | 无 | ⏳ 等待 PR（`refactor/world-env-rules`） | — |
 
 ---
 

@@ -76,7 +76,7 @@ PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项�
 
 | 层次 | 实际使用 | 说明 |
 |------|---------|------|
-| LLM 接入 | OpenAI 兼容 SDK + tenacity | `backend/utils/llm.py` 是**唯一出口**；四路异构模型与温度约定见 `.claude/rules/llm.md` |
+| LLM 接入 | OpenAI 兼容 SDK + tenacity | `backend/utils/llm.py` 是**唯一出口**；五路异构模型与温度约定见 `.claude/rules/llm.md` |
 | 抽取 / 图谱 / 向量 | 自研 LLM + JSON 提示词；Kuzu（缺失降级为空图）；chromadb + 远程 embedding | `graphrag_pipeline/entity_extractor.py`、`knowledge_graph/graph_manager.py`、`memory/long_term.py` + `embeddings.py` |
 | 引擎 / 后端 / 持久化 | 自研手写对话循环；FastAPI + Uvicorn + sse-starlette；aiosqlite + JSON 文件树 | `scene_engine/engine.py`、`backend/main.py`、`utils/db.py` + `services/repository.py` |
 | 前端 | Vue 3 + Vite + Pinia + Axios；图谱 AntV G6；思源宋体自托管（`@fontsource/noto-serif-sc`）；图标为内联 Lucide SVG 路径（`components/ui/icons.ts`，非依赖） | `frontend/src/` |
@@ -91,7 +91,7 @@ PlotSystem 是一个**多分支、多智能体剧情推演系统**（科创项�
 ```
 backend/
 ├── models.py           ★ 所有领域 dataclass 的唯一定义处
-├── config.py           ★ pydantic-settings 单例 + 派生路径 + 四路模型属性
+├── config.py           ★ pydantic-settings 单例 + 派生路径 + 五路模型属性
 ├── exceptions.py       业务异常树（ConflictError→409，InvalidRequestError→422，其余 PlotSystemError→404）
 ├── main.py             FastAPI 装配 + 全局异常处理 + lifespan（init_db / 启动对账）
 ├── services/           ★★ 编排层：找业务逻辑先看这里
@@ -146,7 +146,9 @@ scripts/（run_demo、各类只读/修复脚本）　tests/（后端 pytest；`f
 - `LoreEntry` 按知情范围分发（公开进全员，私有只进知情者，隐藏与判定失败的不进任何角色）；
 - `inner_thought` 不得进入其他角色 prompt；**解析时先剥独白、再取动作**；
 - **导演分镜稿 `Storyboard` 只进导演的规划/评估 prompt**，引擎只拿它写快照副本，绝不并进 `scene_context`；
-- **物件隐藏规则、预制揭示内容只进导演与环境裁决层**；
+- **物件隐藏规则、预制揭示内容只进导演与环境裁决层**；触发后的揭示默认只给执行者。
+  **唯一的显式放宽**：揭示标成 `audience=present`（物件规则本身就把结果公开，如"投射给在场所有人"）时内容进全场 transcript 与全体在场者记忆；
+  默认与非法值都按只给执行者（陷阱 27）；
 - **世界层（schema 2，新项目默认）**：客观属性与角色观察分离；只有 `global` 可广泛传播，`observable` 须在现场且能感知，`hidden` 不给角色；
   角色与 selector 一律经**可见投影**获取世界信息。schema 1 旧项目的 `WorldState`（只许存全员可感知的公开事实）见 `world-environment.md`；
 - 角色不在场的场次里发生的信息不直接给。
@@ -182,7 +184,7 @@ scripts/（run_demo、各类只读/修复脚本）　tests/（后端 pytest；`f
 ### 契约 7 — LLM 唯一出口
 
 所有 LLM 调用经 `utils/llm.py` 的 `chat()` / `chat_safe()`；**禁止**在别处实例化 OpenAI 客户端（唯一例外 `memory/embeddings.py`）；
-模型名走 `settings`；调用点标 `purpose`。细则：`llm.md`。
+模型名走 `settings`；调用点标 `purpose`；推理控制（`reasoning`）同样只经这里发出。细则：`llm.md`。
 
 ### 契约 8 — 分层边界
 
@@ -229,7 +231,7 @@ Python 规范见 `.claude/rules/python.md`（按 `*.py` 载入）。
 
 ## 11. 环境与启动
 
-配置项唯一真值是 `.env.example`。只强调：四路模型留空回退 `LLM_MODEL_NAME`；`EMBEDDING_*` 留空复用 LLM 那套，
+配置项唯一真值是 `.env.example`。只强调：导演 / 角色 / 总结 / selector 四路模型留空回退 `LLM_MODEL_NAME`，环境裁决留空回退导演模型；`EMBEDDING_*` 留空复用 LLM 那套，
 **换 embedding 模型必须清空 `chroma_db/`**；`GRAPHRAG_LLM_MODEL` 已弃用。Python `>=3.11,<3.13`；生产/演示**必须单 worker**（契约 9）。
 
 ```bash

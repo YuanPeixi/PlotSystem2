@@ -19,23 +19,28 @@ paths:
 
 # LLM 接入规则（出口 / 多路模型 / 调用计数 / 续写截断）
 
-管：所有 LLM 调用必须遵守的出口约束、四路模型配置、调用计数、角色回复的续写截断。
+管：所有 LLM 调用必须遵守的出口约束、五路模型配置、调用计数、角色回复的续写截断。
 **配置项的唯一真值是 `.env.example`**，这里不复制。
 
-目录：四路异构模型 · 契约 7 细则 · 陷阱 26 · 陷阱 28
+目录：五路异构模型 · 契约 7 细则 · 陷阱 26 · 陷阱 28
 
 ---
 
-## 四路异构模型（原 §2.1）
+## 五路异构模型（原 §2.1）
 
 `settings.director_model / character_model / summary_model / selector_model` 分别读
-`LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY / SELECTOR`，留空回退 `LLM_MODEL_NAME`。
-温度约定：角色 0.8（创意）、导演 0.3（一致）、总结 0.7（平衡）、选择器 0.2（判断）；
+`LLM_MODEL_DIRECTOR / CHARACTER / SUMMARY / SELECTOR`，留空回退 `LLM_MODEL_NAME`；
+`settings.environment_model` 读 `LLM_MODEL_ENVIRONMENT`，留空回退**导演模型**。
+温度约定：角色 0.8（创意）、导演 0.3（一致）、总结 0.7（平衡）、选择器 0.2（判断）、环境裁决 0.3（`ENVIRONMENT_TEMPERATURE`）；
 导演的规划 / 评估 / 决策另有各自的 `DIRECTOR_*_TEMPERATURE`，以 `config.py` 为准。
 
-selector 另有独立的 `LLM_SELECTOR_BASE_URL / LLM_SELECTOR_API_KEY`（留空复用主配置），
-把"发言者打分"这类短输入短输出的判断挂到本地小模型。透传路径仍是 `chat()/chat_safe()` 的
+selector 与环境裁决各有独立的 `LLM_SELECTOR_*` / `LLM_ENVIRONMENT_*` 的 `BASE_URL / API_KEY`（留空复用主配置），
+把短输入的判断任务挂到小模型或另一个服务商。透传路径仍是 `chat()/chat_safe()` 的
 `base_url` / `api_key` 参数，**契约 7 未破**。
+环境裁决的输出上限是 `ENVIRONMENT_MAX_TOKENS`（默认 8000，与 `CHARACTER_MAX_TOKENS` 同一条推理余量教训，见陷阱 28）；
+裁决与揭示生成两次调用共用这一套路由与上限（`EnvironmentAgent._complete`）。
+角色与环境裁决各有推理强度 `CHARACTER_REASONING_EFFORT` / `ENVIRONMENT_REASONING_EFFORT`（留空不发，拼错启动即失败）。
+GLM-5.3-Flash 不允许关闭推理（`enabled:false` 返回 400），所以只开放强度档位、不开放 none。
 `EMBEDDING_*` 留空复用 LLM 那套；**换 embedding 模型必须清空 `chroma_db/`**（维度不一致）。
 
 ## 契约 7 细则 — LLM 唯一出口
@@ -47,7 +52,13 @@ selector 另有独立的 `LLM_SELECTOR_BASE_URL / LLM_SELECTOR_API_KEY`（留空
 - **空正文判失败**：服务商返回空正文时这里抛失败、日志带 `finish_reason`，不得 `content or ""` 当成功交回。
 - **触顶不重试**：`finish_reason=length`（推理吃光 `max_tokens`）的空正文立即失败——同一 prompt 再发结果一样，
   只是白等退避、多花 token；其余空正文照常退避重试。两种都把该次尝试的 token 计入用量（陷阱 26），但不计成功调用。
+- **推理控制只经这里**：调用方传 `reasoning`（`config.reasoning_for(档位)`），由 `_complete` 放进 `extra_body` 作为 OpenRouter 的
+  `reasoning` 字段发出；不得在别处拼请求体。
 - 与角色回复层分工：`llm.py` 管"根本没给正文"，`SceneEngine._character_reply` 管"给了正文但全是续写"（陷阱 28）。
+  **触顶不重试在角色层有例外**：角色温度高、推理失控是随机的，同一现场重跑多半就好，所以 `_character_reply` 对
+  "推理吃光上限的空正文"再要一次（靠 `LLMError.__cause__` 上不可重试的 `EmptyCompletionError` 识别），与"截完为空"共用
+  `_REPLY_ATTEMPTS`，`output_notice` 写明是推理失控。超时、服务不可用等其他失败 `llm.py` 已退避过，角色层不再重试。
+  根治靠 `CHARACTER_REASONING_EFFORT`（GLM 设 low，推理从 600–950 token 降到 0–30）。
 
 ## 陷阱 26 — LLM 调用计数（工单25）
 

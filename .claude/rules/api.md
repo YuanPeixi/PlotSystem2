@@ -77,8 +77,8 @@ paths:
 | PUT | `/projects/{project_id}/branches/{branch_id}/storyboard` | 用户整份替换 `outline` / `memo`，带读取时的 `revision`：不匹配 409；超预算、引用不存在的 `beat_id` 422（不截断）；`request_id` 为幂等键，命中已生效的编辑视为重放（200、不写），同键不同内容 422；与当前内容完全相同视为无操作。`confirm_goal` 须同时带回读取时的 `goal_revision_seen`（缺失 422）。分支不存在 404 |
 | GET | `/projects/{project_id}/objects` | 物件列表（含隐藏规则：面向用户/导演） |
 | GET | `/projects/{project_id}/objects/{object_id}` | 物件详情 |
-| POST | `/projects/{project_id}/objects` | 新建。`request_id` 必填，物件 ID 由它确定性生成，重放返回同一物件；超预算、`private` 无知情者或知情者不存在、名称/别名与其他物件重复（不区分大小写）422（不截断）；每项目上限 40 |
-| PATCH | `/projects/{project_id}/objects/{object_id}` | 修改（字段为 null 不改），带读取时的 `revision`：不匹配 409；`request_id` 为幂等键；与当前内容相同视为无操作 |
+| POST | `/projects/{project_id}/objects` | 新建。`request_id` 必填，物件 ID 由它确定性生成，重放返回同一物件；超预算、`private` 无知情者或知情者不存在、名称/别名与其他物件重复（不区分大小写）、`container_id` 不存在或超过一层 422（不截断）；每项目上限 40 |
+| PATCH | `/projects/{project_id}/objects/{object_id}` | 修改（字段为 null 不改，`container_id` 给空串即取出容器），带读取时的 `revision`：不匹配 409；`request_id` 为幂等键；与当前内容相同视为无操作 |
 | DELETE | `/projects/{project_id}/objects/{object_id}` | 删除，已不存在也成功（`existed` 区分） |
 | GET | `/projects/{project_id}/snapshots` | 快照列表：id / scene_id / branch_id / label / created_at / `character_count`（SQL 侧投影，不带角色状态与导演历史） |
 | POST | `/snapshots/{snapshot_id}/fork` | 从快照分叉（**需 `project_id` query 参数**）。新建分支 + 其上一个 pending 首场，**不自动开跑**；返回 `{branch, scene}`。目标快照所属场景的评估/补写仍在进行中返回 409，稍后重试 |

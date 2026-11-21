@@ -97,11 +97,14 @@ paths:
 ### 环境裁决与脚本
 
 - 裁决器（`EnvironmentAgent.adjudicate_world`）读版本内规则 + 本次允许作用物件的状态 + **世界层 `global` 事实**（判断可行性，如"宫门封锁中"）；
-  **hidden / observable 的世界事实不进裁决器**。当前作用范围仍是**目标物件**；主动环境事件与通用多物件物理模拟尚未实现。
+  **hidden / observable 的世界事实不进裁决器**。作用范围是**目标物件加上装在它里面、且本场在场的物件**
+  （`WorldObject.container_id`，只嵌一层；引擎裁决与 `orchestrator._commit_world` 提交用同一范围）："翻看王冠底座"能翻出夹层并改它的状态，
+  私有的夹层被目睹打开即视为被发现。内容物**不自动带入**：要与容器一起选进 `objects_present` 才算在场。主动环境事件与通用多物件物理模拟尚未实现。
 - 场景脚本 `Scene.environment_script`（`{object_id: [RevealEntry]}`）经规划、手动创建、next_scene、分叉传递，**仅环境侧读取**。
-  预制揭示在裁决 prompt 里只渲染触发条件（`condition`），裁决器只回答命中第几条（`reveal_index`），**内容**由代码原样交给执行者。
+  预制揭示在裁决 prompt 里只渲染触发条件（`condition`），裁决器只回答命中第几条（`reveal_index`），**内容**由代码原样交出；
+  条目可绑定执行者（`actor_id`）与受众（`audience`），语义见陷阱 27 第 5 条。
 - 现场生成揭示是**独立的第二次调用**：只拿当事人的 `known_facts` 与可用记忆，**拿不到隐藏规则、预制内容、他人信息**；
-  触发只接受固定代码 `actor_memory`，不转交裁决器自由书写的效果说明；生成失败保留有效的公开裁决。
+  触发只接受固定代码（`actor_memory` 只给当事人 / `actor_memory_public` 全场可见），不转交裁决器自由书写的效果说明；生成失败保留有效的公开裁决。
 - 裁决前会检索一次当事人记忆（一次 embedding 调用），只有触发揭示时才用得上——已知的浪费，不要顺手优化掉隔离。
 
 ### 导演提案
@@ -146,6 +149,8 @@ paths:
 - **公开 ≠ 全局**：schema 2 里"现场公开"（本场 transcript、公开叙述）不等于跨场广播；能跨场传播的只有 `global` 事实与各角色自己的观察。
 - **裁决结果天然带私密性**（"只有他看见水盆亮了"）：公开叙述进全场 transcript 与全体在场角色记忆；私密细节只进执行者（`perceived_by`）。
   任何让裁决结果沉淀为世界事实的路径，都必须先过 visibility 判据（`observable` 还是 `hidden`）。
+- **唯一的显式放宽**：揭示标成 `audience=present`（物件规则本身就把结果公开，如"把记忆投射给在场所有人"）时，内容进全场 transcript
+  与全体在场者记忆。默认与非法值都按只给执行者；后端无法判断内容该不该公开（陷阱 27 第 5 条）。
 - **schema 1 专属**：`WorldState` 只允许存放所有角色都可感知的公开事实（季节、势力公开态度、公开事件）——它会进每个在场角色的 system，
   放进只有部分角色知道的秘密就是一次性向全员泄密。这条约束靠导演评估 prompt，后端无法代为判断。schema 2 不依赖这条：由 visibility 字段结构性承担。
 - 解析先剥独白再取动作、`inner_thought` 不进他人 prompt 等见 `scene-engine.md` / 契约 1 总述；动作意图抽取只用剥过独白的动作段（陷阱 25）。
@@ -191,7 +196,7 @@ paths:
 
 ## 陷阱 27 — 环境回合（`ENVIRONMENT_MODE=adjudicate`）
 
-环境回合 = `TurnKind.ENVIRONMENT` 的 `DialogueTurn`（`narration` 公开叙述 + `private_detail` + `perceived_by` + 来源轮次 / 动作序号 + `revision`；
+环境回合 = `TurnKind.ENVIRONMENT` 的 `DialogueTurn`（`narration` 公开叙述 + `projection` 公开投射 + `private_detail` + `perceived_by` + 来源轮次 / 动作序号 + `revision`；
 `turn_id` 由 `(来源轮次, 动作序号)` 确定性生成 `environment_turn_id`）。默认档位 `off`；设计判据见 `docs/fix-tickets/24-20-environment.md` §5 / §9。
 以下每条标明适用范围。
 
@@ -211,6 +216,15 @@ paths:
    （固定为执行者本人）的记忆与导演 / 用户界面，**不进 transcript**；物件隐藏规则与预制揭示 `content` **只进裁决 prompt**
    （`test_hidden_rules_reach_only_the_adjudicator` 扫遍角色 / selector / 抽取的全部 prompt）。
    私密细节只能是导演预制揭示的原文，或 schema 2 下"仅凭当事人已知材料"的独立生成调用；**裁决器自己在裁决里写的不采纳**。
+   - **公开投射与执行者绑定**（2026-11-07，玻璃王冠样例）：揭示条目带 `audience`。`present` 的内容进环境回合的 `projection`，
+     与 narration 一样进"目前对话"与全体在场者记忆（`render_turn` 无条件渲染 `（幻象：…）`，没有投射的回合渲染结果逐字不变，记忆寻址键不变）；
+     `actor`（默认、非法值都按它）仍只给执行者。**这是契约 1 的显式放宽**，预制揭示公开与否由导演逐条标注。
+   - `actor_id` 把条目绑定到执行者，裁决前由 `reveals_for_actor` 过滤——别人的条目根本不进裁决器输入，选错人在结构上不可能。
+     导演按角色名写 `actor`，`DirectorAgent._bind_reveal_actors` 换成 id，**匹配不上的整条丢弃**（退成"谁都能触发"会让绑给王后的秘密被别人命中）。
+     内容物的条目并入容器的裁决时，条件前缀 `【内容物名】`。
+   - 导演提示词要求 `content` 只写感知者实际看见的东西，不得夹旁白式评论（实跑中导演写过"你自己也不知道真相"，等于告诉角色有个真相存在）。
+   - **已知缺口（都偏向多公开，待议）**：现场生成的公开档 `actor_memory_public` 由**裁决器**选、不是导演标注，误判即把当事人的私有记忆公开给全场；
+     界面不展示揭示条目与受众，开演前无人确认；规划提示词的示例写的是 `present`。详见 `24-20-environment.md#glass-crown-2026-11-07`。
 6. **角色侧的变化**：
    - system 里的"动作只写尝试"规范（`attempt_only`）**只在 adjudicate 档**出现；
    - 【在场物件】（按可见性，只有名称与公开描述，总预算 600 token）：**schema 1 只在 adjudicate 档**；
@@ -227,6 +241,8 @@ paths:
 物件数据的边界：`WorldObject` 项目级、文件 `objects/{object_id}.json`、可人工编辑，读取侧要压回预算（`objects.clamp_object`）；
 每项目上限 40，每场在场物件上限 10（超了 422，读取侧只去重截断）。`Scene.objects_present` 四条建场景路径都要搬运（陷阱 13，见 `director-story.md`）。
 可见性取值非法按 `hidden`（失败即收紧，同陷阱 23）。
+容器 `container_id` 只嵌一层：写入侧校验容器存在、容器自身不在别的物件里、自己没装着别的物件（422）；读取侧只规整形状、
+自己装自己按独立物件处理，悬空的容器 ID 保留、由消费方跳过。schema 2 下物件定义随世界版本走，**改了容器要在分支上"采用当前物件规则"才生效**。
 
 ---
 

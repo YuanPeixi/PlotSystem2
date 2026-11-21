@@ -44,7 +44,8 @@ paths:
 | `Scene` / `DialogueTurn` | SQLite `scenes`（轮次内嵌） | `snapshot_id_before` / `restore_snapshot_id` 语义见陷阱 1、2（`scene-engine.md` / `director-story.md`） |
 | `ActionIntent` | 随轮次内嵌 | 只给导演与用户看，不进角色视野 |
 | `LLMUsageStat` | 随场景 / 评估内嵌 | `Scene.llm_usage` 记运行期，`SceneEvaluation.llm_usage` 记评估 |
-| `WorldObject` | **文件** `objects/{object_id}.json` | 项目级；隐藏规则只进导演与环境层 |
+| `WorldObject` | **文件** `objects/{object_id}.json` | 项目级；隐藏规则只进导演与环境层；`container_id` 指向装着它的物件（只嵌一层，陷阱 27） |
+| `RevealEntry` | 内嵌于 `Scene.environment_script` | 导演预制揭示：触发情形 + 内容 + 绑定执行者 `actor_id` + 受众 `audience`（`actor` / `present`，陷阱 27） |
 | `SceneLineage` | 不落库 | 谱系回溯用的场景字段投影，**只读、不可存回**（存回会抹掉整场对白） |
 | `SceneConfig` | 不落库 | 导演规划产物，运行时构造 |
 | `SceneEvaluation` | SQLite `evaluations` | |
