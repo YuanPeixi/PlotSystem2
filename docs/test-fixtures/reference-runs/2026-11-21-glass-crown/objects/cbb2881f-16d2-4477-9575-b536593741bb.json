@@ -1,0 +1,25 @@
+{
+  "object_id": "cbb2881f-16d2-4477-9575-b536593741bb",
+  "project_id": "35fd1cb8-92e6-476a-a61b-57bf40ece334",
+  "name": "北方烽火信号",
+  "aliases": [
+    "烽火",
+    "信号"
+  ],
+  "public_description": "从北方堡垒传来的烽火信号，在仪式前被赫尔收到。",
+  "hidden_rules": [
+    "烽火信号表示北方军团已有两座堡垒倒戈",
+    "信号预示叛军将在仪式当夜进城",
+    "只有近卫长赫尔能解读该信号的含义"
+  ],
+  "visibility": "private",
+  "known_by": [
+    "44013b08-9512-4731-a1a4-225659e0087b"
+  ],
+  "container_id": "",
+  "revision": 0,
+  "request_id": "",
+  "request_digest": "",
+  "created_at": "2026-11-21T13:51:06.711278+00:00",
+  "updated_at": "2026-11-21T13:51:06.711278+00:00"
+}

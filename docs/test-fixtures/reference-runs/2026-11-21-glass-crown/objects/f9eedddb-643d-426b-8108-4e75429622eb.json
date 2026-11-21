@@ -1,0 +1,23 @@
+{
+  "object_id": "f9eedddb-643d-426b-8108-4e75429622eb",
+  "project_id": "35fd1cb8-92e6-476a-a61b-57bf40ece334",
+  "name": "玻璃王冠",
+  "aliases": [
+    "王冠",
+    "玻璃冠"
+  ],
+  "public_description": "一顶晶莹剔透的玻璃王冠，放置在仪式大厅的绒垫上，等待继承仪式使用。",
+  "hidden_rules": [
+    "佩戴者最强烈的一段记忆会被王冠读取并投射给在场所有人",
+    "王冠不会验证血统，只读取记忆",
+    "王冠底座可以藏入物品，如账页"
+  ],
+  "visibility": "global",
+  "known_by": [],
+  "container_id": "",
+  "revision": 0,
+  "request_id": "",
+  "request_digest": "",
+  "created_at": "2026-11-21T13:51:06.711278+00:00",
+  "updated_at": "2026-11-21T13:51:06.711278+00:00"
+}

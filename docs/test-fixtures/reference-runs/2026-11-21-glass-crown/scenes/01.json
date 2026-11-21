@@ -1,0 +1,919 @@
+{
+  "scene": {
+    "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+    "project_id": "35fd1cb8-92e6-476a-a61b-57bf40ece334",
+    "branch_id": "6afa81e8-c7ad-4660-9302-2add3b83140f",
+    "parent_scene_id": null,
+    "name": "继承仪式前日·布置中的仪式大厅",
+    "description": "继承仪式前一日午后，王后塞芙拉、王女伊莎贝尔、近卫长赫尔与书记官诺安因大典筹备齐聚仪式大厅，围绕明日正午的加冕仪式各陈己见，形成四条看似合理却互相冲突的路线：\n【伊莎贝尔】以继承人身份主张大典按全礼进行，仪程庄重完整，让贵族与民众看到王室的稳定与仁慈；她打算在仪式上宣布开仓放粮、赈济灾民，并当众戴上玻璃王冠、由它“确认血统”，以平息粮荒中的流言。\n【赫尔】以近卫长身份主张从安全出发压缩仪程、限制观礼人数、在大厅内外加派岗哨，并请求王后授权他先行调度人手；他只以“北境边讯不宁”含糊带过，绝口不提兵力缺口，把一切困难归因于粮草不足。\n【诺安】以书记官身份援引已废弛的旧例，主张恢复“大典前一日核验礼器与档册”之礼，由他本人逐一查验礼器、核对档册——既是职司所在，也是他“历史必须忠实记录”的执念使然。\n【塞芙拉】以王后身份主张大典必须如期、盛大，贵族齐聚之日正是“共商赈济与国策”的良机；她以“临阵生变、动摇人心”为由驳回赫尔的收缩方案，以“赈济需有序、不可示弱”为由搁置伊莎贝尔的开仓之议，并以闲谈口吻试探诺安——问起三年前的旧账是否核清、有无散佚残页，暗中观察他的神色。\n期望走向：四条路线在厅中正面相撞，谁也说服不了谁；伊莎贝尔提及“由王冠确认血统”时，王后不置可否，只把话头引回仪程；王后的试探令诺安暗自警觉，他借礼制之名为自己争取核验之权；赫尔把北方的隐忧压在心底，只留下一句意味深长的提醒，目光几次掠向厅外北方的天际。临别时，王后对诺安补上一句看似闲笔的敲打，诺安垂首应下，指节却在袖中收紧。本场不揭穿任何秘密，收束于四人对明日仪式各怀打算、僵持不下的局面，为宫门封锁与制镜师登场蓄势。",
+    "participating_characters": [
+      "17cff137-c0fb-4d37-9a20-f5110777670c",
+      "44013b08-9512-4731-a1a4-225659e0087b",
+      "639bdd4a-9b6d-4e88-962a-384f07364354",
+      "afa029bc-7fa6-4adf-9a06-19449dd58c5f"
+    ],
+    "location": "北境王宫·仪式大厅（大典前一日，厅内布置中）",
+    "objects_present": [
+      "f9eedddb-643d-426b-8108-4e75429622eb",
+      "a00a7bf4-984d-4201-860c-7ff6e7218ad5"
+    ],
+    "initial_conditions": {
+      "time": "继承仪式前一日，午后",
+      "place_state": "仪式大厅内，明日正午在此举行加冕大典，厅内仍在布置",
+      "crown_state": "玻璃王冠置于厅心高台的绒垫上，由近卫看守；礼制：大典前不得试戴，非职司之人不得触碰",
+      "old_custom": "旧例载有“大典前一日由书记官核验礼器与档册”的条目，近几十年已废弛不行",
+      "gate_state": "宫门尚未封锁，出入如常；观礼贵族陆续提前入城",
+      "public_rumor": "粮荒传闻蔓延，米价上涨，仆役与民夫间已有怨言",
+      "opening_narration": "继承仪式前一日，午后。仪式大厅里，仆役抬着绛紫帷幔在脚手架间穿梭，高窗的秋光斜切下来，落在厅心高台的绒垫上——那顶玻璃王冠静静立着，晶莹的冠身折出细碎光斑，两名校尉持戟守在三步之外。廊下有压低的议论随穿堂风飘进来：粮价又涨了，城外领粥的队伍排过了河桥。宫门尚未落锁，提前入城的贵族马车一辆接一辆碾过厅前石道。四个人先后踏进大厅，明日正午的大典就悬在这根梁下——而每一份递上来的章程，写的都是不一样的明天。"
+    },
+    "max_turns": 18,
+    "status": "completed",
+    "snapshot_id_before": "c9ef6962-1497-4324-b2d4-4893885eab26",
+    "snapshot_id_after": "116314ee-22cd-4593-bb4b-a82a316c3555",
+    "restore_snapshot_id": "",
+    "inherited_story_history": [],
+    "turns_completed": 18,
+    "turns_consolidated": 18,
+    "speaker_mode": "selector",
+    "dialogue_log": [
+      {
+        "turn_id": "012eb8fc-ae68-4133-b736-df8309a8c3b0",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 1,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "大典如期举行，仪程从全，一个字也不许删。贵族明日齐聚于此——我们正需要他们都在场。 至于开仓放粮……赈济自有章程，轮不到流言来定日子。诺安，过来。三年前那批旧账，核清了么？可有散佚的残页？",
+        "action": "立于高台之下，目光扫过玻璃王冠，再逐一掠过三人；指尖轻叩袖缘",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "立于高台之下，目光扫过玻璃王冠，再逐一掠过三人",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          },
+          {
+            "index": 1,
+            "text": "指尖轻叩袖缘",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "49636730-046a-495b-b6d6-8ccc6b922c18",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 2,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "回禀王后，三年壬字库账目已按册核讫，唯余几页残档待明日核验礼器时一并清点——按旧例，大典前一日由书记官核验礼器与档册，此乃职司所在。",
+        "action": "垂首趋前一步，袖中手指微微收紧",
+        "inner_thought": "王后为何偏偏问起三年前的账目……她知道多少？",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "垂首趋前一步，袖中手指微微收紧",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "3621a3a6-a232-40be-b8e7-a5ef5fe9f48a",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 3,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "残页？壬字库的账，何时多出过残页。 旧例既已废弛多年，你倒记得清楚——准你去验，但明日辰时之前，每一页都要送到我们面前。",
+        "action": "唇角几不可察地一沉，目光在诺安脸上停了一瞬；转身缓步走向高台，声音平稳",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "唇角几不可察地一沉，目光在诺安脸上停了一瞬",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "转身缓步走向高台，声音平稳",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "b1313b93-34b7-44be-935d-a100be374ceb",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 4,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "臣领命。辰时之前，残页必呈王后亲览——只是礼器核验须在原处进行，玻璃王冠底座之衬垫、锁扣皆需逐一查验，届时或有劳校尉暂离三步，容臣近观。",
+        "action": "垂首，指尖在袖中缓缓松开又攥紧",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "垂首，指尖在袖中缓缓松开又攥紧",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "1afbe4a6-7689-4f40-81ec-e4e14a67755f",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 5,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "近观可以，触碰不行。校尉不必离开半步，你验你的，他们看他们的。 明日正午之前，谁都不得再靠近这顶王冠——包括你。",
+        "action": "指尖在高台绒垫边缘轻轻一按，目光落在玻璃王冠上，未看诺安；转身，语调转闲",
+        "inner_thought": "残页……他核得未免太勤了",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "指尖在高台绒垫边缘轻轻一按，目光落在玻璃王冠上，未看诺安",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          },
+          {
+            "index": 1,
+            "text": "转身，语调转闲",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "d1186f56-5b9d-4748-b0b5-13b348a624a1",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 6,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "臣谨记。只是旧例明载，核验须逐件记录形制与封识，臣只以目验、以笔记，绝不逾越半步——若校尉肯容臣俯身查看底座衬垫的锁扣是否原封，明日辰时之前，残页与验录便可一并呈上。",
+        "action": "垂首，目光却在那顶玻璃王冠上停了一瞬——藏入底座的账页仍在原处，锁扣未动",
+        "inner_thought": "王后问的是残页，看的是我的神色。她知道些什么——账页必须留待明日，当着满殿贵族的面。",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "垂首，目光却在那顶玻璃王冠上停了一瞬——藏入底座的账页仍在原处，锁扣未动",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "ad8e5b95-1b29-42cc-87f7-9b350dd47780",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 7,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "若校尉允准，臣愿即刻验看底座锁扣之封识——旧例载明，礼器封识有损则须报备礼部，迟了便是臣的罪责。 王后若允，臣当场录下形制，一炷香之内退避三步，绝不逾矩。",
+        "action": "俯身向高台方向欠了欠身，视线掠过绒垫边缘；直起身，语气平稳",
+        "inner_thought": "锁扣未动，账页应当仍在……但王后今日句句盯着我，明日辰时之前，必须先一步取回它。",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "俯身向高台方向欠了欠身，视线掠过绒垫边缘",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "直起身，语气平稳",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "a92b1e32-36a4-446c-9027-c2e8d78ecca5",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 8,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "一炷香，只看锁扣，不得翻动衬垫半寸。 诺安，旧例记得这样牢的人——通常也记得账目上每一笔的去向。明日在贵族面前，我们可不需要什么'残页'的意外。",
+        "action": "袖中指甲轻轻划过绒垫边缘，灰蓝色的眼睛终于转向诺安，唇角勾起一抹淡得几乎看不见的弧度；顿了顿，语调转闲",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "袖中指甲轻轻划过绒垫边缘，灰蓝色的眼睛终于转向诺安，唇角勾起一抹淡得几乎看不见的弧度",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "顿了顿，语调转闲",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "2fb43af6-d346-4f5c-9653-f2f2a4979f78",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 9,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "臣明白，残页明日辰时自会呈上，绝无意外。 至于账目去向——历史如何写，臣便如何录，一笔不增，一笔不减，此乃书记官的本分。 臣即刻验看锁扣，一炷香为限。",
+        "action": "垂首，袖中指节收紧又缓缓松开；直起身，目光平静地迎向王后；顿了顿，语调依旧平稳",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "垂首，袖中指节收紧又缓缓松开",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "直起身，目光平静地迎向王后",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 2,
+            "text": "顿了顿，语调依旧平稳",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "f11e521a-9438-4c9b-b8b6-4574f068344e",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 10,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "锁扣封识完整，形制与档册所载相符，臣已录入验录。一炷香未满，臣这就退避三步——明日辰时，残页与验录一并呈于王后亲览。",
+        "action": "整了整长袍，向校尉颔首示意，缓步走上高台，在绒垫前三步处停住，俯身凝视玻璃王冠底座的锁扣——目光顺着封识的纹路一寸寸移过，指尖在袖中默数着封蜡的完整性；直起身，取出随身的验录册，提笔蘸墨，语调平稳如常",
+        "inner_thought": "封识尚在原位……但只看锁扣，衬垫下的账页是否被移动过，无从确认。王后今日寸步不离，明日辰时呈上的\"残页\"，究竟会是哪一页？",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "整了整长袍，向校尉颔首示意，缓步走上高台，在绒垫前三步处停住，俯身凝视玻璃王冠底座的锁扣——目光顺着封识的纹路一寸寸移过，指尖在袖中默数着封蜡的完整性",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          },
+          {
+            "index": 1,
+            "text": "直起身，取出随身的验录册，提笔蘸墨，语调平稳如常",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "1b6e3fe8-7f4f-4e61-8234-38d43a40b9e9",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 11,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "好。账目清楚，人也清楚——这是本分，本分之人向来走得长远。 你们两个也不必站着了。赫尔，宫门今夜落锁之前，把明日观礼的名录再核一遍——某些人，需要学会在饥饿时保持忠诚。",
+        "action": "注视诺安退下的脚步，指尖在袖缘停了一瞬；语调平稳如常；目光转向厅外北方的天际，随即收回，扫过赫尔与伊莎贝尔",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "注视诺安退下的脚步，指尖在袖缘停了一瞬；语调平稳如常",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "目光转向厅外北方的天际，随即收回，扫过赫尔与伊莎贝尔",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "0d39305b-5bb1-43a3-b7d3-9b6bfe581e32",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 12,
+        "character_id": "44013b08-9512-4731-a1a4-225659e0087b",
+        "character_name": "赫尔",
+        "dialogue": "名录今夜核完。只是禀王后——观礼人数若再多，城门落锁后廊下各通道口，臣的人手只够隔三十步设一岗。 粮草不足，调不来更多人。北境边讯不宁，臣请王后授权，今夜先行调度宫内布防。",
+        "action": "抱拳领命，目光却在王后提及\"忠诚\"二字时沉了一瞬；顿了顿，声音压低",
+        "inner_thought": "饥饿时保持忠诚……这话不像是对贵族说的。",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "抱拳领命，目光却在王后提及\"忠诚\"二字时沉了一瞬",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "顿了顿，声音压低",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "18a3e1b5-5886-4d98-b8b8-b5c86901262d",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 13,
+        "character_id": "afa029bc-7fa6-4adf-9a06-19449dd58c5f",
+        "character_name": "伊莎贝尔",
+        "dialogue": "赫尔，人手之缺我已听明——但明日大典之上，我要当众宣布开仓放粮，赈济灾民。若民众见王室只增岗哨、不开粮仓，饥荒中的怨言只会更烈。愿北境的风指引我们，母后，儿臣仍请三思：让百姓在明日正午先看到粮，再看到王冠。",
+        "action": "望向高台上的玻璃王冠，冰蓝眼眸映着细碎光斑，再转向赫尔，语气温和而坚定",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "望向高台上的玻璃王冠，冰蓝眼眸映着细碎光斑，再转向赫尔，语气温和而坚定",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "eddd3e56-a767-41ac-b2b3-d9041447e868",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 14,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "先看到粮，再看到王冠？孩子，饥民要的不是顺序，是活路——赈济须有序，仓门一开便收不回来，示弱只会让明日的贵族们坐地起价。 赫尔，布防准你调度，但仪程一个字不许删；伊莎贝尔，明日正午，你只管戴上王冠，其余的事，自有章程。",
+        "action": "指尖在袖缘一停，目光从伊莎贝尔脸上缓缓移向玻璃王冠，语调平稳；转身，声音转沉",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "指尖在袖缘一停，目光从伊莎贝尔脸上缓缓移向玻璃王冠，语调平稳",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          },
+          {
+            "index": 1,
+            "text": "转身，声音转沉",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "3ac955ae-e0cd-47e4-85ae-0fa5fe1b4438",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 15,
+        "character_id": "afa029bc-7fa6-4adf-9a06-19449dd58c5f",
+        "character_name": "伊莎贝尔",
+        "dialogue": "母后，儿臣明白章程自有安排——可儿臣也想在明日正午，由这顶王冠当众确认儿臣的血统，让流言随粮仓的钟声一同平息。愿北境的风指引我们，若连血统都需遮掩，贵族与百姓又如何信这北境的明天？",
+        "action": "指尖在袖中收紧，仍朝母后一福，冰蓝眼眸却望向玻璃王冠",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "指尖在袖中收紧，仍朝母后一福，冰蓝眼眸却望向玻璃王冠",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "6a2923ff-1758-4274-9a96-3300fa2103b8",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 16,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "王冠自会确认它该确认的——血统这种事，从来不靠一顶玻璃说话，孩子，靠的是明日正午站在王冠旁的人。 仪程照旧，血统之礼照旧，一个字都不必改。",
+        "action": "目光在伊莎贝尔脸上停了一瞬，随即移向玻璃王冠，语调平稳如常；转身，指尖轻叩袖缘",
+        "inner_thought": "她若真信这顶王冠……明日倒有几分意思了",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "目光在伊莎贝尔脸上停了一瞬，随即移向玻璃王冠，语调平稳如常",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "not_attempt"
+          },
+          {
+            "index": 1,
+            "text": "转身，指尖轻叩袖缘",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "0b966501-57b2-4766-b43b-361e7df00fdb",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 17,
+        "character_id": "afa029bc-7fa6-4adf-9a06-19449dd58c5f",
+        "character_name": "伊莎贝尔",
+        "dialogue": "儿臣明白了——明日正午，儿臣会站在王冠之侧，让北境见证这血统与责任。 只愿那章程之中，也有一碗粮的位置……城外领粥的队伍，已排过河桥了。愿北境的风指引我们。",
+        "action": "望向母后，冰蓝眼眸中掠过一丝不安，却仍福身；指尖在袖中轻攥",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "望向母后，冰蓝眼眸中掠过一丝不安，却仍福身",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "指尖在袖中轻攥",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "7079b920-2735-4a46-8b76-70522d9ca27e",
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "turn_number": 18,
+        "character_id": "17cff137-c0fb-4d37-9a20-f5110777670c",
+        "character_name": "塞芙拉",
+        "dialogue": "一碗粮的位置自然有——在明日贵族们签下集权法令之后。 都退下吧。赫尔，今夜子时宫门落锁，大典之前，任何人不得出入——包括送炭的、送粮的，一个也不例外。",
+        "action": "目光掠过厅外渐斜的秋光，指尖在袖缘轻轻一叩；语调平稳",
+        "inner_thought": "棋子都已落定……只盼这王冠底下，别再藏出什么意外。",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "目光掠过厅外渐斜的秋光，指尖在袖缘轻轻一叩；语调平稳",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      }
+    ],
+    "created_at": "2026-11-21T14:03:03.158603+00:00",
+    "llm_usage": {
+      "embedding": {
+        "calls": 90,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 28959,
+        "completion_tokens": 0,
+        "estimated_calls": 0,
+        "seconds": 204.10700000004726
+      },
+      "character": {
+        "calls": 18,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 48260,
+        "completion_tokens": 2082,
+        "estimated_calls": 0,
+        "seconds": 79.0959999999759
+      },
+      "action_extract": {
+        "calls": 8,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 2104,
+        "completion_tokens": 267,
+        "estimated_calls": 0,
+        "seconds": 22.65500000002794
+      },
+      "selector": {
+        "calls": 68,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 107262,
+        "completion_tokens": 2711,
+        "estimated_calls": 0,
+        "seconds": 179.92000000010012
+      }
+    },
+    "environment_state": {},
+    "world_revision_id": "14d69111-2812-44d4-9a9e-4d75e499fafc",
+    "environment_script": {
+      "a00a7bf4-984d-4201-860c-7ff6e7218ad5": [
+        {
+          "condition": "任何角色打开王冠底座的夹层，查看或试图取出其中所藏之物",
+          "content": "底座夹层里躺着一页折成小方块的羊皮纸：纸面泛黄，纸角上一枚暗红色的旧王印清晰可辨，折痕齐整。",
+          "actor_id": "",
+          "audience": "actor"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+    "synopsis": "大典前日，王后坚持仪程从全，以残页试探诺安；诺安援引旧例争得核验权，验看王冠底座锁扣。赫尔以粮草不足请令夜调布防；伊莎贝尔请命开仓放粮、戴冠验血统，被王后搁置。王后下令子时落锁，四人各怀打算僵持收场。",
+    "narrative_goal_score": 9.0,
+    "dramatic_tension_score": 9.0,
+    "plot_deviation_score": 1.0,
+    "character_consistency_score": 9.0,
+    "recommended_decision": "next_scene",
+    "rollback_suggestion": null,
+    "story_progress": 0.35,
+    "story_progress_raw": 0.35,
+    "progress_stalled": false,
+    "goal_revision": "0b746ade708bf28a",
+    "goal_missing": false,
+    "is_ending_reached": false,
+    "ending_reason": "",
+    "unresolved_threads": [
+      "王后已当众下令今夜子时宫门落锁、大典前任何人不得出入（含送粮送炭）；赫尔奉命执行，但不知封锁另有目的",
+      "王后限定诺安明日辰时前呈交'残页'；诺安验看王冠底座锁扣封识完整，但衬垫下账页是否被移动无从确认，且正午前任何人不得再靠近王冠，…",
+      "伊莎贝尔已当众表明将在大典宣布开仓放粮并佩戴王冠'确认血统'；王后搁置开仓之议，仅应允'血统之礼照旧'，明日正午王冠将被佩戴",
+      "赫尔获准今夜调度宫内布防，但人手仅够三十步一岗，兵力缺口被归咎粮草；北方两座堡垒倒戈、叛军将在仪式当夜进城仍仅其知情，未公开",
+      "粮仓短缺实为王后人为制造（导演视角，无人知晓）",
+      "伊莎贝尔并非国王亲生（仅王后知情，未公开）",
+      "玻璃王冠真正功能是读取佩戴者最强烈的记忆并投射给在场众人，无人知晓；制镜师阿德里安尚未登场",
+      "阿德里安多年前曾目睹王后将一名婴儿交给宫外乳母（导演视角伏笔）"
+    ],
+    "world_state_delta": {},
+    "world_operations": [
+      {
+        "op": "set",
+        "subject_kind": "world",
+        "subject_id": "world",
+        "attribute": "gate_lockdown",
+        "label": "宫门落锁",
+        "value": "宫门已于今夜子时落锁，大典之前任何人不得出入，送粮送炭亦不例外",
+        "visibility": "global"
+      }
+    ],
+    "evaluated_snapshot_id": "116314ee-22cd-4593-bb4b-a82a316c3555",
+    "storyboard_patch": {
+      "add": [],
+      "complete": [
+        "b1"
+      ],
+      "drop": [],
+      "update": [],
+      "reorder": null,
+      "memo": null,
+      "goal_realigned": false,
+      "rejected": [
+        "update 缺少 beat_id"
+      ]
+    },
+    "llm_usage": {
+      "evaluate": {
+        "calls": 1,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 6041,
+        "completion_tokens": 12899,
+        "estimated_calls": 0,
+        "seconds": 66.43799999999464
+      }
+    }
+  },
+  "decision": {
+    "decision_type": "next_scene",
+    "extra_turns": null,
+    "next_scene_config": null,
+    "next_scene_id": "5edf940c-2c5f-4420-953a-80b8dafa3ecc",
+    "rollback_to_snapshot_id": null,
+    "new_initial_conditions": null,
+    "next_scene_description": null,
+    "next_participating_characters": null,
+    "next_location": null,
+    "next_initial_conditions": null,
+    "next_objects_present": null,
+    "rollback_notes": null,
+    "source": "auto"
+  }
+}

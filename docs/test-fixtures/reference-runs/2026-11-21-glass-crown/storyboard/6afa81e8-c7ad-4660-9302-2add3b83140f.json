@@ -1,0 +1,154 @@
+{
+  "project_id": "35fd1cb8-92e6-476a-a61b-57bf40ece334",
+  "branch_id": "6afa81e8-c7ad-4660-9302-2add3b83140f",
+  "outline": [
+    {
+      "beat_id": "b1",
+      "title": "本场收束·伊莎贝尔亮出加冕意图",
+      "description": "延续本场收尾：伊莎贝尔回应王后搁置开仓之议，主张大典按全礼进行、当众佩戴玻璃王冠由它'确认血统'；王后不置可否，把话头引回仪程；临别时王后对诺安补一句闲笔敲打，收束于四人各…",
+      "status": "done",
+      "resolved_scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f"
+    },
+    {
+      "beat_id": "b2",
+      "title": "第二场·宫门封锁与烽火调兵",
+      "description": "宫门落锁生效。赫尔收到北方烽火信号，决意调兵布防，仍把兵力缺口归咎粮草，不知危机出自王后；诺安在'辰时呈页'期限压力下核对旧账页，进一步确认出生记录被篡改，但绝不点破伊莎贝…",
+      "status": "done",
+      "resolved_scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842"
+    },
+    {
+      "beat_id": "b3",
+      "title": "第三场·制镜师解冠",
+      "description": "流浪制镜师阿德里安登场，公开说明玻璃王冠会读取佩戴者最强烈的记忆并投射给在场众人；只有听到解释的角色才能使用该信息；王后设法阻止王冠被佩戴，伊莎贝尔基于自身已知事实…",
+      "status": "done",
+      "resolved_scene_id": "345887d2-5a8d-4be3-8879-d8a973b35f02"
+    },
+    {
+      "beat_id": "b4",
+      "title": "第四场·仪式与投影",
+      "description": "加冕仪式上王冠被佩戴，投射王后记忆片段（婴儿、宫外乳母等）；评估哪些秘密经公开证据转为角色已知事实，允许角色误解投影，禁止角色凭空使用他人 unknown facts；收束于血统危机总爆发。",
+      "status": "done",
+      "resolved_scene_id": "d601111a-9799-4d73-be6f-fb189bf84015"
+    }
+  ],
+  "memo": "b4已完成：正午大典上王后当众旋开底座验明无纸（藏纸之疑了结入验录），执意试戴验冠，冠未触鬓即投射雨夜便门递婴、'生辰照我说的记'之记忆影像，满厅共见；伊莎贝尔当庭追问襁褓下落与宫册生辰手笔，王后矢口妖术、反噬制镜师并命押下单独审讯；阿德里安以亲历者身份自陈二十年前雨夜亲见递婴；诺安当众呈出袖中真页并恳请司仪官当场勘印，王后以'未经勘印不得入验录'挡回；赫尔全场未表态，军情仍未告知王后，锁钥权限冲突悬置。秘密转已知评估：'王冠不验血统、只映记忆'与投影所见内容已为在场众人已知事实；'伊莎贝尔非亲生'与'粮荒系王后人为'仍属导演视角，无人可凭空断言。四场主线目标至此全部完成，故事收束于血统危机总爆发。",
+  "goal_revision": "0b746ade708bf28a",
+  "fork_origin": null,
+  "changelog": [
+    {
+      "source": "director",
+      "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+      "summary": "新增 b1；新增 b2；新增 b3；新增 b4；确认已按当前主线目标重排",
+      "at": "2026-11-21T14:08:47.806154+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+      "summary": "完成 b1",
+      "at": "2026-11-21T14:12:14.463082+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+      "summary": "跳过：格式无效：update 缺少 beat_id",
+      "at": "2026-11-21T14:12:14.463082+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "5edf940c-2c5f-4420-953a-80b8dafa3ecc",
+      "summary": "改写备忘",
+      "at": "2026-11-21T14:21:31.586704+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "5edf940c-2c5f-4420-953a-80b8dafa3ecc",
+      "summary": "跳过：格式无效：update 缺少 beat_id；完成 b1：导演读到时它已不是计划状态",
+      "at": "2026-11-21T14:21:31.586704+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+      "summary": "完成 b2；改写备忘",
+      "at": "2026-11-21T14:32:08.395728+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+      "summary": "跳过：格式无效：update 缺少 beat_id",
+      "at": "2026-11-21T14:32:08.395728+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "345887d2-5a8d-4be3-8879-d8a973b35f02",
+      "summary": "跳过：格式无效：update 缺少 beat_id",
+      "at": "2026-11-21T14:41:37.212267+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "345887d2-5a8d-4be3-8879-d8a973b35f02",
+      "summary": "完成 b3；改写备忘",
+      "at": "2026-11-21T14:45:59.972511+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "345887d2-5a8d-4be3-8879-d8a973b35f02",
+      "summary": "跳过：格式无效：update 缺少 beat_id",
+      "at": "2026-11-21T14:45:59.972511+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "d601111a-9799-4d73-be6f-fb189bf84015",
+      "summary": "改写备忘",
+      "at": "2026-11-21T14:56:20.412864+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "d601111a-9799-4d73-be6f-fb189bf84015",
+      "summary": "跳过：格式无效：update 缺少 beat_id",
+      "at": "2026-11-21T14:56:20.412864+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "d601111a-9799-4d73-be6f-fb189bf84015",
+      "summary": "改写备忘",
+      "at": "2026-11-21T15:02:17.781612+00:00",
+      "request_id": "",
+      "request_digest": ""
+    },
+    {
+      "source": "director",
+      "scene_id": "d601111a-9799-4d73-be6f-fb189bf84015",
+      "summary": "完成 b4；改写备忘",
+      "at": "2026-11-21T15:05:46.992376+00:00",
+      "request_id": "",
+      "request_digest": ""
+    }
+  ],
+  "revision": 8,
+  "next_beat_seq": 5,
+  "updated_at": "2026-11-21T15:05:46.992376+00:00"
+}

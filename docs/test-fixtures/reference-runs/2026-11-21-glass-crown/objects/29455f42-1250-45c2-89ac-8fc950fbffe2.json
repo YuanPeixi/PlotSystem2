@@ -1,0 +1,25 @@
+{
+  "object_id": "29455f42-1250-45c2-89ac-8fc950fbffe2",
+  "project_id": "35fd1cb8-92e6-476a-a61b-57bf40ece334",
+  "name": "宫门",
+  "aliases": [
+    "大门"
+  ],
+  "public_description": "厚重的宫殿大门，仪式前被王后下令封锁。",
+  "hidden_rules": [
+    "王后下令封锁后，从内部无法打开",
+    "封锁后外部人员无法进入，内部人员无法离开",
+    "封锁命令只有王后可以解除"
+  ],
+  "visibility": "private",
+  "known_by": [
+    "17cff137-c0fb-4d37-9a20-f5110777670c",
+    "44013b08-9512-4731-a1a4-225659e0087b"
+  ],
+  "container_id": "",
+  "revision": 0,
+  "request_id": "",
+  "request_digest": "",
+  "created_at": "2026-11-21T13:51:06.711278+00:00",
+  "updated_at": "2026-11-21T13:51:06.711278+00:00"
+}

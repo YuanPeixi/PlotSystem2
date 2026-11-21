@@ -1,0 +1,870 @@
+{
+  "scene": {
+    "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+    "project_id": "35fd1cb8-92e6-476a-a61b-57bf40ece334",
+    "branch_id": "6afa81e8-c7ad-4660-9302-2add3b83140f",
+    "parent_scene_id": "5edf940c-2c5f-4420-953a-80b8dafa3ecc",
+    "name": "第二场·子时宫门与烽火",
+    "description": "子时刚过，宫门落锁生效。赫尔奉命巡至宫门城楼查验封锁，亲手推门确认从内无法开启；诺安在近卫'看管'下被带至宫门内侧值房，借辰时呈页前的最后核验之机，以随身抄本与记忆中的卷宗比对，进一步确认出生记录年份与替身印章采买批次存在矛盾——但他守口不宣，只向赫尔旁敲侧击打听王冠底座验封一事。北方烽火骤起，赫尔依军中旧号解读出两堡倒戈、叛军将于仪式当夜进城的讯息，决意调兵布防，却仍将兵力缺口归咎于'有仓无粮'，试图从诺安这个账房口中探问粮册真相；诺安则察觉赫尔知道得太多，愈发确定账纸不能再走王冠的路，呈页计划需要改道。期望走向：两人各怀隐瞒、互相试探，赫尔决意以'巡防大典'名义调集仅存兵力守大厅与王冠，诺安暗中盘算如何绕开王冠呈交残页；收束于烽火余烬未熄、二人各自离去、封锁之城内山雨欲来。注意：诺安不得点破伊莎贝尔血统，赫尔不得知晓粮荒出自王后。",
+    "participating_characters": [
+      "44013b08-9512-4731-a1a4-225659e0087b",
+      "639bdd4a-9b6d-4e88-962a-384f07364354"
+    ],
+    "location": "北境王宫·宫门内侧城楼与值房（子时后，夜）",
+    "objects_present": [
+      "29455f42-1250-45c2-89ac-8fc950fbffe2",
+      "cbb2881f-16d2-4477-9575-b536593741bb"
+    ],
+    "initial_conditions": {
+      "时间": "大典前夜，子时刚过，夜风凛冽",
+      "宫门状态": "宫门已落锁，送粮送炭亦不得出入，锁钥收归王后",
+      "诺安处境": "住处自今夜起被近卫'看管'，此刻被带至宫门内侧值房，限于辰时前完成对'残页'的最后核验，随身文书箱经近卫查验后交还",
+      "赫尔任务": "奉王后之命巡查宫门封锁，并于辰时前将大厅所有岗哨位置报王后过目；宫内能调之兵仅够守住大厅与王冠",
+      "城中局势": "米价一夜翻倍，守墙士兵口粮减半，城内粮荒恐慌蔓延",
+      "限制": "正午前任何人不得靠近王冠；诺安不得向任何人点破伊莎贝尔血统疑点；赫尔不得知晓粮荒系人为",
+      "opening_narration": "子时梆子声沉入夜色，宫门内最后一道横闩落下，铁锁咬合的钝响沿着城墙传开。城楼上的风灯被吹得摇晃，守门近卫按刀肃立，再无人可以出入这座宫殿——哪怕送炭的车队在门外冻了一整夜。宫门内侧的值房里，烛火如豆：诺安被两名近卫'护送'至此，文书箱当着他的面开验过才放回桌上。他摊开一叠誊抄的簿册，指尖停在某个年份上，久久不动。城楼高处，赫尔披甲按剑，望向北方沉沉的夜空——那里太安静了，安静得像暴风雨前被捂住的雷。他不知道，几炷香之后，这片夜空将替叛军说出第一句话。"
+    },
+    "max_turns": 12,
+    "status": "completed",
+    "snapshot_id_before": "e6676c7b-da03-44ff-9c08-dd5711689182",
+    "snapshot_id_after": "f1eea7f4-c597-4291-89e3-27caf968ff39",
+    "restore_snapshot_id": "",
+    "inherited_story_history": [
+      {
+        "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+        "name": "继承仪式前日·布置中的仪式大厅",
+        "evaluation": {
+          "scene_id": "69f3b476-e256-4950-8683-a0cd8d403b8f",
+          "synopsis": "大典前日，王后坚持仪程从全，以残页试探诺安；诺安援引旧例争得核验权，验看王冠底座锁扣。赫尔以粮草不足请令夜调布防；伊莎贝尔请命开仓放粮、戴冠验血统，被王后搁置。王后下令子时落锁，四人各怀打算僵持收场。",
+          "narrative_goal_score": 9.0,
+          "dramatic_tension_score": 9.0,
+          "plot_deviation_score": 1.0,
+          "character_consistency_score": 9.0,
+          "recommended_decision": "next_scene",
+          "rollback_suggestion": null,
+          "story_progress": 0.35,
+          "story_progress_raw": 0.35,
+          "progress_stalled": false,
+          "goal_revision": "0b746ade708bf28a",
+          "goal_missing": false,
+          "is_ending_reached": false,
+          "ending_reason": "",
+          "unresolved_threads": [
+            "王后已当众下令今夜子时宫门落锁、大典前任何人不得出入（含送粮送炭）；赫尔奉命执行，但不知封锁另有目的",
+            "王后限定诺安明日辰时前呈交'残页'；诺安验看王冠底座锁扣封识完整，但衬垫下账页是否被移动无从确认，且正午前任何人不得再靠近王冠，…",
+            "伊莎贝尔已当众表明将在大典宣布开仓放粮并佩戴王冠'确认血统'；王后搁置开仓之议，仅应允'血统之礼照旧'，明日正午王冠将被佩戴",
+            "赫尔获准今夜调度宫内布防，但人手仅够三十步一岗，兵力缺口被归咎粮草；北方两座堡垒倒戈、叛军将在仪式当夜进城仍仅其知情，未公开",
+            "粮仓短缺实为王后人为制造（导演视角，无人知晓）",
+            "伊莎贝尔并非国王亲生（仅王后知情，未公开）",
+            "玻璃王冠真正功能是读取佩戴者最强烈的记忆并投射给在场众人，无人知晓；制镜师阿德里安尚未登场",
+            "阿德里安多年前曾目睹王后将一名婴儿交给宫外乳母（导演视角伏笔）"
+          ],
+          "world_state_delta": {},
+          "world_operations": [
+            {
+              "op": "set",
+              "subject_kind": "world",
+              "subject_id": "world",
+              "attribute": "gate_lockdown",
+              "label": "宫门落锁",
+              "value": "宫门已于今夜子时落锁，大典之前任何人不得出入，送粮送炭亦不例外",
+              "visibility": "global"
+            }
+          ],
+          "evaluated_snapshot_id": "116314ee-22cd-4593-bb4b-a82a316c3555",
+          "storyboard_patch": {
+            "add": [],
+            "complete": [],
+            "drop": [],
+            "update": [],
+            "reorder": null,
+            "memo": null,
+            "goal_realigned": false,
+            "rejected": []
+          },
+          "llm_usage": {}
+        },
+        "threads_known": true
+      },
+      {
+        "scene_id": "5edf940c-2c5f-4420-953a-80b8dafa3ecc",
+        "name": "宫廷悬疑四部曲",
+        "evaluation": {
+          "scene_id": "5edf940c-2c5f-4420-953a-80b8dafa3ecc",
+          "synopsis": "大典前夜收束：王后借补录名录与甲字177卷收紧对诺安的钳制，诺安以'印比章程长久'暗语周旋，断定账纸难走王冠之路；赫尔亮出叛军军情恳请开仓，王后拒之，收缴库门钥匙并索岗哨布防图；三方猜忌加深，封锁与烽火之局已成。",
+          "narrative_goal_score": 8.0,
+          "dramatic_tension_score": 8.0,
+          "plot_deviation_score": 2.0,
+          "character_consistency_score": 8.0,
+          "recommended_decision": "next_scene",
+          "rollback_suggestion": null,
+          "story_progress": 0.4,
+          "story_progress_raw": 0.4,
+          "progress_stalled": false,
+          "goal_revision": "0b746ade708bf28a",
+          "goal_missing": false,
+          "is_ending_reached": false,
+          "ending_reason": "",
+          "unresolved_threads": [
+            "王后要求赫尔明早辰时前将大厅所有岗哨位置报其过目，并对'问兵数'的赫尔暗起疑心；宫内能调之兵仅够守住大厅与王冠",
+            "王后下令甲字一百七十七卷亥时前由赫尔近卫送抵、库门钥匙今夜收归王后、诺安住处今夜起被'看管'；诺安声明验封'只看锁扣，一炷香'，并断…",
+            "赫尔已将北方两堡倒戈、叛军仪式当夜进城的军情私下告知王后（仍非公开）；赫尔对'仓库有粮却空'起疑，仍不知危机出自王后",
+            "宫门已于子时落锁生效，大典前任何人不得出入（含送粮送炭）；赫尔奉命执行，不知封锁另有目的",
+            "王后限定诺安明日辰时前呈交'残页'；王冠底座锁扣封识完整，衬垫下账页是否被移动无从确认，正午前任何人不得再靠近王冠",
+            "伊莎贝尔已当众表明将宣布开仓放粮并佩戴王冠'确认血统'；王后坚持开仓放在大典之后，明日正午王冠将被佩戴",
+            "粮仓短缺实为王后人为制造（导演视角，无人知晓）",
+            "伊莎贝尔并非国王亲生（仅王后知情，未公开）",
+            "玻璃王冠真正功能是读取佩戴者最强烈的记忆并投射给在场众人，无人知晓；制镜师阿德里安尚未登场",
+            "阿德里安多年前曾目睹王后将一名婴儿交给宫外乳母（导演视角伏笔）"
+          ],
+          "world_state_delta": {},
+          "world_operations": [
+            {
+              "op": "set",
+              "subject_kind": "world",
+              "subject_id": "world",
+              "attribute": "city_rice_crisis",
+              "label": "城中米价一夜翻倍",
+              "value": "米价一夜翻倍，守墙士兵口粮减半，粮荒恐慌蔓延",
+              "visibility": "global"
+            }
+          ],
+          "evaluated_snapshot_id": "4282b2d1-3d13-4c21-93be-97c4d80f6bc8",
+          "storyboard_patch": {
+            "add": [],
+            "complete": [],
+            "drop": [],
+            "update": [],
+            "reorder": null,
+            "memo": null,
+            "goal_realigned": false,
+            "rejected": []
+          },
+          "llm_usage": {}
+        },
+        "threads_known": true
+      }
+    ],
+    "turns_completed": 13,
+    "turns_consolidated": 13,
+    "speaker_mode": "selector",
+    "dialogue_log": [
+      {
+        "turn_id": "0fdd7928-27c4-437f-9e02-f865623f2cd5",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 1,
+        "character_id": "44013b08-9512-4731-a1a4-225659e0087b",
+        "character_name": "赫尔",
+        "dialogue": "横闩再加一道，锁钥天亮前由我亲兵看管，任何人持王后手令也要先报我核验。 那个账房给我盯死了——辰时核验完就送回住处，文书一页不许带出值房。",
+        "action": "亲手推了推落闩的宫门，铁锁纹丝不动，才转身对守门近卫低声下令；目光扫向值房里那点烛火，皱眉",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "亲手推了推落闩的宫门，铁锁纹丝不动，才转身对守门近卫低声下令",
+            "object_id": "29455f42-1250-45c2-89ac-8fc950fbffe2",
+            "verb": "推",
+            "detail": "推了推落闩的宫门，但铁锁纹丝不动",
+            "status": "resolved",
+            "skip_reason": ""
+          },
+          {
+            "index": 1,
+            "text": "目光扫向值房里那点烛火，皱眉",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 1,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "36ce300a-f3d0-5997-b360-7691ae5370b9",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 2,
+        "character_id": "",
+        "character_name": "环境",
+        "dialogue": null,
+        "action": null,
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "environment",
+        "actions": [],
+        "narration": "宫门纹丝不动，铁锁与门闩之间传来沉闷的金属碰撞声，门扇没有任何松动的迹象。",
+        "private_detail": null,
+        "projection": "横闩纹丝不动，铁锁沉甸甸地坠在门环上。任凭肩背抵上门板发力，厚重的宫门只发出一声闷响，缝隙里透进的风都吹不进来——这道门从落锁那一刻起，就不是从里面能打开的了。",
+        "perceived_by": [
+          "44013b08-9512-4731-a1a4-225659e0087b"
+        ],
+        "source_turn_id": "0fdd7928-27c4-437f-9e02-f865623f2cd5",
+        "source_action_index": 0,
+        "revision": 0,
+        "world_event_id": "36ce300a-f3d0-5997-b360-7691ae5370b9",
+        "world_revision_id": "61df3a16-e614-4a0e-a80f-d567843c34ba"
+      },
+      {
+        "turn_id": "5877f33d-7280-4272-b079-be2a29f321ed",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 3,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "校尉放心，臣的差事只在纸面——只是辰时呈验残页之前，臣还需向王后复命一句：王冠底座的封识若要二次核验，是否仍按章程由书记官在场？ 夜里风大，北边天色看着倒还平静——城墙上守夜的弟兄，口粮可还够用到大典之后？",
+        "action": "指尖停在誊抄簿册的某个年份上，头也不抬，声音平稳；抬眼望向城楼方向，语气不经意",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "指尖停在誊抄簿册的某个年份上，头也不抬，声音平稳",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "抬眼望向城楼方向，语气不经意",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "3b95381f-6791-45d3-ba56-c029c5953535",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 4,
+        "character_id": "44013b08-9512-4731-a1a4-225659e0087b",
+        "character_name": "赫尔",
+        "dialogue": "口粮的事轮不到账房过问，粮册在军需那边，你只管你的纸。 我倒要问你，有仓无粮，账上却笔笔对得上，你经手过北方军需的旧卷，仓里的粮是几时、被谁的手笔亏空的，纸面上可留过痕迹？",
+        "action": "从城楼石阶大步走下，按剑立于值房门口，风灯的光在锁子甲上晃动；顿了顿，声音压低，目光锐利地盯着诺安",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "从城楼石阶大步走下，按剑立于值房门口，风灯的光在锁子甲上晃动",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "顿了顿，声音压低，目光锐利地盯着诺安",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "895902f5-498c-42c5-af4d-a0c8a91fde77",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 5,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "校尉问的是亏空，臣只能答纸面——北方军需旧卷臣确曾誊录，只是卷宗编号一四七之后，有三页的墨色与前后不符，臣当时只当是誊抄官换了手笔。 若校尉真要查粮，不如查查宫中近年采买的印章用度——纸上的窟窿，从来不在粮册上，而在盖印的手上。",
+        "action": "合上誊抄簿册，指尖在袖中轻触那页折起的账纸，抬眼迎向赫尔的目光，语气不疾不徐；顿了顿，声音压低半分",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "合上誊抄簿册，指尖在袖中轻触那页折起的账纸，抬眼迎向赫尔的目光，语气不疾不徐",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "顿了顿，声音压低半分",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "03afa996-55ef-4418-a756-a40222a5d053",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 6,
+        "character_id": "44013b08-9512-4731-a1a4-225659e0087b",
+        "character_name": "赫尔",
+        "dialogue": "盖印的手？账房先生，你这话我记下了，但记在哪本账上，只有天知道。 告诉你一句实话——宫里能调的兵，只够守住大厅和王冠。你明日核验若敢多碰封识一下，我的人不会等你解释。",
+        "action": "眯起眼，盯着诺安，按剑的手紧了紧；转身欲上城楼，又停步，声音压低",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "眯起眼，盯着诺安，按剑的手紧了紧",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "转身欲上城楼，又停步，声音压低",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "fb3fd4ac-cd8d-47e5-9316-cc50bcd2ce5f",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 7,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "校尉既说兵只够守大厅与王冠，那臣倒要提醒一句——明日满殿观礼，若有人当众质疑封识，乱起来的地方不会只是大厅。 臣只问一句：若大典因故改期，呈验的章程，是仍按辰时，还是须另立文书报备？",
+        "action": "指尖在袖中缓缓压住那页折起的账纸，抬眼迎向赫尔，声音压得极低；顿了顿，语气如常",
+        "inner_thought": "账页不能再走王冠的路。烽火一起，明日辰时呈验的规矩，只怕撑不到正午。",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "指尖在袖中缓缓压住那页折起的账纸，抬眼迎向赫尔，声音压得极低",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "顿了顿，语气如常",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "b50c5124-5bd5-4d23-84b2-bbe91c80b7de",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 8,
+        "character_id": "44013b08-9512-4731-a1a4-225659e0087b",
+        "character_name": "赫尔",
+        "dialogue": "改期？烽火还没烧起来你就盼着改期？ 告诉你——大典不改，王冠不挪，章程一个字不变。 兵少归少，够守大厅。你明日核验，我的人三步之内寸步不离，你的手碰到锁扣之外的任何东西，就别怪军法不认纸面。",
+        "action": "猛地转身逼近一步，手按在值房门框上，声音压得极低；顿了顿，目光钉住诺安",
+        "inner_thought": "此人问得太细，账房不该问章程",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "猛地转身逼近一步，手按在值房门框上，声音压得极低",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "顿了顿，目光钉住诺安",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "c7a01c8f-3fbe-409b-b1e9-43cb4fccb589",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 9,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "校尉军法在前，臣自当谨守——只是章程第七款载明，核验须书记官与礼部监礼各执一份验录，若校尉的人寸步不离，监礼的位置由谁站，明日辰时还须先报备。 臣另有一句本分话：旧例所载，凡大典前夜有烽燧之讯，验封章程须另行誊录存档——北边天色今夜太静了，静得不像大典前夜，校尉可曾想过，若城外有人比城中更急着要那顶王冠？",
+        "action": "垂首，指尖在袖中缓缓抚平那页折起的账纸，语气依旧平稳；抬眼望向北方沉沉的夜空，顿了顿，声音压低半分",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "垂首，指尖在袖中缓缓抚平那页折起的账纸，语气依旧平稳",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "抬眼望向北方沉沉的夜空，顿了顿，声音压低半分",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "8a727495-7eec-4430-9821-501035c59495",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 10,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "校尉既说章程一字不变，臣便不再多问——只是臣方才核验誊本时，发现出生记录那一卷的年份与印章采买批次对不上，此事臣须另行誊录成册，明日辰时连同验录一并呈报，不再假手王冠底座。 臣只请校尉记下一句：若今夜北边真有烽燧，明日辰时之约，请校尉亲自到场，臣有一页纸，只愿交在能看清它的人手里。",
+        "action": "指尖在袖中轻轻压住那页折起的账纸，垂首片刻，再抬眼时语气平稳如常；顿了顿，声音压低半分",
+        "inner_thought": "账纸不能留在王冠里了，赫尔知道得太多，烽火一起，大厅未必守得住。",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "指尖在袖中轻轻压住那页折起的账纸，垂首片刻，再抬眼时语气平稳如常",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "顿了顿，声音压低半分",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "d791c3b5-f56f-46df-871c-14bcd519423e",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 11,
+        "character_id": "44013b08-9512-4731-a1a4-225659e0087b",
+        "character_name": "赫尔",
+        "dialogue": "两座堡垒……倒戈了，叛军要在大典当夜进城。 账房先生，你那张纸，辰时我只到场，不碰——但若明天城破，纸和人都活不成。 传令：以巡防大典为名，调所有能拿枪的兵守大厅与王冠，宫墙四角各留一什，烽火信号报王后，现在！",
+        "action": "话音未落，城楼上一声急促的铜哨——北方天际骤然亮起火光，一烽接一烽，赫尔猛地抬头，瞳孔收紧，逐点数着火光的间隔；猛地转向值房，一掌拍在门框上，声音压得极低；转身对近卫厉声下令",
+        "inner_thought": null,
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "话音未落，城楼上一声急促的铜哨——北方天际骤然亮起火光，一烽接一烽，赫尔猛地抬头，瞳孔收紧，逐点数着火光的间隔",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "猛地转向值房，一掌拍在门框上，声音压得极低",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 2,
+            "text": "转身对近卫厉声下令",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "bb7d0fd1-d80b-4967-a63a-8523e6e9cb88",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 12,
+        "character_id": "639bdd4a-9b6d-4e88-962a-384f07364354",
+        "character_name": "诺安",
+        "dialogue": "校尉调兵守大厅是正着——但烽火既起，明日殿上人心必乱，届时众目所视之处，一张纸未必递得出去。 臣只请校尉记下：辰时之约不变，只是臣要交的那页纸，未必是从王冠上取下来的东西。",
+        "action": "指尖在袖中将那页账纸又压紧一分，望着北方渐次熄灭的烽点，声音压得极低；顿了顿，抬眼迎向赫尔",
+        "inner_thought": "烽火替我把路照亮了——王冠底座已成死地，账纸须走人事，不能走礼器。",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "指尖在袖中将那页账纸又压紧一分，望着北方渐次熄灭的烽点，声音压得极低；顿了顿，抬眼迎向赫尔",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      },
+      {
+        "turn_id": "a1329bf3-6630-43c8-b169-411f549fa967",
+        "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+        "turn_number": 13,
+        "character_id": "44013b08-9512-4731-a1a4-225659e0087b",
+        "character_name": "赫尔",
+        "dialogue": "不是从王冠上取的……那你最好想清楚递给谁。 辰时押他来大厅，路上换两道岗，他袖子里那张纸，先过我的人的眼。 明日城若还立着，我到场。若立不住，你那页纸跟这顶王冠，都得跟着城一起完。",
+        "action": "盯着诺安看了半晌，按剑的手慢慢松开，声音压得极低；转身对近卫厉声补令；最后回头，目光扫过北方熄灭的烽点",
+        "inner_thought": "这账房知道得太多，偏偏是宫里现在最缺人手的时候",
+        "timestamp": "2026-11-21T15:47:33.844892+00:00",
+        "memory_context_used": [],
+        "selector_notice": "",
+        "output_notice": "",
+        "kind": "character",
+        "actions": [
+          {
+            "index": 0,
+            "text": "盯着诺安看了半晌，按剑的手慢慢松开，声音压得极低",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 1,
+            "text": "转身对近卫厉声补令",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          },
+          {
+            "index": 2,
+            "text": "最后回头，目光扫过北方熄灭的烽点",
+            "object_id": "",
+            "verb": "",
+            "detail": "",
+            "status": "skipped",
+            "skip_reason": "no_object"
+          }
+        ],
+        "narration": null,
+        "private_detail": null,
+        "projection": null,
+        "perceived_by": [],
+        "source_turn_id": "",
+        "source_action_index": -1,
+        "revision": 0,
+        "world_event_id": "",
+        "world_revision_id": ""
+      }
+    ],
+    "created_at": "2026-11-21T14:27:14.575974+00:00",
+    "llm_usage": {
+      "embedding": {
+        "calls": 39,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 16050,
+        "completion_tokens": 0,
+        "estimated_calls": 0,
+        "seconds": 99.50099999991653
+      },
+      "character": {
+        "calls": 12,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 35900,
+        "completion_tokens": 1925,
+        "estimated_calls": 0,
+        "seconds": 53.75099999998929
+      },
+      "action_extract": {
+        "calls": 1,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 249,
+        "completion_tokens": 54,
+        "estimated_calls": 0,
+        "seconds": 1.937999999994645
+      },
+      "adjudicate": {
+        "calls": 1,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 969,
+        "completion_tokens": 59,
+        "estimated_calls": 0,
+        "seconds": 2.4840000000112923
+      },
+      "selector": {
+        "calls": 22,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 37518,
+        "completion_tokens": 888,
+        "estimated_calls": 0,
+        "seconds": 55.654000000009546
+      }
+    },
+    "environment_state": {},
+    "world_revision_id": "61df3a16-e614-4a0e-a80f-d567843c34ba",
+    "environment_script": {
+      "cbb2881f-16d2-4477-9575-b536593741bb": [
+        {
+          "condition": "赫尔在城楼上望向北方夜空，观察到烽火信号升起",
+          "content": "北方天际腾起烽火：两柱长烟笔直上升，第三柱燃起后骤然掐灭。这是堡垒之间约定多年的旧号——两长一灭，意为两堡易帜、敌军压境。按烽火节拍推算，来敌将在仪式当夜抵达城下。",
+          "actor_id": "44013b08-9512-4731-a1a4-225659e0087b",
+          "audience": "actor"
+        }
+      ],
+      "29455f42-1250-45c2-89ac-8fc950fbffe2": [
+        {
+          "condition": "赫尔或任何人尝试从宫殿内部推开或开启宫门",
+          "content": "横闩纹丝不动，铁锁沉甸甸地坠在门环上。任凭肩背抵上门板发力，厚重的宫门只发出一声闷响，缝隙里透进的风都吹不进来——这道门从落锁那一刻起，就不是从里面能打开的了。",
+          "actor_id": "44013b08-9512-4731-a1a4-225659e0087b",
+          "audience": "present"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "scene_id": "7f654c25-3cc0-4e83-940d-4db00025e842",
+    "synopsis": "子时宫门落锁，赫尔加闩管钥；诺安核验誊本，确认出生记录与印章采买批次不符，决意弃王冠底座改走人事。北方烽火骤起，赫尔判明两堡倒戈、叛军当夜进城，以巡防大典为名调兵守大厅与王冠，并向诺安摊出军情；二人约定辰时呈页，各怀试探。",
+    "narrative_goal_score": 7.0,
+    "dramatic_tension_score": 8.0,
+    "plot_deviation_score": 3.0,
+    "character_consistency_score": 8.0,
+    "recommended_decision": "next_scene",
+    "rollback_suggestion": null,
+    "story_progress": 0.6,
+    "story_progress_raw": 0.6,
+    "progress_stalled": false,
+    "goal_revision": "0b746ade708bf28a",
+    "goal_missing": false,
+    "is_ending_reached": false,
+    "ending_reason": "",
+    "unresolved_threads": [
+      "烽火骤起后赫尔确认两堡倒戈、叛军大典当夜进城，已以'巡防大典'为名调集仅存兵力守大厅与王冠，烽火信号将报王后；赫尔已将叛军军情当…",
+      "诺安确认出生记录年份与印章采买批次对不上，判定账纸'不能再走王冠的路'，已向赫尔透露持有'一页纸'并约定辰时在大厅当面呈交；赫尔…",
+      "赫尔对诺安疑心加深（'这账房知道得太多'），诺安借章程第七款与监礼位置之争为明日核验留余地，二人各怀隐瞒互相试探",
+      "赫尔下令宫门横闩再加一道、锁钥天亮前由其亲兵看管，任何人持王后手令须先报赫尔核验——与王后收缴锁钥之令潜藏冲突",
+      "赫尔仍将兵力缺口归咎'有仓无粮'，向诺安探问粮册亏空痕迹；诺安暗示'窟窿不在粮册，在盖印的手'，赫尔记下此线索但仍不知粮荒出自王后",
+      "王后要求赫尔辰时前报大厅岗哨位置，并对赫尔与诺安同时起疑；宫内能调之兵仅够守住大厅与王冠",
+      "王后限定诺安辰时前呈交'残页'；王冠底座封识完整，正午前任何人不得靠近王冠；诺安已声明不再假手王冠底座",
+      "伊莎贝尔（本场未出场）已当众表明将开仓放粮并佩戴王冠'确认血统'；王后坚持开仓放在大典之后，明日正午王冠将被佩戴",
+      "粮仓短缺实为王后人为制造（导演视角，无人知晓）",
+      "伊莎贝尔并非国王亲生（仅王后知情，未公开）",
+      "玻璃王冠真正功能是读取佩戴者最强烈的记忆并投射给在场众人，无人知晓；制镜师阿德里安尚未登场",
+      "阿德里安多年前曾目睹王后将一名婴儿交给宫外乳母（导演视角伏笔）"
+    ],
+    "world_state_delta": {},
+    "world_operations": [
+      {
+        "op": "set",
+        "subject_kind": "world",
+        "subject_id": "world",
+        "attribute": "north_beacon_lit",
+        "label": "北方烽火骤起",
+        "value": true,
+        "visibility": "global"
+      }
+    ],
+    "evaluated_snapshot_id": "f1eea7f4-c597-4291-89e3-27caf968ff39",
+    "storyboard_patch": {
+      "add": [],
+      "complete": [
+        "b2"
+      ],
+      "drop": [],
+      "update": [],
+      "reorder": null,
+      "memo": "本场信息流变化：赫尔经烽火确认两堡倒戈、叛军大典当夜进城，以'巡防大典'为名调集仅存兵力守大厅与王冠，烽火信号将报王后；赫尔已将叛军军情当面告知诺安（仍非公开），诺安由此知晓叛军压境。诺安确认出生记录年份与印章采买批次对不上，判定账纸'不能再走王冠的路'，已向赫尔透露持有'一页纸'并约定辰时在大厅当面呈交，赫尔要求纸上先过其近卫的眼、押送途中换两道岗。赫尔下令宫门锁钥天亮前由其亲兵看管、任何人持王后手令须先经其核验，与王后收缴锁钥之令潜藏冲突。赫尔仍将兵力缺口归咎'有仓无粮'，记下诺安'窟窿在盖印的手'的暗示，仍不知粮荒出自王后。伊莎贝尔本场未出场，其加冕与开仓立场延续公开表态。b3仅补入辰时呈页底色、解冠核心不变；b4节拍不变。",
+      "goal_realigned": false,
+      "rejected": [
+        "update 缺少 beat_id"
+      ]
+    },
+    "llm_usage": {
+      "evaluate": {
+        "calls": 1,
+        "failures": 0,
+        "retries": 0,
+        "prompt_tokens": 5387,
+        "completion_tokens": 22013,
+        "estimated_calls": 0,
+        "seconds": 101.85899999999674
+      }
+    }
+  },
+  "decision": {
+    "decision_type": "next_scene",
+    "extra_turns": null,
+    "next_scene_config": null,
+    "next_scene_id": "345887d2-5a8d-4be3-8879-d8a973b35f02",
+    "rollback_to_snapshot_id": null,
+    "new_initial_conditions": null,
+    "next_scene_description": null,
+    "next_participating_characters": null,
+    "next_location": null,
+    "next_initial_conditions": null,
+    "next_objects_present": null,
+    "rollback_notes": null,
+    "source": "auto"
+  }
+}
