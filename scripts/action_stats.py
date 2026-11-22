@@ -5,8 +5,8 @@
 
 **只读**，不调 LLM。按场景读 `dialogue_log` 里每一轮的 `actions`：
 
-- 动作段总数 / 预过滤命中段数（`skip_reason` 不是 `no_object` 的）；
-- **抽取调用次数** = 有命中段的轮次数（一轮最多一次调用）；
+- 动作段总数 / 进入识别的段数（`skip_reason` 不是 `no_object` 的；发言者看得见在场物件时每段都进）；
+- **抽取调用次数** = 有段落送出的轮次数（一轮最多一次调用）；
 - 各 `skip_reason` 的分布、`recorded` 数，以及按物件统计的记录次数。
 
 `ENVIRONMENT_MODE` 按段冻结（设计单 A21）：同一场的前后两段可能处于不同档位，off 档跑出来的
@@ -88,10 +88,10 @@ def _print(stats: SceneStats, names: dict[str, str], title: str) -> None:
         return
     print(
         f"  轮次 {stats.recorded_turns}，动作段 {stats.segments}，"
-        f"命中物件 {stats.hits}（{_pct(stats.hits, stats.segments)}），"
+        f"进入识别 {stats.hits}（{_pct(stats.hits, stats.segments)}），"
         f"抽取调用 {stats.calls}（每轮 {stats.calls / stats.recorded_turns:.2f} 次）"
     )
-    print(f"  记录为尝试 {stats.recorded}（占命中 {_pct(stats.recorded, stats.hits)}）")
+    print(f"  记录为尝试 {stats.recorded}（占进入识别的 {_pct(stats.recorded, stats.hits)}）")
     for reason in ActionSkipReason:
         if stats.reasons[reason.value]:
             print(f"    {reason.value}: {stats.reasons[reason.value]}")

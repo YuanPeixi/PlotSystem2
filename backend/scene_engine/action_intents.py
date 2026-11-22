@@ -1,16 +1,23 @@
-"""动作意图：预过滤 + 抽取（工单24 PR-1b）。
+"""动作意图抽取（工单24 PR-1b）。
 
-每个 `*动作*` 段生成一个 `ActionIntent`。绝大多数段落是神态（*皱眉*），本地子串匹配就能
-排除，零 LLM 调用；提到本场在场物件的段落才进意图抽取，**一轮最多一次调用**。
+每个 `*动作*` 段生成一个 `ActionIntent`。执行者看得见本场任何在场物件时，这一轮的动作段全部
+送去意图抽取，**一轮最多一次调用**；没有动作段、没有在场物件时零调用。
+
+不按"字面提到物件名"预筛：角色常用简称与部件指物件（"俯首落冠""旋开底座"），字面匹配会把
+真正的尝试当成神态丢掉，环境就不回应（详见 工单24-20#every-turn-extract-2026-11-22）。
 
 隔离（契约1，设计单 R1 / A19）：
-- 抽取 prompt 只有执行者名、命中段、候选物件的名称与公开描述。**不给隐藏规则**（给了模型就能
+- 候选物件 = 执行者看得见的在场物件（与其 system 里的【在场物件】同一口径）+ 段落里点了名的。
+  执行者不知道的物件只有被点名才成为候选：否则"走上祭坛"会被归给她不知道的暗格，裁决出的
+  公开叙述等于替她发现了它；
+- 抽取 prompt 只有执行者名、动作段、候选物件的名称与公开描述。**不给隐藏规则**（给了模型就能
   预判结果），**不给对白**（角色把 `[独白]` 格式写坏时，独白会混在对白里，字段级断言挡不住）；
 - 段内的 `[...]` 在生成 `text` 之前剥掉：动作正则会把 `*走向王冠[她想戴上]*` 整段捕获，
   而 `text` / `detail` 在 PR-2 会交给裁决器、裁决器的输出是公开叙述。
 
-确定性（设计单 A18）：命中段按段落顺序取前 `MAX_ACTION_EXTRACTS_PER_TURN` 段，结果按 `index`
-回填，不依赖模型返回的顺序。抽取在第一次落盘之前完成，落盘的轮次意图恒完整，续跑不重抽。
+确定性（设计单 A18）：超过 `MAX_ACTION_EXTRACTS_PER_TURN` 段时点了名的段落先占名额、其余按段落
+顺序补足，结果按 `index` 回填，不依赖模型返回的顺序。抽取在第一次落盘之前完成，落盘的轮次
+意图恒完整，续跑不重抽。
 """
 
 from __future__ import annotations
@@ -28,12 +35,13 @@ from backend.models import (
     LLMPurpose,
     WorldObject,
 )
+from backend.services.objects import visible_to
 from backend.utils.llm import chat_safe
 from backend.utils.logger import get_logger
 
 logger = get_logger("scene_engine.actions")
 
-#: 一轮最多送去抽取的命中段。角色一轮写六个以上针对物件的动作已属罕见，超出的标 over_limit
+#: 一轮最多送去抽取的动作段。角色一轮写六段以上动作已属罕见，超出的标 over_limit
 MAX_ACTION_EXTRACTS_PER_TURN = 6
 VERB_CHARS = 8
 DETAIL_CHARS = 80
@@ -44,9 +52,12 @@ _EXTRACT_TEMPERATURE = 0.2
 _BRACKETED = re.compile(r"[\[［][^\]］]*[\]］]")
 _UNCLOSED = re.compile(r"[\[［].*$", re.DOTALL)
 
-_PROMPT = """你是动作意图识别器。下面是角色「{actor}」在一轮表演里的动作描写，以及其中提到的物件。
+_PROMPT = """你是动作意图识别器。下面是角色「{actor}」在一轮表演里的动作描写，以及本场在场的物件。
 逐条判断：这段动作是不是在**对某个物件做尝试**（触碰、拿起、戴上、打开、按下、推动、使用……）。
-只是看着、谈论、想起、经过某物，都不算尝试。
+只是看着、谈论、想起、经过某物，都不算尝试；只是保持已有的姿势（仍握着、仍戴着、手还按在上面）也不算。
+动作里不一定写出物件的全名，可能用简称、部件或代词（"冠""底座""把它戴上"）：结合同一轮的其他动作与物件描述，
+能确定指的是列表里哪个物件，就按那个物件算（列表里只有一个物件可能带有这个部件时，就是它）；
+指的是列表以外的东西（衣袖、佩剑、纸页、垫子……），或者拿不准，都不算尝试。
 
 【物件】
 {objects}
@@ -74,7 +85,7 @@ def _terms(obj: WorldObject) -> list[str]:
 
 
 def match_objects(text: str, objects: Sequence[WorldObject]) -> list[WorldObject]:
-    """`text` 里提到的物件，按 `objects` 的顺序。不做指代消解（"把它戴上"不命中，设计单 §3）。"""
+    """`text` 里点了名的物件，按 `objects` 的顺序。纯字面："把它戴上"不算点名，指代交给抽取模型判断。"""
     folded = text.casefold()
     return [o for o in objects if any(t in folded for t in _terms(o))]
 
@@ -176,13 +187,20 @@ class ActionIntentExtractor:
         self.adjudicate = adjudicate
 
     async def extract(
-        self, raw_segments: Sequence[str], actor: str, quota: int | None = None
+        self,
+        raw_segments: Sequence[str],
+        actor: str,
+        quota: int | None = None,
+        *,
+        actor_id: str = "",
     ) -> list[ActionIntent]:
         """`raw_segments` 是动作正则按段落顺序抓到的原文，index 即其下标。
 
+        `actor_id` 决定哪些在场物件是候选（见模块说明）；不传时只有点了名的物件。
+
         `quota` 只在 adjudicate 档有意义：本场还能产生几个环境回合（已扣掉日志里的环境回合与
-        仍 pending 的动作）。<= 0 时命中段直接记 quota、**不发起抽取**——放到裁决之后再判，
-        到顶后每个命中轮次都要白付一次抽取 + 一次裁决再丢弃结果。抽出的尝试按段落顺序
+        仍 pending 的动作）。<= 0 时点了名的段落直接记 quota、**不发起抽取**——放到裁决之后再判，
+        到顶后每个轮次都要白付一次抽取 + 一次裁决再丢弃结果。抽出的尝试按段落顺序
         占额度，超出的记 quota。
         """
         intents = [
@@ -193,34 +211,41 @@ class ActionIntentExtractor:
             )
             for i, seg in enumerate(raw_segments)
         ]
-        hits: list[tuple[ActionIntent, list[WorldObject]]] = []
-        for intent in intents:
-            matched = match_objects(intent.text, self.objects) if intent.text else []
-            if matched:
-                hits.append((intent, matched))
-        if not hits:
-            return intents
-
+        named = {
+            i.index: matched for i in intents if i.text and (matched := match_objects(i.text, self.objects))
+        }
         if self.adjudicate and quota is not None and quota <= 0:
-            for intent, _ in hits:
-                intent.skip_reason = ActionSkipReason.QUOTA.value
-            logger.warning("本场环境回合额度已满，角色 %s 本轮 %d 段提到物件的动作不再识别", actor, len(hits))
+            for intent in intents:
+                if intent.index in named:
+                    intent.skip_reason = ActionSkipReason.QUOTA.value
+            if named:
+                logger.warning("本场环境回合额度已满，角色 %s 本轮 %d 段提到物件的动作不再识别", actor, len(named))
             return intents
 
-        sent = hits[:MAX_ACTION_EXTRACTS_PER_TURN]
-        for intent, _ in hits[MAX_ACTION_EXTRACTS_PER_TURN:]:
-            intent.skip_reason = ActionSkipReason.OVER_LIMIT.value
-        if len(hits) > len(sent):
+        visible = {o.object_id for o in self.objects if visible_to(o, actor_id)}
+        # 执行者一件在场物件都看不见时，只有点了名的段落值得送
+        pool = [i for i in intents if i.text and (visible or i.index in named)]
+        if not pool:
+            return intents
+
+        # 点了名的段落先占名额：它们不该被排在前面的神态挤掉
+        ranked = [i for i in pool if i.index in named] + [i for i in pool if i.index not in named]
+        chosen = {i.index for i in ranked[:MAX_ACTION_EXTRACTS_PER_TURN]}
+        sent = [i for i in pool if i.index in chosen]
+        for intent in pool:
+            if intent.index not in chosen:
+                intent.skip_reason = ActionSkipReason.OVER_LIMIT.value
+        if len(pool) > len(sent):
             logger.warning(
-                "角色 %s 本轮有 %d 段动作提到物件，超过上限 %d，其余不抽取",
-                actor, len(hits), MAX_ACTION_EXTRACTS_PER_TURN,
+                "角色 %s 本轮有 %d 段动作，超过上限 %d，其余不抽取",
+                actor, len(pool), MAX_ACTION_EXTRACTS_PER_TURN,
             )
 
-        # 候选只给送去抽取的段落里提到的物件，按本场物件顺序排列 —— 代号确定性
-        mentioned = {o.object_id for _, matched in sent for o in matched}
-        candidates = [o for o in self.objects if o.object_id in mentioned]
-        prompt, codes = build_prompt(actor, [(i.index, i.text) for i, _ in sent], candidates)
-        pending = {i.index: i for i, _ in sent}
+        # 按本场物件顺序排列 —— 代号确定性
+        mentioned = {o.object_id for i in sent for o in named.get(i.index, ())}
+        candidates = [o for o in self.objects if o.object_id in visible | mentioned]
+        prompt, codes = build_prompt(actor, [(i.index, i.text) for i in sent], candidates)
+        pending = {i.index: i for i in sent}
         try:
             raw = await chat_safe(
                 [{"role": "user", "content": prompt}],

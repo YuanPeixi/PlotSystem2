@@ -134,8 +134,9 @@ class ActionStatus(str, Enum):
 
 
 class ActionSkipReason(str, Enum):
-    """为什么跳过（设计单 A17）。record 档靠它区分"没提到物件 / 不是尝试 / 抽取失败"。"""
+    """为什么跳过（设计单 A17）。record 档靠它区分"没送识别 / 不是尝试 / 抽取失败"。"""
 
+    #: 没送去识别：执行者看不见任何在场物件且段落没点名、段落剥完独白为空，或额度已满时没点名
     NO_OBJECT = "no_object"
     OVER_LIMIT = "over_limit"
     NOT_ATTEMPT = "not_attempt"
@@ -266,7 +267,8 @@ class WorldObject:
     object_id: str = field(default_factory=new_id)
     project_id: str = ""
     name: str = ""
-    #: 预过滤靠 name 与别名做子串匹配。单字别名、与角色同名的别名会让每轮都命中，被丢弃
+    #: 动作里点没点名靠 name 与别名做子串匹配（执行者不知道的物件只有点名才进识别候选）。
+    #: 单字别名、与角色同名的别名几乎每轮都撞上，被丢弃
     aliases: list[str] = field(default_factory=list)
     #: 在场的人肉眼可见的部分；按 visibility 进角色视野（PR-2 起）
     public_description: str = ""
