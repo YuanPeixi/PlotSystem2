@@ -178,16 +178,17 @@ paths:
 
 ## 陷阱 25 — `DialogueTurn.actions`（动作意图）
 
-`ENVIRONMENT_MODE` 为 record / adjudicate 时才产生（`config.py`，默认 `off`）。**两套 schema 通用**，除另注。
+`ENVIRONMENT_MODE` 为 record / adjudicate 时才产生（默认 `off`）。**两套 schema 通用**，除另注。
 
 1. **不进任何角色记忆、transcript 或 prompt**：`render_turn` / `_turn_line` / 记忆文本只读 `action` 拼接字段。
    这是**设计保证**，`test_record_mode_leaves_memory_and_transcript_byte_identical` 逐字比对 off 与 record 两档。
    环境结果要进角色视野走**环境回合**（陷阱 27），**不要**把 `detail` 渲染进 `_turn_line`。
-2. **抽取 prompt 只有命中段**（不传对白、不传隐藏规则），段内 `[...]` 先剥掉（`action_intents.strip_thoughts`，没闭合的 `[` 剥到段尾）：
-   `text` / `detail` 会交给裁决器产出公开叙述，独白混进去就是泄露。
+2. **执行者看得见在场物件时，本轮动作段全部送抽取**（一轮一次调用），不按字面点名预筛——"落冠""旋开底座"不带全名，预筛会把真尝试当神态丢掉
+   （`24-20-environment.md#every-turn-extract-2026-11-22`）。候选 = 执行者看得见的（`visible_to`）+ 点了名的；**她不知道的物件不点名不进候选**，
+   否则裁决叙述等于替她发现了它。prompt 不传对白与隐藏规则，段内 `[...]` 先剥掉（`strip_thoughts`）：`text` / `detail` 会进裁决器的公开叙述。
 3. **动作段与 `turn.action` 同源**（`SceneEngine._split_reply`，先剥独白再取动作）：抽取**不得**拿原始回复重跑动作正则，
    否则独白里的 `*戴上王冠*`（想做、没做）会被当成尝试，adjudicate 档把角色心里的打算裁决成全场可见的环境回合。
-4. **抽取先于第一次落盘**：落盘的轮次意图恒完整，续跑不重抽；命中段超过 6 段按段落顺序取前 6，结果按 `index` 回填——结果可复现是"续跑不重抽"的前提。
+4. **抽取先于第一次落盘**：落盘的轮次意图恒完整，续跑不重抽；超过 6 段时点了名的先占名额、其余按段落顺序，结果按 `index` 回填。
 5. **`ENVIRONMENT_MODE` 按段冻结**：每次进 `run_scene` 读一次；continue 重进会重读，**同一场的前后两段可处于不同档位，`actions` 为空不代表没有物件动作**。
 6. **读取侧收紧**（`repository._deserialize_actions`）：未知 `status` 一律按 `skipped`（续跑会按 `pending` 补裁决，脏值不能变成待裁决）；
    在场物件悬空 ID 跳过时 warning——静默跳过会让 record 档命中率无声归零。
@@ -198,7 +199,6 @@ paths:
 
 环境回合 = `TurnKind.ENVIRONMENT` 的 `DialogueTurn`（`narration` 公开叙述 + `projection` 公开投射 + `private_detail` + `perceived_by` + 来源轮次 / 动作序号 + `revision`；
 `turn_id` 由 `(来源轮次, 动作序号)` 确定性生成 `environment_turn_id`）。默认档位 `off`；设计判据见 `docs/fix-tickets/24-20-environment.md` §5 / §9。
-以下每条标明适用范围。
 
 1. **一个动作一个提交单元**（两套通用）：角色轮次推送之后、下一次终止判定之前，`SceneEngine._adjudicate_pending` 逐个裁决本轮 pending 动作。
    成功 = 追加环境回合 + 动作 `resolved` + 来源轮次 `revision+1`；**落盘先于推送**，且先推 `turn_update`（来源轮次）再推 `turn`（环境回合）。
@@ -209,7 +209,7 @@ paths:
 2. **失败不伪造**（两套通用）：裁决调用失败或输出不可用 → 动作 `failed`、不生成环境回合、推非致命 `scene_error`。**绝不补一句"毫无反应"**（同陷阱 14）。
    "裁决成功但没触发规则"照样生成环境回合，那是裁决出的事实。（schema 2 的 IO 失败例外见上"提交与事务"。）
 3. **额度在调用前预占**（`remaining_environment_quota`，上限 `MAX_ENVIRONMENT_TURNS`）：上限 − 已有环境回合 − 仍 pending 的动作。
-   ≤0 时命中段直接 `skipped/quota`、**不发起抽取**；pending 必须计入，否则续跑补裁决后超限。
+   ≤0 时**不发起抽取**，点了名的段落记 `skipped/quota`；pending 必须计入，否则续跑补裁决后超限。
 4. **续跑先补裁决**：`_replay_unconsolidated` 之后按日志顺序补 pending 动作；中断只在动作之间生效，剩下的留 pending。
    已有同 ID 环境回合的动作改记 `resolved`；物件已不在本场记 `failed`；**非 adjudicate 档原样保留 `pending`、仍占额度**——改成 `skipped` 就不可恢复了。
 5. **可见性三条线**（两套通用，契约 1）：公开叙述 `narration` 进"目前对话"与全体在场角色记忆；`private_detail` 只进 `perceived_by`
@@ -222,18 +222,17 @@ paths:
    - `actor_id` 把条目绑定到执行者，裁决前由 `reveals_for_actor` 过滤——别人的条目根本不进裁决器输入，选错人在结构上不可能。
      导演按角色名写 `actor`，`DirectorAgent._bind_reveal_actors` 换成 id，**匹配不上的整条丢弃**（退成"谁都能触发"会让绑给王后的秘密被别人命中）。
      内容物的条目并入容器的裁决时，条件前缀 `【内容物名】`。
-   - 导演提示词要求 `content` 只写感知者实际看见的东西，不得夹旁白式评论（实跑中导演写过"你自己也不知道真相"，等于告诉角色有个真相存在）。
+   - 导演提示词要求 `content` 只写感知者实际看见的东西，不得夹旁白式评论（"你自己也不知道真相"等于告诉角色有个真相存在）。
    - **已知缺口（都偏向多公开，待议）**：现场生成的公开档 `actor_memory_public` 由**裁决器**选、不是导演标注，误判即把当事人的私有记忆公开给全场；
      界面不展示揭示条目与受众，开演前无人确认；规划提示词的示例写的是 `present`。详见 `24-20-environment.md#glass-crown-2026-11-07`。
 6. **角色侧的变化**：
    - system 里的"动作只写尝试"规范（`attempt_only`）**只在 adjudicate 档**出现；
    - 【在场物件】（按可见性，只有名称与公开描述，总预算 600 token）：**schema 1 只在 adjudicate 档**；
      **schema 2 只要场景有可见的在场物件就出现，与档位无关**（见 `engine.py` 的 `_respond_extras`）。
-   - 因此"off / record 档角色 prompt 逐字不变"的 golden 用例（`test_off_and_record_character_prompts_are_byte_identical_to_before`）**只对 schema 1 成立**，
-     不要据此推断 schema 2。【当前环境】在 schema 2 下也不限档位，有可见观察即出现。
+   - 因此"off / record 档角色 prompt 逐字不变"的 golden 用例（`test_off_and_record_character_prompts_are_byte_identical_to_before`）**只对 schema 1 成立**。【当前环境】在 schema 2 下也不限档位，有可见观察即出现。
 7. **物件状态的归属**：
    - schema 2：物件状态就是世界事实 `(object, object_id, attribute)`，**按 `object_id` 归属、按分支版本跨场延续、按可见性投影**；
-     `Scene.environment_state` 在 schema 2 **不使用**（见 `models.py` 的 `Scene.environment_state` 注释）。跨场泄露（private / hidden 物件状态摆到不知情者眼前）由可见性投影结构性避免。
+     `Scene.environment_state` 在 schema 2 **不使用**。跨场泄露（private / hidden 物件状态摆到不知情者眼前）由可见性投影结构性避免。
    - schema 1：`Scene.environment_state` 形如 `{object_id: {属性: 值}}`，**只在本场有效**，渲染时才按物件当前名字拼 `物件名·属性`；
      裁决器只读本场状态（`object_state_view`）。**不要**把它并进 `WorldState`：世界变量进全体角色的 system，private / hidden 物件的状态会泄露给不知道它存在的人。
    - 物件之间名称与别名不得重名（casefold；新建 / 编辑 422）。
@@ -289,9 +288,9 @@ paths:
 ## 环境智能体现状（原 §13 设想表该行，已落地）
 
 **【实况】** 环境智能体（`agents/environment_agent.py`）已落地：裁决角色对物件的尝试 → 环境回合；物件状态能跨场延续（schema 2）；
-预制揭示与现场生成揭示分离；导演产出 `objects_present` 与 `environment_script`；前端有物件编辑器与世界面板。裁决走 OpenAI 原生调用（`chat_safe`，契约 7），**不用 AutoGen**。
+预制揭示与现场生成揭示分离；导演产出 `objects_present` 与 `environment_script`；裁决走 OpenAI 原生调用（`chat_safe`，契约 7），**不用 AutoGen**。
 **【设想】尚未实现**：环境主动事件（"叛军抵达城门"仍靠导演在场间写）、"定向通告"（只通知某些人）、按观看者过滤"目前对话"、
-物件进 Kuzu 图谱（与工单 06）、指代消解（"*把它戴上*"）、角色自己写了结果时的自动纠正、私有内心 OS（工单 21）。
+物件进 Kuzu 图谱（与工单 06）、角色自己写了结果时的自动纠正、私有内心 OS（工单 21）。
 
 ## 动手前的快速自检
 

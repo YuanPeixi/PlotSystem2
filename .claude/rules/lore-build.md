@@ -47,7 +47,7 @@ paths:
 ## 构建期物件抽取（工单24，`world_rules.py::ObjectExtractor` + `pipeline.py::build_objects`）
 
 - 流程：抽取（只抽内容）→ 复用设定分类器判定可见性 → `clamp_object` 压回预算。构建与 `scripts/extract_objects.py` 共用 `build_objects` 这一份。
-- 与角色同名的物件丢弃并 warning（会让动作意图预过滤每轮命中）；分块重叠或多段文本提到同一件东西按名称合并别名与规则，公开描述留第一份。
+- 与角色同名的物件丢弃并 warning（动作里提到角色名是常态，每轮都会被当成点了这件物件的名）；分块重叠或多段文本提到同一件东西按名称合并别名与规则，公开描述留第一份。
 - 送进可见性分类的只有名称与公开描述：隐藏规则按定义谁都不发，拿去分类只会让模型因规则里的秘密把整个物件判成 hidden。继承设定分类器的全部收紧安全网（陷阱 23）；拿不准一律 `hidden`（`object_visibility`）。
 - 预算：构建期这道闸门截断并 warning（没人能当场改），用户编辑那道才是 422。
 - 物件的隐藏规则只进导演与环境层（陷阱 27 / `world-environment.md`），不进角色 prompt。
