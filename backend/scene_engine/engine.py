@@ -359,7 +359,7 @@ class SceneEngine:
                 )
                 # 动作段取解析层剥过独白之后的那一份，与 turn.action 同源（契约1，见 _split_reply）
                 turn.actions = await self._action_extractor.extract(
-                    self._split_reply(raw)[0], agent.name, quota
+                    self._split_reply(raw)[0], agent.name, quota, actor_id=agent.character_id
                 )
             turns.append(turn)
             transcript.append(self._turn_line(turn))

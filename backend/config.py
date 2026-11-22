@@ -180,7 +180,7 @@ class Settings(BaseSettings):
     # off / record / adjudicate。每次进 run_scene 读一次、整段不变（设计单 A21）
     ENVIRONMENT_MODE: str = "off"
     # 每场环境回合上限（设计单 A3），含仍 pending 的动作、在调用前预占（A15）。
-    # 0 = adjudicate 档也不裁决：命中段一律 quota 跳过、不发起抽取
+    # 0 = adjudicate 档也不裁决：不发起抽取，点了物件名的动作段记 quota
     MAX_ENVIRONMENT_TURNS: int = 8
     # 环境裁决单次调用的输出 token 上限；0 = 不限。同 CHARACTER_MAX_TOKENS 的教训：
     # 推理模型把推理算进来，1800 时 DS-V4-Flash 在持有 / 交接类动作上约三成触顶、只剩空正文，

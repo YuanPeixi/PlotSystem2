@@ -1,12 +1,16 @@
-"""工单24 PR-1b：动作意图的预过滤与抽取。
+"""工单24 PR-1b：动作意图抽取。
 
 《玻璃王冠》缩写：王冠与暗格在场。每条用例对应设计单的一道防护（§5.1、A17–A22），
 撤掉那道防护时用例必须变红。
+
+模块级的 CROWN / NICHE 沿用默认可见性（hidden）：执行者看不见它们，只有点了名的段落才送抽取。
+"执行者看得见物件时每段都送"的用例用 GLOBAL_CROWN。
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -44,6 +48,8 @@ NICHE = WorldObject(
     object_id="o-niche", project_id="p", name="暗格", aliases=["祭坛暗格"],
     public_description="祭坛下的地砖。", hidden_rules=["按顺序踩三块地砖才开"],
 )
+GLOBAL_CROWN = replace(CROWN, visibility="global")
+PRIVATE_NICHE = replace(NICHE, visibility="private", known_by=["c2"])
 
 
 def _reply(*items: dict) -> str:
@@ -65,9 +71,10 @@ class _Llm:
         return result
 
 
-async def _extract(segments, llm, objects=(CROWN, NICHE)):
+async def _extract(segments, llm, objects=(CROWN, NICHE), *, actor_id="", adjudicate=False, quota=None):
     with patch(_LLM, new=llm):
-        return await ActionIntentExtractor(list(objects)).extract(segments, "伊莎贝尔")
+        extractor = ActionIntentExtractor(list(objects), adjudicate=adjudicate)
+        return await extractor.extract(segments, "伊莎贝尔", quota, actor_id=actor_id)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +95,7 @@ def test_match_objects_uses_name_and_alias_and_ignores_latin_case():
     assert match_objects("把王冠举过头顶", [CROWN, NICHE]) == [CROWN]
     assert match_objects("蹲下摸了摸祭坛暗格", [CROWN, NICHE]) == [NICHE]
     assert match_objects("点亮 LAMP", [lamp]) == [lamp]
-    assert match_objects("把它戴上", [CROWN]) == [], "不做指代消解（设计单 §3）"
+    assert match_objects("把它戴上", [CROWN]) == [], "只认字面；指代交给抽取模型"
 
 
 # ---------------------------------------------------------------------------
@@ -97,11 +104,68 @@ def test_match_objects_uses_name_and_alias_and_ignores_latin_case():
 
 
 @pytest.mark.asyncio
-async def test_pure_expressions_never_call_the_llm():
+async def test_nothing_is_sent_when_the_actor_sees_no_object_and_names_none():
     llm = _Llm()
-    intents = await _extract(["皱眉", "叹了口气"], llm)
+    intents = await _extract(["皱眉", "叹了口气"], llm, actor_id="c1")
     assert llm.prompts == []
     assert [(i.status, i.skip_reason) for i in intents] == [("skipped", "no_object")] * 2
+    assert await _extract(["俯首落冠"], llm, objects=(), actor_id="c1") and llm.prompts == [], "本场没有在场物件"
+
+
+@pytest.mark.asyncio
+async def test_segments_that_do_not_name_the_object_are_still_sent():
+    """2026-11-22 复测：王后写"俯首落冠"，没有"王冠"二字，被字面预筛当成神态丢掉，戴上了环境也不回应。"""
+    llm = _Llm(_reply(
+        {"index": 0, "object": "", "is_attempt": False},
+        {"index": 1, "object": "o1", "is_attempt": True, "verb": "戴上", "detail": "把王冠戴到自己头上"},
+    ))
+    intents = await _extract(["环视满厅", "俯首落冠，指尖稳稳压住底座"], llm, objects=(GLOBAL_CROWN,), actor_id="c1")
+    assert len(llm.prompts) == 1
+    segments = llm.prompts[0].split("【动作】")[1].split("只输出")[0].strip()
+    assert segments == "0. 环视满厅\n1. 俯首落冠，指尖稳稳压住底座"
+    assert (intents[0].status, intents[0].skip_reason) == ("skipped", "not_attempt")
+    assert (intents[1].status, intents[1].object_id, intents[1].verb) == ("recorded", "o-crown", "戴上")
+
+
+@pytest.mark.asyncio
+async def test_objects_the_actor_cannot_see_are_candidates_only_when_named():
+    """契约1：c1 不知道暗格与铜镜。"走上祭坛"不能被归给暗格——裁决出的公开叙述等于替她发现了它。"""
+    mirror = WorldObject(object_id="o-mirror", name="铜镜", public_description="墙上蒙尘的铜镜。")
+    objects = (GLOBAL_CROWN, PRIVATE_NICHE, mirror)
+
+    llm = _Llm(_reply({"index": 0, "object": "o2", "is_attempt": True, "verb": "踩"}))
+    (intent,) = await _extract(["走上祭坛"], llm, objects=objects, actor_id="c1")
+    listed = llm.prompts[0].split("【物件】")[1].split("【动作】")[0]
+    assert "玻璃王冠" in listed and "暗格" not in listed and "铜镜" not in listed
+    assert (intent.status, intent.skip_reason) == ("skipped", "invalid_object"), "模型硬答的代号不在候选里"
+
+    # 知情者看得见；不知情的人点了名（听人说过）也算
+    for actor_id, segment in (("c2", "走上祭坛"), ("c1", "掀开祭坛暗格")):
+        llm = _Llm(_reply({"index": 0, "object": "o2", "is_attempt": True, "verb": "掀开"}))
+        (intent,) = await _extract([segment], llm, objects=objects, actor_id=actor_id)
+        assert (intent.status, intent.object_id) == ("recorded", "o-niche")
+        assert "铜镜" not in llm.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_quota_sends_nothing_and_marks_only_named_segments():
+    """A15：额度到顶后不发起抽取。没点名的段落没被判断过，不能记成 quota。"""
+    llm = _Llm()
+    intents = await _extract(["皱眉", "摘下王冠"], llm, objects=(GLOBAL_CROWN,),
+                             actor_id="c1", adjudicate=True, quota=0)
+    assert llm.prompts == []
+    assert [i.skip_reason for i in intents] == ["no_object", "quota"]
+
+
+@pytest.mark.asyncio
+async def test_named_segments_take_the_slots_before_plain_ones():
+    """每段都送之后，点了名的动作不该被排在前面的神态挤出上限。"""
+    segments = [f"神态{i}" for i in range(MAX_ACTION_EXTRACTS_PER_TURN)] + ["戴上王冠"]
+    llm = _Llm(_reply({"index": len(segments) - 1, "object": "o1", "is_attempt": True, "verb": "戴上"}))
+    intents = await _extract(segments, llm, objects=(GLOBAL_CROWN,), actor_id="c1")
+    assert intents[-1].status == "recorded"
+    assert [i.skip_reason for i in intents].count("over_limit") == 1
+    assert intents[MAX_ACTION_EXTRACTS_PER_TURN - 1].skip_reason == "over_limit", "挤掉的是最后一段神态"
 
 
 @pytest.mark.asyncio
@@ -128,7 +192,7 @@ async def test_prompt_has_no_hidden_rules_no_dialogue_and_no_inline_thought():
     assert "非亲生" not in prompt
     assert "非亲生" not in intents[0].text
     assert "一顶通体透明的玻璃王冠" in prompt
-    # 只送提到的物件：暗格没被提到，不该进候选
+    # 执行者看不见、也没点名的物件不进候选
     assert "暗格" not in prompt
 
 
@@ -233,7 +297,7 @@ async def test_actions_are_complete_before_the_turn_is_first_persisted():
         await engine.run(on_turn=on_turn)
     assert seen[0][0].status == "recorded" and seen[0][0].object_id == "o-crown"
     assert seen[1][0].skip_reason == "no_object"
-    assert len(llm.prompts) == 1, "第二轮是神态，不该调用"
+    assert len(llm.prompts) == 1, "第二轮没点名，执行者也看不见王冠，不该调用"
 
 
 @pytest.mark.asyncio
@@ -289,7 +353,7 @@ async def test_resume_does_not_re_extract_persisted_turns():
     with patch.object(CharacterAgent, "respond", new=AsyncMock(side_effect=_LINES[1:])), patch(_LLM, new=llm2):
         result = await resumed.run()
     assert result.dialogue_log[0].actions == original
-    assert llm2.prompts == [], "第二轮是神态；旧轮次不重抽"
+    assert llm2.prompts == [], "第二轮不送（没点名、看不见王冠）；旧轮次不重抽"
 
 
 def test_engine_caps_objects_present():

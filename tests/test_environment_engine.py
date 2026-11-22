@@ -385,6 +385,22 @@ async def test_extraction_uses_the_same_segments_as_the_public_action():
     assert segments.strip() == "0. 拿起王冠"
 
 
+@pytest.mark.asyncio
+async def test_action_that_does_not_name_the_object_still_gets_adjudicated():
+    """2026-11-22 复测：王后写"俯首落冠"，没有"王冠"二字，环境没有回应。
+    候选按执行者的视野给：伊莎贝尔不知道暗格，诺安知道，铜镜谁都不知道（契约1）。"""
+    engine, _ = _engine("s-env-unnamed")
+    router = Router(character=["*俯首落冠*", "*走上祭坛*"], action_extract=[_extracted(_attempt())])
+    with router:
+        result = await engine.run()
+    assert [t.kind for t in result.dialogue_log] == ["character", "environment", "character"]
+    action = result.dialogue_log[0].actions[0]
+    assert (action.status, action.object_id) == ("resolved", "o-crown")
+    first, second = (m[0]["content"] for m in router.of(LLMPurpose.ACTION_EXTRACT))
+    assert "暗格" not in first and "暗格" in second
+    assert "铜镜" not in first + second
+
+
 # ---------------------------------------------------------------------------
 # 续跑（§5.4、A27、A34、A35）
 # ---------------------------------------------------------------------------
